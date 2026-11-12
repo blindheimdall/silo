@@ -50,6 +50,19 @@ let current = -1;
 let blocked = false;
 const caseButtons = [];
 let floorButtons = [];
+const compactLayout = window.matchMedia('(max-width: 760px)');
+const mobileAction = byId('mobile-sim-action');
+
+function showInspection() {
+  const title = byId('step-title');
+  title.focus({preventScroll:true});
+  title.closest('.inspection').scrollIntoView({block:'start'});
+}
+
+mobileAction.addEventListener('click', () => {
+  if (current < 0) advance();
+  showInspection();
+});
 
 for (const [index, example] of cases.entries()) {
   const button = node('button', '', 'case');
@@ -79,6 +92,7 @@ function reset() {
     button.addEventListener('click', () => {
       inspected = index;
       render();
+      if (compactLayout.matches) showInspection();
     });
     return button;
   });
@@ -118,7 +132,7 @@ function render() {
   byId('step-meta').textContent = 'STEP ' + (inspected + 1) + ' / ' + place.toUpperCase();
   byId('step-title').textContent = denied ? (revocation ? 'Access revoked' : 'Approval rejected') : title;
   byId('step-description').textContent = denied ? (revocation ? 'Operations refuses the request after revocation. The resident cannot perform the read.' : 'The workflow ends at the approval gate. The app action is skipped.') : description;
-  byId('payload-label').textContent = denied ? 'SIMULATION RESULT' : payloadLabel;
+  byId('payload-label').textContent = denied ? 'SIMULATION RESULT' : inspected > current ? 'PREVIEW / ' + payloadLabel : payloadLabel;
   byId('step-payload').textContent = denied ? (revocation ? 'DENY · capability revoked\nNo file read · no report returned' : 'STOP · rejected by operator\nNo write action performed') : payload;
   byId('radio-route').hidden = selectedCase !== 0;
   for (const peer of byId('radio-route').querySelectorAll('[data-peer]')) {
@@ -131,7 +145,8 @@ function render() {
     button.lastElementChild.textContent = {done:'DONE',current:'ACTIVE',blocked:'STOP',queued:'·'}[state];
   });
   byId('shaft-status').textContent = blocked ? 'STOPPED' : done ? 'COMPLETE' : current < 0 ? 'STANDBY' : approval ? 'APPROVAL REQUIRED' : 'STEP ' + (current + 1) + ' ACTIVE';
-  byId('run-status').textContent = blocked ? 'Simulation stopped.' : done ? example.complete : current < 0 ? example.initial : approval ? 'Review the proposed action and choose what happens next.' : revocation ? 'Run the scoped read or revoke the grant to see the refusal.' : 'Advance to the next step when ready.';
+  byId('run-status').textContent = blocked ? 'Simulation stopped.' : done ? example.complete : current < 0 ? example.initial : approval ? 'Review the proposed action and choose what happens next.' : revocation ? 'Run the scoped read or revoke the grant to see the refusal.' : 'Active step ' + (current + 1) + ' of ' + example.steps.length + '. Advance when ready.';
+  mobileAction.textContent = current < 0 ? example.start + ' ↓' : 'Open step details ↓';
   byId('action-controls').replaceChildren();
   if (blocked || done) action('Reset simulation', reset, true);
   else if (current < 0) action(example.start + ' →', advance, true);
@@ -151,6 +166,7 @@ function render() {
 }
 
 reset();
+byId('simulation-board').hidden = false;
 
 const footage = {
   world: ['silo-world.webp', 'SILO galleries and spiral stair', 'Move between floors, locate a resident and open a terminal from the dock.'],
@@ -161,6 +177,7 @@ const footage = {
 let previousFootage = 'world';
 let currentFootage = 'world';
 const footageButtons = document.querySelectorAll('[data-view]');
+document.querySelector('.monitor-nav').hidden = false;
 for (const button of footageButtons) {
   button.addEventListener('click', () => {
     const requested = button.dataset.view;
@@ -254,8 +271,10 @@ more.addEventListener('click', () => {
 });
 
 selectMode(mode);
+byId('connection-directory').hidden = false;
 
 const copy = byId('copy');
+copy.hidden = false;
 copy.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText('npm start');

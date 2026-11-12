@@ -99,6 +99,9 @@ input,select{min-height:42px;padding:7px 9px;background:#111710;border:1px solid
 .command{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel);border:1px solid var(--line);padding:13px 15px}
 .command code,.resource a,.chapter p a{color:var(--hot)}
 .resource{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
+.mobile-sim-action{display:none}
+.sim-fallback{padding:16px;border:1px solid var(--line);color:var(--muted)}
+.sim-fallback a{color:var(--hot);text-decoration:underline}
 footer.mast{justify-content:space-between}
 .radio-line{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
 .radio-line div{background:var(--panel);padding:17px}
@@ -114,3 +117,4 @@ footer.mast{justify-content:space-between}
 .radio-route [data-active=true] b{border-color:var(--hot);background:var(--hot);color:#21190f;box-shadow:0 0 15px #ffaf6650}
 .radio-route i{flex:1;min-width:9px;border-top:1px dashed #b2bd83}
 @media(max-width:430px){.mast nav{justify-content:flex-start;flex-wrap:wrap;column-gap:13px;row-gap:6px}.radio-route{padding-inline:13px}.radio-route b{width:17px;height:17px}.radio-route span{gap:3px}.case{overflow-wrap:anywhere}.shaft-bottom{font-size:.55rem}.filters label{max-width:100%}}
+@media(max-width:760px){.mobile-sim-action{display:block;align-self:flex-start;margin:3px 0 12px}}

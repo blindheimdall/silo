@@ -18,24 +18,26 @@
 <section id="exercise" class="exercise" aria-labelledby="intro">
   <div class="intro">
     <div><p class="label">SELF-HOSTED / MULTI-AGENT WORKFLOWS</p><h1 id="intro">The silos talk<span>.</span></h1></div>
-    <p>Link independent silos, hand a task to a remote resident and decide what it can access. Or follow an app workflow all the way to a human approval.</p>
+    <p>Let AI agents on separate machines work together. The team that owns the data decides what a remote agent can access and can revoke that access at any time.</p>
   </div>
-  <div class="board">
+  <noscript><p class="sim-fallback">The simulator requires JavaScript. <a href="#radio">Read the three-silo example</a> or <a href="#inside">see the actual SILO interface</a>.</p></noscript>
+  <div class="board" id="simulation-board" hidden>
     <aside class="dispatch" aria-label="Workflow selection">
       <p class="label">DISPATCH BOARD</p>
       <div id="cases" class="cases"></div>
+      <button type="button" id="mobile-sim-action" class="key primary mobile-sim-action"></button>
       <div class="dispatch-footer"><span class="lamp"></span><p>Simulation uses sample data. No external requests are sent.</p></div>
     </aside>
-    <div class="shaft" aria-label="Workflow floors">
+    <div class="shaft" role="group" aria-label="Workflow route">
       <div class="shaft-top"><span>SECTION A / WORKFLOW ROUTE</span><span id="shaft-status">STANDBY</span></div>
       <div class="shaft-grid" aria-hidden="true"></div>
       <div id="radio-route" class="radio-route" aria-label="Capability route"><span data-peer="A"><b>A</b> Operations</span><i aria-hidden="true"></i><span data-peer="B"><b>B</b> Analytics</span><i aria-hidden="true"></i><span data-peer="C"><b>C</b> Support</span></div>
       <div id="floors" class="floors"></div>
-      <div class="shaft-bottom"><span>SCHEMATIC VIEW</span><span>SELECT A FLOOR TO INSPECT</span></div>
+      <div class="shaft-bottom"><span>SCHEMATIC VIEW</span><span>SELECT A STEP TO INSPECT</span></div>
     </div>
     <section class="inspection" aria-labelledby="step-title">
       <p id="step-meta" class="label"></p>
-      <h2 id="step-title"></h2>
+      <h2 id="step-title" tabindex="-1"></h2>
       <p id="step-description"></p>
       <div class="payload"><span id="payload-label" class="label"></span><pre id="step-payload"></pre></div>
       <div id="action-controls" class="controls"></div>
@@ -62,7 +64,7 @@
 <section class="product-section" id="inside">
   <div class="chapter"><p class="label">PRODUCT FOOTAGE</p><h2>The room behind the run.</h2><p>Explore SILO’s actual interface. Residents have a home floor, a model and tool permissions. Follow them through the 3D world or open a terminal to inspect their work.</p></div>
   <div class="monitor">
-    <nav aria-label="Product footage" class="monitor-nav"><button type="button" data-view="world" aria-pressed="true">World</button><button type="button" data-view="flows" aria-pressed="false">Workflows</button><button type="button" data-view="cameras" aria-pressed="false">Cameras</button><button type="button" data-view="tour" aria-pressed="false">Play GIF</button></nav>
+    <nav aria-label="Product footage" class="monitor-nav" hidden><button type="button" data-view="world" aria-pressed="true">World</button><button type="button" data-view="flows" aria-pressed="false">Workflows</button><button type="button" data-view="cameras" aria-pressed="false">Cameras</button><button type="button" data-view="tour" aria-pressed="false">Play GIF</button></nav>
     <img id="product-image" src="../media/silo-world.webp" alt="SILO galleries and spiral stair" width="1440" height="900" loading="lazy">
     <p id="product-caption" aria-live="polite">Move between floors, locate a resident and open a terminal from the dock.</p>
   </div>
@@ -71,7 +73,8 @@
 
 <section class="product-section directory-section" id="directory">
   <div class="chapter"><p class="label">CONNECTION DIRECTORY</p><h2>Look up the action.</h2><p>Search by app or operation. Expand any entry to see what SILO can do with it and how it connects.</p></div>
-  <div class="directory">
+  <noscript><p class="sim-fallback"><a href="https://github.com/blindheimdall/silo#integrations">See the integration overview in the README</a>.</p></noscript>
+  <div class="directory" id="connection-directory" hidden>
     <nav class="mode" aria-label="Connection type"><button type="button" data-mode="accounts" aria-pressed="true">Accounts <small>05</small></button><button type="button" data-mode="apps" aria-pressed="false">Connectors <small>88</small></button><button type="button" data-mode="hooks" aria-pressed="false">Webhooks <small>37</small></button></nav>
     <div class="filters"><label>Search <input id="integration-search" type="search" placeholder="Try Stripe balance"></label><label id="group-field" hidden>Category <select id="group"></select></label></div>
     <p id="result-count" class="label" aria-live="polite"></p>
@@ -83,7 +86,7 @@
 
 <section id="start" class="product-section launch">
   <div class="chapter"><p class="label">RUN ON YOUR MACHINE</p><h2>Open your own SILO.</h2><p>With Node.js 22 or newer, run the command from the repository. Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> and select a demo resident.</p></div>
-  <div><div class="command"><code>npm start</code><button id="copy" type="button" class="key">Copy</button></div><p class="resource"><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Handbook ↗</a><a href="https://github.com/blindheimdall/silo">Private repository ↗</a></p></div>
+  <div><div class="command"><code>npm start</code><button id="copy" type="button" class="key" hidden>Copy</button></div><p class="resource"><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Handbook ↗</a><a href="https://github.com/blindheimdall/silo">Private repository ↗</a></p></div>
 </section>
 </main>
 <footer class="mast"><a class="mark" href="#main"><strong>SILO</strong></a><a href="https://github.com/blindheimdall/silo/blob/main/LICENSE">AGPLv3</a></footer>
