@@ -1,0 +1,22 @@
+data/*
+!data/.gitkeep
+workspace/*
+!workspace/.gitkeep
+.env
+*.log
+node_modules/
+
+# Runtime, installation, and release files
+.env.*
+!.env.example
+launch.json
+dist/
+*.pem
+*.key
+*.pfx
+*.p12
+*.sqlite*
+*.db*
+__pycache__/
+*.py[cod]
+.pytest_cache/

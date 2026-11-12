@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "silo-os"
+version = "0.1.0"
+description = "Python client for SILO: ask residents, run workflows, decide approvals and run tests from scripts and CI."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["silo", "agents", "ai", "llm", "workflows", "evals", "mcp", "a2a"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.scripts]
+silo = "silo_os.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+silo_os = ["py.typed"]

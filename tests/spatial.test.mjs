@@ -1,0 +1,5 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {FLOOR_HEIGHT,FLOOR_TOP,INNER_RADIUS,OUTER_RADIUS,physicalFloorY,spatialResidentPose,spatialStairPoint} from '../public/spatial-geometry.js';
+test('3D resident feet remain exactly on the annular gallery surface at every level',()=>{for(let level=1;level<=144;level++)for(let resident=0;resident<6;resident++)for(let time=0;time<90;time+=1.7){const p=spatialResidentPose(level,resident,time),radius=Math.hypot(p.x,p.z);assert.ok(radius>INNER_RADIUS+.5&&radius<OUTER_RADIUS-.5,'Resident cannot enter the open shaft');assert.equal(p.y,physicalFloorY(level)+FLOOR_TOP,'Foot pivot equals the slab surface, with no floating offset');}});
+test('the actual 3D helix joins adjacent landings and covers all 144 levels',()=>{for(let level=1;level<144;level++){const a=spatialStairPoint(level,1),b=spatialStairPoint(level+1,0);for(const key of ['x','y','z'])assert.ok(Math.abs(a[key]-b[key])<1e-8);}assert.equal(physicalFloorY(144),-143*FLOOR_HEIGHT);});
