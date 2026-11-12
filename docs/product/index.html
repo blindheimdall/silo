@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="SILO is a self-hosted workspace for AI agents. Build multi-agent workflows, connect the tools you use, and follow every handoff in a 144-level 3D world.">
+  <meta name="theme-color" content="#101715">
+  <title>SILO | An operations room for AI agents</title>
+  <link rel="icon" href="../../public/icon-192.png">
+  <link rel="stylesheet" href="product.css">
+  <script src="catalog.js" defer></script>
+  <script src="product.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="header">
+    <div class="shell nav">
+      <a class="brand" href="#top"><img src="../../public/icon-192.png" width="34" height="34" alt=""> SILO</a>
+      <nav aria-label="Product">
+        <a href="#product">Product</a><a href="#workflows">Workflows</a><a href="#integrations">Integrations</a><a href="#control">Controls</a>
+      </nav>
+      <a class="nav-cta" href="#start">Get started <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <img class="hero-image" src="silo-hero.webp" alt="" width="1672" height="941" fetchpriority="high">
+      <div class="shell hero-content">
+        <p class="eyebrow">SELF-HOSTED AGENT WORKSPACE</p>
+        <h1 id="hero-title">An operations room<br>for <em>AI agents.</em></h1>
+        <p class="hero-copy">Give agents roles, connect the tools you already use, and watch work move from brief to approval inside a 144-level 3D world.</p>
+        <div class="actions"><a class="button primary" href="#product">See SILO in action <span aria-hidden="true">↓</span></a><a class="button secondary" href="#integrations">Explore integrations</a></div>
+      </div>
+      <div class="shell hero-footer"><span>RUNS ON YOUR MACHINE</span><span>ENVIRONMENT CONCEPT ART</span></div>
+    </section>
+
+    <section class="shell section" id="product">
+      <div class="section-head"><div><p class="eyebrow">THE WORKSPACE</p><h2>Step inside SILO.</h2></div><p>Residents are agents with their own instructions, permissions, model and home level. Walk the galleries, open a terminal, or follow a resident on camera.</p></div>
+      <div class="console">
+        <div class="console-bar"><span><i></i> SILO / PRODUCT CAPTURES</span><div class="view-buttons" aria-label="Choose a product view"><button type="button" data-view="world" aria-pressed="true">World</button><button type="button" data-view="flows" aria-pressed="false">Workflows</button><button type="button" data-view="cameras" aria-pressed="false">Cameras</button></div></div>
+        <img id="product-image" src="../media/silo-world.webp" alt="SILO's circular galleries and spiral stair" width="1440" height="900" loading="lazy">
+        <div class="console-caption"><p id="product-caption" aria-live="polite">Navigate 144 levels, find residents and open a terminal from the dock.</p><button id="tour" type="button" aria-pressed="false">Play GIF tour <span aria-hidden="true">▷</span></button></div>
+      </div>
+    </section>
+
+    <section class="band" id="workflows">
+      <div class="shell section">
+        <div class="section-head"><div><p class="eyebrow">WORKFLOW ENGINE</p><h2>From brief<br>to finished work.</h2></div><p>Compose resident, app, review, wait and approval steps. Run independent steps together, branch on prior output, or repeat a step for each item in a list.</p></div>
+        <div class="workflow">
+          <div class="workflow-title"><strong>Issue triage</strong><span>EXAMPLE WORKFLOW</span></div>
+          <ol>
+            <li><span>01 / TRIGGER</span><h3>GitHub issue</h3><p>Start when an issue opens in a connected repository.</p></li>
+            <li><span>02 / RESIDENT</span><h3>Draft a response</h3><p>Read the issue and prepare a reply for the maintainer.</p></li>
+            <li><span>03 / APPROVAL</span><h3>Review the draft</h3><p>Pause until a person approves the next step.</p></li>
+            <li><span>04 / APP ACTION</span><h3>Post the comment</h3><p>Send the approved response through the GitHub connector.</p></li>
+          </ol>
+        </div>
+        <div class="feature-lines">
+          <article><h3>Start from an event</h3><p>Use schedules, watched folders, email, feeds, app events or webhooks.</p></article>
+          <article><h3>Inspect each run</h3><p>See model calls, tool use, timings and token counts in the trace. Replay from a selected step.</p></article>
+          <article><h3>Test before you change</h3><p>Evaluate residents and workflows against reference cases. Keep earlier versions and restore them when needed.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell section" id="integrations">
+      <div class="section-head"><div><p class="eyebrow">INTEGRATION DIRECTORY</p><h2>Connect your stack.</h2></div><p>Browse the operations SILO ships with. Connected accounts, app connectors and incoming webhooks each serve a different part of a workflow.</p></div>
+      <div class="integrations-summary" aria-label="Integration counts"><div><strong>88</strong><span>Built-in app connectors</span></div><div><strong>350</strong><span>App connector operations</span></div><div><strong>37</strong><span>Webhook adapters</span></div><div><strong>5</strong><span>Connected account providers</span></div></div>
+      <div class="directory">
+        <div class="directory-controls">
+          <div class="mode-buttons" aria-label="Integration type">
+            <button data-mode="accounts" type="button" aria-pressed="true">Accounts</button>
+            <button data-mode="apps" type="button" aria-pressed="false">App connectors</button>
+            <button data-mode="hooks" type="button" aria-pressed="false">Webhooks</button>
+          </div>
+          <div class="filters"><label>Search <input id="integration-search" type="search" placeholder="Find an app or operation"></label><label id="group-field" hidden>Category <select id="group"><option value="">All categories</option></select></label></div>
+        </div>
+        <p class="directory-intro" id="directory-intro">Connect Google, Microsoft 365, Slack, GitHub and Notion.</p>
+        <p class="result-count" id="result-count" aria-live="polite"></p>
+        <div class="results" id="integration-results"></div>
+        <button class="button secondary more" id="more" type="button" hidden>Show more integrations</button>
+        <noscript><p>Enable JavaScript to browse the directory, or read the integration guide in the handbook.</p></noscript>
+      </div>
+      <div class="feature-lines extensions">
+        <article><h3>Bring your model</h3><p>Choose OpenAI, Anthropic, local Ollama or an OpenAI-compatible endpoint per resident. Demo residents work without API keys.</p></article>
+        <article><h3>Add your own tools</h3><p>Connect a local or remote MCP server, import an OpenAPI 3 or Swagger 2 specification, or create a Python tool.</p></article>
+        <article><h3>Work from your phone</h3><p>Pair a Telegram bot to talk to residents, run workflows and respond to approvals. Send notifications to Slack, Discord, email or a webhook.</p></article>
+      </div>
+    </section>
+
+    <section class="band" id="control">
+      <div class="shell section">
+        <div class="section-head"><div><p class="eyebrow">OPERATIONS AND CONTROL</p><h2>Decide what runs.<br>See what happened.</h2></div><p>SILO runs on your machine. When you connect an external service, the relevant inputs go to that service. Choose permissions, connection settings and approval steps for the work you delegate.</p></div>
+        <div class="control-grid">
+          <article><h3>Access and approvals</h3><p>Set tool permissions per resident, insert explicit approval steps, and store integration credentials in the encrypted local vault.</p></article>
+          <article><h3>Usage and visibility</h3><p>Track timing, tokens and estimated costs in traces. Set per-provider spending limits. Configure audit logging and OpenTelemetry for your installation.</p></article>
+          <article><h3>Build on SILO</h3><p>Use the HTTP API or Python SDK to start runs and handle approvals. Connect other systems through MCP and A2A interfaces.</p></article>
+          <article><h3>Local by default</h3><p>Start on loopback, then configure network access if needed. SILO supports account roles and optional OpenID Connect sign-in.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell section start" id="start">
+      <div><p class="eyebrow">QUICK START</p><h2>Enter the silo.</h2><p>Open a terminal in the repository with Node.js 22 or newer. Start SILO, then open Residents to try a built-in demo.</p></div>
+      <div>
+        <div class="command"><span>TERMINAL</span><code>npm start</code><button id="copy" type="button">Copy</button></div>
+        <p class="start-note">Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> after startup. On Windows, use <code>Start-Silo.cmd</code> or <code>Install-SILO.cmd</code>.</p>
+        <div class="actions"><a class="button primary" href="https://github.com/blindheimdall/silo">GitHub repository ↗</a><a class="button secondary" href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Read the handbook ↗</a></div>
+      </div>
+    </section>
+  </main>
+  <footer><div class="shell foot"><a class="brand" href="#top"><img src="../../public/icon-192.png" width="27" height="27" alt=""> SILO</a><a href="https://github.com/blindheimdall/silo/blob/main/LICENSE">AGPLv3</a><a href="#top">Back to top ↑</a></div></footer>
+</body>
+</html>
