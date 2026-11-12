@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#111310">
+<meta name="theme-color" content="#f6f7f2">
 <meta name="description" content="Connect independent SILO instances, delegate scoped access to remote AI agents and inspect each workflow handoff.">
-<title>SILO / Operations Room</title>
+<title>SILO | Self-hosted AI workflows across teams</title>
 <link rel="icon" href="silo-mark.png">
 <link rel="stylesheet" href="product.css">
 <script defer src="catalog.js"></script>
@@ -13,12 +13,61 @@
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="mast"><a class="mark" href="#main"><img src="silo-mark.png" alt="" width="35" height="35"><strong>SILO</strong></a><span class="mast-label">OPERATIONS ROOM</span><nav aria-label="Product"><a href="#exercise">Simulator</a><a href="#radio">Radio network</a><a href="#inside">Actual interface</a><a href="#directory">Integrations</a><a href="#start">Run locally ↗</a></nav></header>
+<header class="mast"><a class="mark" href="#main"><img src="silo-mark.png" alt="" width="35" height="35"><strong>SILO</strong></a><nav aria-label="Product"><a href="#radio">Architecture</a><a href="#controls">Controls</a><a href="#directory">Integrations</a><a class="nav-demo" href="#exercise">Try the demo ↗</a></nav></header>
 <main id="main">
-<section id="exercise" class="exercise" aria-labelledby="intro">
+<section class="enterprise-hero" aria-labelledby="hero-title">
+  <div class="hero-layout">
+    <div class="hero-copy">
+      <p class="label">SELF-HOSTED AI WORKFLOW PLATFORM</p>
+      <h1 id="hero-title">Connect AI agents. <span>Control their access.</span></h1>
+      <p>Run SILO on your infrastructure. Let agents request work across independent deployments while each team sets the scope, duration and budget of the access it grants.</p>
+      <div class="hero-actions"><a class="hero-primary" href="#exercise">Run the interactive demo <span aria-hidden="true">↗</span></a><a class="hero-secondary" href="#radio">Explore the architecture <span aria-hidden="true">↓</span></a></div>
+    </div>
+    <figure class="architecture-figure" aria-label="Two SILO deployments exchanging a signed request">
+      <div class="figure-head"><span>Silo-to-Silo Radio</span><span>Example topology</span></div>
+      <div class="architecture-node requester">
+        <span class="peer-mark" aria-hidden="true">S</span><div><strong>Support</strong><small>SILO deployment A</small></div>
+        <span class="node-role">Requests a summary</span>
+      </div>
+      <div class="request-line"><span>Signed request ↓</span><span>Signed response ↑</span></div>
+      <div class="architecture-node owner">
+        <span class="peer-mark" aria-hidden="true">O</span><div><strong>Operations</strong><small>SILO deployment B</small></div>
+        <span class="node-role">Owns the reports</span>
+      </div>
+      <div class="grant-spec"><span>Example access grant</span><code>reports/uptime/</code><strong>Read only · 30 min</strong></div>
+      <figcaption>Operations validates the grant before its agent can use the requested tool.</figcaption>
+    </figure>
+  </div>
+  <dl class="hero-facts"><div><dt>Deployment</dt><dd>Self-hosted</dd></div><div><dt>Cross-instance access</dt><dd>Scoped and revocable</dd></div><div><dt>Workflow control</dt><dd>Human approval steps</dd></div><div><dt>Observability</dt><dd>Run traces and audit logs</dd></div></dl>
+</section>
+
+<section id="radio" class="product-section radio">
+  <div class="chapter"><p class="label">SILO-TO-SILO RADIO</p><h2>Separate machines.<br>One chain of work.</h2><p>Run Operations, Analytics and Support on their own SILO instances. Connect their residents through signed requests and grant just enough access to complete a task.</p></div>
+  <div class="radio-line" aria-label="Example capability chain from Operations to Analytics to Support">
+    <div><strong>01 / OPERATIONS</strong><p>Owns the files. Grants Analytics read access to <code>reports/</code> for two hours.</p></div>
+    <div><strong>02 / ANALYTICS</strong><p>Passes Support a narrower grant for <code>reports/uptime/</code> for thirty minutes.</p></div>
+    <div><strong>03 / SUPPORT</strong><p>Uses its own identity to ask an Operations resident for a summary within the granted scope.</p></div>
+  </div>
+  <dl class="capabilities">
+    <div><dt>Peer identity</dt><dd>Each silo has its own Ed25519 key. Owners compare fingerprints when linking peers. Radio signs requests and answers.</dd></div>
+    <div><dt>Scoped delegation</dt><dd>Limit residents, tools, folders, lifetime, messages and tokens. A forwarded grant can only narrow the previous grant.</dd></div>
+    <div><dt>Enforced at the source</dt><dd>The data-owning silo checks the chain, counts usage and applies revocations. Revoking a link stops every grant derived from it.</dd></div>
+  </dl>
+  <p class="resource"><a href="#exercise">Try the Radio simulation ↑</a><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#silo-to-silo-radio">Radio configuration ↗</a></p>
+</section>
+<section id="controls" class="product-section governance">
+  <div class="chapter"><p class="label">DEPLOYMENT AND GOVERNANCE</p><h2>Controls for the people who run SILO.</h2><p>Review how SILO handles identity, credentials, workflow approvals and operational visibility before you connect it to your environment.</p></div>
+  <dl class="control-ledger">
+    <div><dt>Identity and access</dt><dd>Configure OpenID Connect single sign-on and map provider groups to SILO roles. Set tool permissions per agent.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#single-sign-on">SSO setup ↗</a></dd></div>
+    <div><dt>Deployment and data</dt><dd>Run on your infrastructure and keep integration credentials in the encrypted local vault. Connected cloud models and services receive the inputs required by their calls.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#data-and-limits">Data and limits ↗</a></dd></div>
+    <div><dt>Approval and replay</dt><dd>Pause a workflow for a human decision before an app action. Inspect the run and replay from a selected step.</dd><dd><a href="#exercise">Try an approval ↗</a></dd></div>
+    <div><dt>Audit and telemetry</dt><dd>Review the local audit log and verify its hash chain. Send traces to your own collector over OTLP/HTTP.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#opentelemetry">Telemetry setup ↗</a></dd></div>
+  </dl>
+</section>
+<section id="exercise" class="exercise product-section" aria-labelledby="intro">
   <div class="intro">
-    <div><p class="label">SELF-HOSTED / MULTI-AGENT WORKFLOWS</p><h1 id="intro">The silos talk<span>.</span></h1></div>
-    <p>Let AI agents on separate machines work together. The team that owns the data decides what a remote agent can access and can revoke that access at any time.</p>
+    <div><p class="label">INTERACTIVE DEMONSTRATION</p><h2 id="intro">Follow a request.</h2></div>
+    <p>Try a cross-instance handoff, a GitHub approval, or a Google Sheets write. Inspect each step and see where a request can be stopped.</p>
   </div>
   <noscript><p class="sim-fallback">The simulator requires JavaScript. <a href="#radio">Read the three-silo example</a> or <a href="#inside">see the actual SILO interface</a>.</p></noscript>
   <div class="board" id="simulation-board" hidden>
@@ -44,25 +93,10 @@
       <p id="run-status" class="status" role="status"></p>
     </section>
   </div>
-  <div class="strip"><span><strong>144</strong> navigable levels</span><span><strong>88</strong> app connectors</span><span><strong>350</strong> connector operations</span><span><strong>37</strong> webhook adapters</span></div>
 </section>
 
-<section id="radio" class="product-section radio">
-  <div class="chapter"><p class="label">SILO-TO-SILO RADIO</p><h2>Separate machines.<br>One chain of work.</h2><p>Run Operations, Analytics and Support on their own SILO instances. Connect their residents through signed requests and grant just enough access to complete a task.</p></div>
-  <div class="radio-line" aria-label="Example capability chain from Operations to Analytics to Support">
-    <div><strong>01 / OPERATIONS</strong><p>Owns the files. Grants Analytics read access to <code>reports/</code> for two hours.</p></div>
-    <div><strong>02 / ANALYTICS</strong><p>Passes Support a narrower grant for <code>reports/uptime/</code> for thirty minutes.</p></div>
-    <div><strong>03 / SUPPORT</strong><p>Uses its own identity to ask an Operations resident for a summary within the granted scope.</p></div>
-  </div>
-  <dl class="capabilities">
-    <div><dt>Peer identity</dt><dd>Each silo has its own Ed25519 key. Owners compare fingerprints when linking peers. Radio signs requests and answers.</dd></div>
-    <div><dt>Scoped delegation</dt><dd>Limit residents, tools, folders, lifetime, messages and tokens. A forwarded grant can only narrow the previous grant.</dd></div>
-    <div><dt>Enforced at the source</dt><dd>The data-owning silo checks the chain, counts usage and applies revocations. Revoking a link stops every grant derived from it.</dd></div>
-  </dl>
-  <p class="resource"><a href="#exercise">Try the Radio simulation ↑</a><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#silo-to-silo-radio">Radio configuration ↗</a></p>
-</section>
 <section class="product-section" id="inside">
-  <div class="chapter"><p class="label">PRODUCT FOOTAGE</p><h2>The room behind the run.</h2><p>Explore SILO’s actual interface. Residents have a home floor, a model and tool permissions. Follow them through the 3D world or open a terminal to inspect their work.</p></div>
+  <div class="chapter"><p class="label">THE SILO INTERFACE</p><h2>Inspect work as it runs.</h2><p>In SILO, agents are called residents. Each has a home floor, a model and tool permissions. Follow them through the 144-level 3D world or open a terminal to inspect their work.</p></div>
   <div class="monitor">
     <nav aria-label="Product footage" class="monitor-nav" hidden><button type="button" data-view="world" aria-pressed="true">World</button><button type="button" data-view="flows" aria-pressed="false">Workflows</button><button type="button" data-view="cameras" aria-pressed="false">Cameras</button><button type="button" data-view="tour" aria-pressed="false">Play GIF</button></nav>
     <img id="product-image" src="../media/silo-world.webp" alt="SILO galleries and spiral stair" width="1440" height="900" loading="lazy">
@@ -72,7 +106,7 @@
 </section>
 
 <section class="product-section directory-section" id="directory">
-  <div class="chapter"><p class="label">CONNECTION DIRECTORY</p><h2>Look up the action.</h2><p>Search by app or operation. Expand any entry to see what SILO can do with it and how it connects.</p></div>
+  <div class="chapter"><p class="label">CONNECTION DIRECTORY</p><h2>Integrations and supported actions.</h2><p>Explore 88 built-in app connectors, 350 connector operations and 37 webhook adapters. Search by app or action to see what SILO supports and how it connects.</p></div>
   <noscript><p class="sim-fallback"><a href="https://github.com/blindheimdall/silo#integrations">See the integration overview in the README</a>.</p></noscript>
   <div class="directory" id="connection-directory" hidden>
     <nav class="mode" aria-label="Connection type"><button type="button" data-mode="accounts" aria-pressed="true">Accounts <small>05</small></button><button type="button" data-mode="apps" aria-pressed="false">Connectors <small>88</small></button><button type="button" data-mode="hooks" aria-pressed="false">Webhooks <small>37</small></button></nav>
@@ -85,7 +119,7 @@
 </section>
 
 <section id="start" class="product-section launch">
-  <div class="chapter"><p class="label">RUN ON YOUR MACHINE</p><h2>Open your own SILO.</h2><p>With Node.js 22 or newer, run the command from the repository. Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> and select a demo resident.</p></div>
+  <div class="chapter"><p class="label">SELF-HOSTED EVALUATION</p><h2>Run SILO locally.</h2><p>With Node.js 22 or newer, run the command from the repository. Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> and select a demo resident.</p></div>
   <div><div class="command"><code>npm start</code><button id="copy" type="button" class="key" hidden>Copy</button></div><p class="resource"><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Handbook ↗</a><a href="https://github.com/blindheimdall/silo">Private repository ↗</a></p></div>
 </section>
 </main>
