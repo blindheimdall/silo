@@ -1,24 +1,39 @@
 <p align="center">
-  <img src="public/icon-192.png" width="76" alt="">
+  <img src="docs/product/silo-mark.png" width="104" alt="SILO spiral shaft and radio signal">
 </p>
 
 <h1 align="center">SILO</h1>
 
-<p align="center"><strong>An operations room for AI agents.</strong></p>
-<p align="center">Build workflows, connect your tools, and follow each handoff inside a 144-level 3D world.</p>
+<p align="center"><strong>Independent silos. A shared chain of work.</strong></p>
+<p align="center">Run AI agents on separate machines, delegate access across instances, and inspect each handoff in a 144-level operations room.</p>
 
 <p align="center">
+  <a href="#link-independent-silos">Silo-to-Silo Radio</a> &middot;
   <a href="#what-silo-does">Capabilities</a> &middot;
   <a href="#integrations">Integrations</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
   <a href="docs/handbook.md">Handbook</a>
 </p>
 
+SILO is a self-hosted workspace for AI agents. Inside one instance, residents use different models and tools to run workflows together. Across instances, **Silo-to-Silo Radio** lets a resident ask a remote resident for help under a capability that the data owner can scope and revoke.
+
+Open [`docs/product/index.html`](docs/product/index.html) from a checkout to step through the Radio exchange, try revoking a grant, approve or reject a simulated GitHub or Google Sheets action, and search the integration directory.
+
+## Link independent silos
+
+**Example.** Operations owns the reports. It grants Analytics read access to `reports/` for two hours. Analytics delegates only `reports/uptime/` to Support for thirty minutes. A Support resident can now ask an Operations resident to summarize the weekly uptime report. Operations checks the capability chain and controls which files its resident can read.
+
+| What Radio does | How it works |
+| :--- | :--- |
+| **Identify each peer** | Each silo has an Ed25519 key pair. Owners compare public-key fingerprints when linking peers. Requests and replies are signed. |
+| **Grant access to a specific task** | Limit the residents, tools, folder paths, lifetime, token budget and message budget. Without a capability, a remote resident answers without tools. |
+| **Delegate with tighter limits** | A holder can pass on a subset of its access to another silo. Each link is signed and can only narrow what came before. |
+| **Keep enforcement with the data owner** | The data-owning silo verifies the chain, counts usage and checks revocation. Revoking a link also stops access granted through it. |
+
+[Set up Radio and capability grants](docs/handbook.md#silo-to-silo-radio)
+
+
 ![Concept art of SILO's underground galleries and central stair](docs/product/silo-hero.webp)
-
-SILO is a self-hosted workspace for AI agents. Assign residents their own models, instructions and permissions. Let them research, draft, review and hand off work. See which step ran, what it used and where it is waiting for you.
-
-The interactive product page lives in [`docs/product/index.html`](docs/product/index.html). Open that file from a checkout to browse the full integration directory and switch between product views.
 
 ## What SILO does
 
@@ -46,7 +61,7 @@ The interactive product page lives in [`docs/product/index.html`](docs/product/i
 
 ## Integrations
 
-SILO includes **88 app connectors**, **350 app connector operations**, **37 webhook adapters**, and **5 connected account providers**. The [product page source](docs/product/index.html) includes a searchable directory with operations and setup notes.
+SILO includes **88 app connectors**, **350 app connector operations**, **37 webhook adapters**, and **5 connected account providers**. The [interactive product page](docs/product/index.html) includes a searchable directory with operations and setup notes.
 
 | Integration | Examples and supported actions |
 | :--- | :--- |
