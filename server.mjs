@@ -818,6 +818,7 @@ function limitRatios(provider,includeInflight=false){
   if(l.daily)out.push(['daily',(day.cost+inf.cost)/l.daily,day.cost+inf.cost,l.daily]);
   if(l.monthly)out.push(['monthly',(month.cost+inf.cost)/l.monthly,month.cost+inf.cost,l.monthly]);
   if(l.tokens)out.push(['token',(day.tokens+inf.tokens)/l.tokens,day.tokens+inf.tokens,l.tokens]);
+  for(const x of out)if(isFull(provider,x[0],x[3]))x[1]=Math.max(1,x[1]);
   return out;
 }
 function budgetRatio(){let r=0;for(const p of PROVIDERS)for(const x of limitRatios(p,true))r=Math.max(r,x[1]);return Math.min(1.5,r);}
@@ -832,34 +833,55 @@ function recordUsage(provider,model,input,output){
   const days=Object.keys(state.usage.days).sort();for(const k of days.slice(0,-62))delete state.usage.days[k];
   // A warning at 80 percent and another when a limit is reached, once a day each.
   for(const [kind,ratio,used,limit] of limitRatios(provider)){
-    const level=ratio>=1?'reached':ratio>=.8?'near':null;if(!level)continue;
-    const key=`${today()}:${provider}:${kind}:${level}`;if(state.usage.warned[key])continue;state.usage.warned[key]=Date.now();
-    for(const k of Object.keys(state.usage.warned))if(!k.startsWith(today()))delete state.usage.warned[k];
-    const show=kind==='token'?`${used} of ${limit} tokens`:`${money(used)} of ${money(limit)}`;
-    const title=level==='reached'?`${provider} ${kind} limit reached`:`${provider} is near its ${kind} limit`;
-    event(title,show+(level==='reached'?'. New calls to this provider are blocked.':''),level==='reached'?'error':'system');notify('limit',title,show);
+    const level=ratio>=1?'reached':ratio>=.8?'near':null;if(level)warnLimit(provider,kind,level,kind==='token'?`${used} of ${limit} tokens`:`${money(used)} of ${money(limit)}`);
   }
 }
+function warnLimit(provider,kind,level,show){
+  const key=`${today()}:${provider}:${kind}:${level}`;if(state.usage.warned[key])return;state.usage.warned[key]=Date.now();
+  for(const k of Object.keys(state.usage.warned))if(!k.startsWith(today()))delete state.usage.warned[k];
+  const title=level==='reached'?`${provider} ${kind} limit reached`:`${provider} is near its ${kind} limit`;
+  event(title,show+(level==='reached'?'. New calls to this provider are blocked.':''),level==='reached'?'error':'system');notify('limit',title,show);
+}
+// A limit with no room left for a call counts as reached for the rest of its day or month, until the limit is changed:
+// calls are checked before they are made, so what is spent never gets to the limit itself.
+const limitFull=new Map(),limitPeriod=kind=>kind==='monthly'?today().slice(0,7):today();
+const isFull=(provider,kind,limit)=>{const m=limitFull.get(provider+':'+kind);return !!m&&m.period===limitPeriod(kind)&&m.limit===limit;};
 function checkSpending(provider){
   for(const [kind,ratio,used,limit] of limitRatios(provider,true))if(ratio>=1)
     fail(`The ${kind} limit for ${provider} is reached (${kind==='token'?used+' of '+limit+' tokens':money(used)+' of '+money(limit)}). Raise it in IT, or wait for the next ${kind==='monthly'?'month':'day'}.`,402);
 }
-function reserveSpending(provider,model,estInput=5,estOutput=7){
+// Holds back what a call may cost until it is done, so calls at the same time cannot pass a limit together. Every
+// call is checked, the first one too, against what was spent plus what other calls hold. estOutput is the most the
+// answer may be. With minOutput the answer may be made shorter to fit what is left: the release function then
+// carries maxOutput, the length to ask the provider for. Below minOutput the call is refused.
+function reserveSpending(provider,model,estInput=5,estOutput=7,{minOutput}={}){
   checkSpending(provider);
-  const price=priceFor(provider,model),estCost=price?(estInput*price.input+estOutput*price.output)/1e6:0,estTokens=estInput+estOutput;
-  const cur=inflightSpend.get(provider)||{cost:0,tokens:0,calls:0};
-  if(cur.calls>0){
-    const l=state.limits[provider];
-    if(l){
-      const day=spent(provider,'day'),month=l.monthly?spent(provider,'month'):null;
-      if(l.daily&&day.cost+cur.cost+estCost>l.daily)fail(`The daily limit for ${provider} is reached (${money(day.cost+cur.cost)} of ${money(l.daily)} reserved).`,402);
-      if(l.monthly&&month.cost+cur.cost+estCost>l.monthly)fail(`The monthly limit for ${provider} is reached (${money(month.cost+cur.cost)} of ${money(l.monthly)} reserved).`,402);
-      if(l.tokens&&day.tokens+cur.tokens+estTokens>l.tokens)fail(`The token limit for ${provider} is reached (${day.tokens+cur.tokens} of ${l.tokens} tokens reserved).`,402);
+  const price=priceFor(provider,model),cur=inflightSpend.get(provider)||{cost:0,tokens:0,calls:0},l=state.limits[provider];
+  let out=estOutput;
+  if(l){
+    const day=spent(provider,'day'),month=l.monthly?spent(provider,'month'):null,inCost=price?estInput*price.input/1e6:0;
+    // For each limit: how many answer tokens still fit after the question.
+    const room=[];
+    if(l.tokens)room.push(['token',l.tokens-day.tokens-cur.tokens-estInput,`${day.tokens+cur.tokens} of ${l.tokens} tokens used or held`,l.tokens]);
+    for(const [kind,limit,used] of [['daily',l.daily,day.cost],['monthly',l.monthly,month?.cost]])if(limit&&price){
+      const left=limit-used-cur.cost-inCost;
+      room.push([kind,price.output>0?Math.floor(left*1e6/price.output):left>=0?Infinity:-1,`${money(used+cur.cost)} of ${money(limit)} spent or held`,limit]);
     }
+    const [kind,fit,show,limit]=room.sort((a,b)=>a[1]-b[1])[0]||[];
+    const need=minOutput===undefined?estOutput:Math.min(minOutput,estOutput);
+    if(kind&&fit<need){
+      // Nobody else holds anything: this limit is full for now. Calls of others still running may yet leave room.
+      if(!cur.calls){limitFull.set(provider+':'+kind,{period:limitPeriod(kind),limit});warnLimit(provider,kind,'reached',show);}
+      fail(`The ${kind} limit for ${provider} is reached: there is no room left for this call (${show}). Raise it in IT, or wait for the next ${kind==='monthly'?'month':'day'}.`,402);
+    }
+    if(kind&&minOutput!==undefined)out=Math.max(need,Math.min(estOutput,fit));
   }
+  const estCost=price?(estInput*price.input+out*price.output)/1e6:0,estTokens=estInput+out;
   cur.cost+=estCost;cur.tokens+=estTokens;cur.calls++;inflightSpend.set(provider,cur);
   let released=false;
-  return ()=>{if(released)return;released=true;const c=inflightSpend.get(provider);if(!c)return;c.cost=Math.max(0,c.cost-estCost);c.tokens=Math.max(0,c.tokens-estTokens);c.calls=Math.max(0,c.calls-1);if(!c.calls)inflightSpend.delete(provider);};
+  const release=()=>{if(released)return;released=true;const c=inflightSpend.get(provider);if(!c)return;c.cost=Math.max(0,c.cost-estCost);c.tokens=Math.max(0,c.tokens-estTokens);c.calls=Math.max(0,c.calls-1);if(!c.calls)inflightSpend.delete(provider);};
+  release.maxOutput=out;
+  return release;
 }
 async function persistSecrets(){
   stateRev++;
@@ -1431,7 +1453,7 @@ async function mcpToolsFor(cid){
   return (c.tools||[]).map(t=>{
     const hash=t.hash||mcpToolHash(t),trustReadOnly=c.ask==='auto'&&c.trustReadOnly===true&&!t.changed;
     return {
-      name:safeToolName(c.name,t.name),permission:'mcp:'+c.id,description:`[${c.name}] ${t.description||t.name}`.slice(0,1000),schema:t.schema,approval:`mcp:${c.id}:${t.name}:${hash}`,
+      name:safeToolName(c.name,t.name),permission:'mcp:'+c.id,description:`[${c.name}] ${t.description||t.name}`.slice(0,1000),schema:t.schema,readOnly:t.readOnly===true,approval:`mcp:${c.id}:${t.name}:${hash}`,
       ask:async(agent,args)=>c.ask==='never'||(trustReadOnly&&t.readOnly)?null:{title:`use ${t.name} on ${c.name}`,detail:JSON.stringify(args,null,2)},
       async run(agent,args,ctx){
         const r=await (await mcpReady(c)).callTool(t.name,args,ctx.signal).catch(e=>{if(e.status===401&&c.transport==='http'){c.needsSignIn=true;dropMcp(c.id);throw new Error(`${c.name} asks for a new sign-in. Use Sign in on its card in IT / Uplink.`);}throw e;});
@@ -1718,18 +1740,20 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
   const comp=compactConversation(agent,messages,instructions);
   const activeMessages=comp.messages;
   const estIn=Math.max(5,estimateTokens(instructions)+activeMessages.reduce((s,m)=>s+estimateMessageTokens(m),0));
-  const releaseSpend=reserveSpending(p,model,Math.min(50,estIn),7);
+  // The whole question and the longest answer allowed are held against the limits. When less is left, the answer is
+  // asked to be shorter, so the provider cannot write past the limit.
+  const maxOut=p==='openai'?8000:4096,releaseSpend=reserveSpending(p,model,estIn,maxOut,{minOutput:256}),outLimit=releaseSpend.maxOutput;
   try{
     const stream=!!onText,tools=toolsFor(p,opts.tools);
     let url,headers={'Content-Type':'application/json'},body;
-    if(p==='openai'){url='https://api.openai.com/v1/responses';headers.Authorization=`Bearer ${config.key}`;body={model,instructions,input:openaiInput(activeMessages),store:false,max_output_tokens:8000};}
-    if(p==='anthropic'){url='https://api.anthropic.com/v1/messages';headers['x-api-key']=config.key;headers['anthropic-version']='2023-06-01';body={model,system:instructions,messages:anthropicMessages(activeMessages),max_tokens:4096};}
-    if(p==='ollama'){url=(config?.endpoint||'http://127.0.0.1:11434')+'/api/chat';body={model,messages:chatMessages(activeMessages,instructions,'ollama'),stream:false};}
+    if(p==='openai'){url='https://api.openai.com/v1/responses';headers.Authorization=`Bearer ${config.key}`;body={model,instructions,input:openaiInput(activeMessages),store:false,max_output_tokens:outLimit};}
+    if(p==='anthropic'){url='https://api.anthropic.com/v1/messages';headers['x-api-key']=config.key;headers['anthropic-version']='2023-06-01';body={model,system:instructions,messages:anthropicMessages(activeMessages),max_tokens:outLimit};}
+    if(p==='ollama'){url=(config?.endpoint||'http://127.0.0.1:11434')+'/api/chat';body={model,messages:chatMessages(activeMessages,instructions,'ollama'),stream:false,...(outLimit<maxOut&&{options:{num_predict:outLimit}})};}
     if(p==='compatible'){
       url=config.endpoint;
       const oauthTok=getOAuthAccessToken('compatible');
       headers.Authorization=`Bearer ${oauthTok||config.key}`;
-      body={model,messages:chatMessages(activeMessages,instructions,'compatible'),max_tokens:4096};
+      body={model,messages:chatMessages(activeMessages,instructions,'compatible'),max_tokens:outLimit};
     }
     if(tools)body.tools=tools;
     if(stream){body.stream=true;if(p==='compatible')body.stream_options={include_usage:true};}
@@ -2287,7 +2311,7 @@ defineTool({name:'ask_resident',permission:'delegate',parallel:true,description:
       claimed=true;event(`${agent.name} asked ${helper.name}`,task.slice(0,160),'mission');await persist();
       // Attenuate helper's capabilities to the intersection with caller's effective capabilities unless an explicit grant allows escalation.
       const callerCaps=ctx.caps||effectiveCapabilities(agent,ctx);
-      const r=await answer(helper,[{role:'user',content:`${agent.name} (${agent.role}, level ${agent.level}) asks you:\n\n${task}`}],ctx.signal,{},`Asked by ${agent.name}`,(ctx.depth||0)+1,ctx.chain,{budget:ctx.budget,attenuated:callerCaps,runId:ctx.runId,workflowId:ctx.workflowId,goalId:ctx.goalId});
+      const r=await answer(helper,[{role:'user',content:`${agent.name} (${agent.role}, level ${agent.level}) asks you:\n\n${task}`}],ctx.signal,{},`Asked by ${agent.name}`,(ctx.depth||0)+1,ctx.chain,{budget:ctx.budget,attenuated:callerCaps,runId:ctx.runId,workflowId:ctx.workflowId,goalId:ctx.goalId,test:ctx.test});
       return {ok:true,tokens:r.tokens||0,summary:`asked ${helper.name} (${helper.role})`.slice(0,100),text:`<answer from=${JSON.stringify(helper.name)} role=${JSON.stringify(helper.role)}>\n${r.text}\n</answer>`};
     }catch(e){
       if(e?.deadlock)return {ok:false,summary:'asked back up the chain',text:helper.name+' is already waiting for your answer. Do it yourself.'};
@@ -2904,6 +2928,10 @@ async function askOperator(agent,{tool,title,detail,fullDetail,codeHash,execMode
   if(r.status==='pending')r.status=decision;r.decided=Date.now();settleAnnounced('rq',r.id,outcomeLabel(r));await persist();
   return {allowed:r.status==='allowed',codeHash:r.codeHash,execMode:r.execMode};
 }
+// Tools that only read: the ones a test run may use. Asking another resident is allowed, because the test goes on with
+// it; everything else, and any connector tool that does not say it only reads, is not run in a test.
+const READ_TOOLS=new Set(['search_files','read_file','read_page','web_search','search_archive','ask_resident']);
+const readsOnly=spec=>READ_TOOLS.has(spec.name)||spec.readOnly===true;
 function runTool(agent,call,ctx){
   const kind=DELEGATE_TOOLS.has(call.name)?'delegate':'tool';
   return tracer.span(kind,call.name,{agent:agent.name,agentId:agent.id,args:redact(call.args||{},secretValues()),...(call.name==='ask_resident'&&call.args?.name&&{target:String(call.args.name).slice(0,80)})},async sp=>{
@@ -2922,6 +2950,8 @@ async function runToolRaw(agent,call,ctx){
   if(!spec)return {ok:false,summary:`${TOOLS.has(name)?name+' not allowed':'unknown tool '+name}`.slice(0,80),text:TOOLS.has(name)?`You do not have permission to use ${name}.`:`There is no tool called ${name}. Your tools: ${specs.map(s=>s.name).join(', ')||'none'}.`};
   const schemaErr=validateToolArgs(spec.schema,args);
   if(schemaErr)return {ok:false,summary:`invalid arguments for ${name}`.slice(0,80),text:`Invalid arguments for ${name}: ${schemaErr}`};
+  // A test run changes nothing, whatever the tool's policy or an approval says: only tools that read are used.
+  if(ctx?.test&&!readsOnly(spec))return {ok:true,dry:true,summary:`${name} not run (test)`.slice(0,80),text:`Test run: ${name} was not run, because it changes something or acts outside SILO. It would get:\n${JSON.stringify(args,null,2).slice(0,4000)}\nCarry on as if it had worked.`};
   const cacheKey=ctx.toolCache?`${ctx.stepIndex??0}:${ctx.revRound??0}:${ctx.round??0}:${ctx.callIndex??0}:${name}:${createHash('sha256').update(JSON.stringify(args)).digest('base64url')}`:'';
   if(cacheKey&&Object.hasOwn(ctx.toolCache,cacheKey))return {...ctx.toolCache[cacheKey],replayed:true};
   try{
@@ -2956,8 +2986,8 @@ function canSee(agent){
 // A full answer with tools: the resident may call tools, gets each result back, and then answers.
 async function answer(agent,messages,signal,hooks={},source='chat',depth=0,chain=[],runOpts={}){
   const convo=[...messages],tools=[];let tokens=0,retries=0,shown='',used=0,lastText='',routed=null,compacted=false,modelFallback=null;
-  const {budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,noTools}=runOpts;
-  const baseCtx={source,signal,depth,hooks,chain:[...chain,agent.id],budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated};
+  const {budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,noTools,test}=runOpts;
+  const baseCtx={source,signal,depth,hooks,chain:[...chain,agent.id],budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,test:!!test};
   const ctx={...baseCtx,caps:effectiveCapabilities(agent,baseCtx)};
   for(let round=0;;round++){
     if(budget)budget.check();
@@ -3256,6 +3286,16 @@ function agentFrozenConfig(agentId){
   }
   return {id:a.id,name:a.name,role:a.role,floor:a.floor,level:a.level,provider:a.provider,model:a.model||'',instructions:a.instructions||'',tools:[...(a.tools||[])].sort(),shadowId:a.shadowId||'',mcpHashes};
 }
+// The resident a step works with: as it was when the run started (instructions, provider, model), so a run that is
+// resumed, retried or recovered goes on the way it began. Permissions are today's, never more than at the start:
+// one taken away since then is gone at once, one added since then is not used by this run.
+function workingAgent(run,index,a){
+  const snap=run.snapshot?.steps?.[index]?.agent;
+  if(!snap||snap.id!==a.id)return {agent:a,changed:false};
+  const tools=a.tools||[],same=snap.provider===a.provider&&snap.model===(a.model||'')&&snap.instructions===(a.instructions||'')&&JSON.stringify(snap.tools)===JSON.stringify([...tools].sort());
+  if(same)return {agent:a,changed:false};
+  return {agent:{...a,provider:snap.provider,model:snap.model,instructions:snap.instructions,tools:tools.filter(t=>snap.tools.includes(t))},changed:true};
+}
 function stepSnapshot(s){
   const type=s.type||'agent',agentSnap=type!=='approval'&&type!=='action'&&type!=='wait'?agentFrozenConfig(s.agentId):null;
   const core={type,prompt:s.prompt||'',agentId:s.agentId||'',parallel:!!s.parallel,when:s.when||null,target:s.target||0,rounds:s.rounds||0,onExhausted:s.onExhausted||'fail',agent:agentSnap,...(type==='action'&&{app:s.app,op:s.op,fields:s.fields||{},retries:s.retries??2}),...(type==='wait'&&{unit:s.unit,amount:s.amount||0,time:s.time||'',day:s.day??-1}),...(s.each&&{each:s.each})};
@@ -3390,7 +3430,12 @@ async function runActionStep(run,index,signal){
     // A key with quotes or backslashes looks different inside JSON, so both forms are looked for.
     if(secretValues().some(v=>v.length>=6&&(flat.includes(v)||flat.includes(JSON.stringify(v).slice(1,-1)))))throw new Error(`Step ${index+1}: a field holds a saved key or password, so ${op.appName} was not called.`);
     const entry={index,type:'action',agentName:`${op.appName} / ${step.op}`,app:step.app,op:step.op,input:flat.slice(0,4000),tokens:0,time:Date.now()};
+    // A change that went through is written down at once, with its exact fields. If the step runs again (after a crash,
+    // a retry or a resume) the same change is not sent twice: the answer it got the first time is used.
+    const doneKey=op.write&&!run.test?`action:${index}:${Object.values(run.rounds||{}).reduce((n,v)=>n+v,0)}:${run.item===undefined?'':run.itemAt}:${createHash('sha256').update(step.app+'\n'+step.op+'\n'+flat).digest('base64url')}`:'';
+    const done=doneKey&&run.toolCache&&Object.hasOwn(run.toolCache,doneKey)?run.toolCache[doneKey]:null;
     if(run.test&&op.write){entry.dry=true;entry.output=`Test run: ${op.appName} ${step.op} was not called, because it changes something. It would get:\n${JSON.stringify(args,null,2)}`;}
+    else if(done){entry.output=done.text;entry.replayed=true;}
     else{
       // A busy or unreachable app is tried again a few times, waiting longer each time.
       const tries=step.retries??2;let r,err;
@@ -3406,6 +3451,7 @@ async function runActionStep(run,index,signal){
       // A long JSON answer is made smaller as JSON, so later steps can still read it; plain text is cut.
       const text=String(r.text??'');let j;
       entry.output=text.length<=100000?text:(j=jsonOf(text))!==undefined&&typeof j==='object'?fitJson(j,100000):text.slice(0,100000)+' [cut]';
+      if(doneKey){(run.toolCache||={})[doneKey]={ok:true,summary:`${op.appName} ${step.op}`,text:entry.output};await persist();}
       if(op.write&&run.item===undefined)event(`${run.name} used ${op.appName}`,`Step ${index+1}: ${step.op}`,'workflow');
     }
     run.outputs[index]=entry.output;run.names[index]=op.appName;
@@ -3429,10 +3475,11 @@ async function runAgentStepRaw(run,index,part,signal){
     message=await stepMessage(run,index,step);await persist();
     if(run.shape&&index===run.plan.map(x=>x.type).lastIndexOf('agent'))message+='\n\n'+shapeInstruction(run.shape);
     // A model comparison runs every step on the model under test.
-    const who=run.override?{...a,provider:run.override.provider,model:run.override.model}:a;
-    const result=await answer(who,[{role:'user',content:message}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1}`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId});
+    const work=workingAgent(run,index,a),who=run.override?{...work.agent,provider:run.override.provider,model:run.override.model}:work.agent;
+    if(work.changed&&!run.steps.some(s=>s.index===index&&s.configChanged))event(`${a.name} changed since ${run.name} started`,`Step ${index+1} uses the instructions and model from the start of the run, and only the permissions ${a.name} still has.`,'workflow');
+    const result=await answer(who,[{role:'user',content:message}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1}`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,test:!!run.test});
     const entry={index,type:step.type,agentId:a.id,agentName:a.name,output:result.text,tokens:result.tokens||0,time:Date.now()};
-    if(result.truncated)entry.truncated=true;if(result.retries)entry.retries=result.retries;if(result.tools.length)entry.tools=result.tools;if(run.feedback[index])entry.revision=true;
+    if(work.changed)entry.configChanged=true;if(result.truncated)entry.truncated=true;if(result.retries)entry.retries=result.retries;if(result.tools.length)entry.tools=result.tools;if(run.feedback[index])entry.revision=true;
     run.outputs[index]=result.text;run.names[index]=a.name;run.valid[index]=true;delete run.feedback[index];
     if(step.type!=='review'&&run.item===undefined)event(`${a.name} finished step ${index+1}`,`${run.name} / ${a.provider==='demo'?'demo reply':entry.tokens+' tokens'}`,'success');
     bumpStat(a,'ok');
@@ -3445,7 +3492,7 @@ async function runAgentStepRaw(run,index,part,signal){
         dispatchLetter(a,shadow,`Shadow handoff for ${run.name} step ${index+1}`);
         feed.text='';feed.note=`${shadow.name} (Shadow of ${a.name}) stepped in...`;
         const shadowProxy=buildPolicyPreservingAgent(a,shadow);
-        const sr=await answer(shadowProxy,[{role:'user',content:`[SHADOW HANDOFF: Your mentor ${a.name} (${a.role}, L${a.level}) could not finish this step (${e.message}). You are their designated Shadow. Complete the step.]\n\n${message}`}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1} (Shadow)`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,attenuated:effectiveCapabilities(a,{runId:run.id,workflowId:run.workflowId})});
+        const sr=await answer(shadowProxy,[{role:'user',content:`[SHADOW HANDOFF: Your mentor ${a.name} (${a.role}, L${a.level}) could not finish this step (${e.message}). You are their designated Shadow. Complete the step.]\n\n${message}`}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1} (Shadow)`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,attenuated:effectiveCapabilities(a,{runId:run.id,workflowId:run.workflowId}),test:!!run.test});
         const entry={index,type:step.type,agentId:shadow.id,agentName:`${shadow.name} (Shadow of ${a.name})`,shadowFor:a.name,policyPreserved:true,output:sr.text,tokens:sr.tokens||0,time:Date.now()};
         if(sr.truncated)entry.truncated=true;if(sr.retries)entry.retries=sr.retries;if(sr.tools.length)entry.tools=sr.tools;if(run.feedback[index])entry.revision=true;
         run.outputs[index]=sr.text;run.names[index]=shadow.name;run.valid[index]=true;delete run.feedback[index];
@@ -3658,6 +3705,22 @@ function startDrive(run){
   const p=tracer.within(t,()=>drive(run)).finally(()=>{drives.delete(run.id);t.status=run.status==='completed'?'ok':run.status==='running'?'interrupted':run.status;if(run.error)t.error=String(run.error).slice(0,300);});
   drives.set(run.id,p);return p;
 }
+// What is kept: about 100 runs and 150 jobs. Only finished ones are ever dropped, the oldest first: a run or job that
+// runs, waits in the queue, waits to be tried again or was cut off by a crash stays however old it is. Finished test
+// runs go first; finished runs that can still be resumed are kept up to 120.
+const JOB_LIVE=new Set(['queued','running','retrying','interrupted']),RUN_LIVE=new Set(['queued','running','retrying','interrupted']);
+function trimJobs(max=150){
+  let extra=state.jobs.length-max;if(extra<=0)return;
+  const gone=new Set();
+  for(let i=state.jobs.length-1;i>=0&&extra>0;i--)if(!JOB_LIVE.has(state.jobs[i].status)){gone.add(state.jobs[i]);extra--;}
+  state.jobs=state.jobs.filter(j=>!gone.has(j));
+}
+function trimRuns(){
+  if(state.runs.length<=100)return;
+  const jobRuns=new Set(state.jobs.filter(j=>JOB_LIVE.has(j.status)).map(j=>j.runId)),live=r=>RUN_LIVE.has(r.status)||jobRuns.has(r.id);
+  const drop=(which,max)=>{let extra=state.runs.length-max;if(extra<=0)return;const gone=new Set();for(let i=state.runs.length-1;i>=0&&extra>0;i--){const r=state.runs[i];if(!live(r)&&which(r)){gone.add(r);extra--;}}state.runs=state.runs.filter(r=>!gone.has(r));};
+  drop(r=>r.test,100);drop(r=>!r.plan,100);drop(()=>true,120);
+}
 async function executeWorkflow(w,input,trigger='manual',opts={}){
   if(state.paused)fail('Silo is paused.',409);
   if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))fail('This workflow is already running.',409);
@@ -3668,9 +3731,7 @@ async function executeWorkflow(w,input,trigger='manual',opts={}){
   if(opts.override)run.override=opts.override;
   if(opts.prefill)Object.assign(run,opts.prefill);
   state.runs.unshift(run);
-  // Old finished runs are dropped first. Runs that can still be resumed are kept a little longer.
-  if(state.runs.length>100){const tests=state.runs.filter(r=>r.test&&r.status!=='running'),gone=new Set(tests.slice(-(state.runs.length-100)));if(gone.size)state.runs=state.runs.filter(r=>!gone.has(r));}
-  if(state.runs.length>100){const keep=state.runs.filter((r,i)=>i<100||(r.plan&&i<120));state.runs=keep.slice(0,120);}
+  trimRuns();
   event(`Workflow started: ${w.name}`,(trigger==='manual'?'':`[${trigger}] `)+input.slice(0,150),'workflow');await persist();
   startDrive(run);
   return run;
@@ -3682,6 +3743,13 @@ async function resumeRun(run){
   if(state.runs.some(r=>r.workflowId===run.workflowId&&r.status==='running'))fail('This workflow is already running.',409);
   // A budget raised in the workflow since then applies to the resumed run.
   const w=state.workflows.find(x=>x.id===run.workflowId);if(w)run.budget=w.budget||undefined;
+  // Resuming is the owner's choice, often after fixing a resident: the steps still to run take the residents as they are
+  // now, and the log says which ones changed. Retries and crash recovery keep the configuration the run started with.
+  if(run.snapshot?.steps){
+    const changed=new Set();
+    run.plan.forEach((s,i)=>{if(i<run.at)return;const now=stepSnapshot(s),was=run.snapshot.steps[i];if(was?.agent&&now.agent&&was.stepHash!==now.stepHash)changed.add(now.agent.name);run.snapshot.steps[i]=now;if(run.stepHashes)run.stepHashes[i]=now.stepHash;});
+    if(changed.size)event(`${run.name} resumes with changed residents`,`${[...changed].join(', ')} changed since the run started. The steps still to run use them as they are now.`,'workflow');
+  }
   run.status='running';delete run.error;delete run.finished;run.resumed=(run.resumed||0)+1;
   event(`Workflow resumed: ${run.name}`,`From step ${run.at+1} of ${run.total}.`,'workflow');await persist();
   startDrive(run);
@@ -3741,7 +3809,7 @@ async function enqueueJob(b){
   };
   state.runs.unshift(run);
   state.jobs.unshift(job);
-  if(state.jobs.length>150)state.jobs=state.jobs.slice(0,150);
+  trimJobs();trimRuns();
   event(`Job queued (P${priority}): ${w.name}`,`Max attempts ${maxAttempts} · backoff ${backoffMs}ms`,'workflow');
   await persist();
   await pumpJobQueue();
@@ -3774,7 +3842,7 @@ async function pumpJobQueue(){
         run.rounds=structuredClone(lastCp.rounds||{});
         run.names=structuredClone(lastCp.names||{});
         run.steps=(run.steps||[]).slice(0,lastCp.stepsCount);
-        if(lastCp.toolCache)run.toolCache=structuredClone(lastCp.toolCache);
+        run.toolCache=keptToolCache(run,lastCp);
       }
       run.status='running';delete run.error;delete run.finished;
       next.status='running';next.updatedAt=now;delete next.nextAttemptAt;
@@ -3783,6 +3851,9 @@ async function pumpJobQueue(){
     }
   }finally{pumpingJobs=false;}
 }
+// The actions a run already did, after a crash or for another try. Each one is saved the moment it succeeds, so the
+// run's own list is newer than the copy in the last checkpoint: both are kept and nothing done since is done twice.
+const keptToolCache=(run,cp)=>({...structuredClone(cp?.toolCache||{}),...(run.toolCache||{})});
 async function rewindJob(job,opts={}){
   if(job.status==='running')fail('Stop the job before rewinding it.',409);
   const run=state.runs.find(r=>r.id===job.runId);if(!run)fail('Run not found for this job.',404);
@@ -3823,7 +3894,7 @@ async function recoverInterruptedJobs(){
       run.rounds=structuredClone(lastCp.rounds||{});
       run.names=structuredClone(lastCp.names||{});
       run.steps=(run.steps||[]).slice(0,lastCp.stepsCount);
-      if(lastCp.toolCache)run.toolCache=structuredClone(lastCp.toolCache);
+      run.toolCache=keptToolCache(run,lastCp);
     }
     job.status='queued';job.crashRecovered=(job.crashRecovered||0)+1;delete job.crashInterrupted;delete job.error;job.updatedAt=Date.now();
     run.status='queued';delete run.error;delete run.finished;
@@ -4415,9 +4486,16 @@ async function drainWorkflowQueues(){
     if(!w.pendingQueue?.length)continue;
     if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))continue;
     if(!workflowPowered(w))continue;
+    // The event leaves the queue in the same save that records the new run, so a crash or a failed start never loses it.
+    // One that cannot start is put back; after five failed starts it is dropped, with a note in the log.
     const next=w.pendingQueue.shift();
-    await persist();
-    await executeWorkflow(w,next.input,next.trigger).catch(e=>event('Queued trigger failed',`${w.name}: ${e.message}`,'error'));
+    try{await executeWorkflow(w,next.input,next.trigger);}
+    catch(e){
+      next.failures=(next.failures||0)+1;
+      if(next.failures<5)w.pendingQueue.unshift(next);
+      event(next.failures<5?'Queued trigger kept for another try':'Queued trigger dropped after 5 failed starts',`${w.name}: ${e.message}`,'error');
+      await persist();
+    }
   }
 }
 // A new or changed text file in a watched folder starts the workflow with that file as part of the brief.

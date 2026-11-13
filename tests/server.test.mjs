@@ -275,7 +275,7 @@ test('SILO local runtime integration',async t=>{
     const buyer=await resident('Buyer','anthropic','');
     for(let i=0;i<3;i++){const r=await request('/agents/'+buyer.id+'/chat',{message:'Spend '+i});if(r.status===402){assert.match(r.data.error,/daily limit for anthropic is reached/);break;}assert.equal(r.status,200,JSON.stringify(r.data));}
     st=(await request('/state')).data;const today=new Date().toISOString().slice(0,10);
-    assert.ok(st.usage.days[today].anthropic.cost>=0.02,JSON.stringify(st.usage.days[today].anthropic));assert.ok(st.pulse.budget>=1);
+    assert.ok((st.usage.days[today]?.anthropic?.cost||0)<=0.02,'calls are checked before they are made, so the limit is never passed');assert.ok(st.pulse.budget>=1);
     assert.ok(st.events.some(e=>e.title==='anthropic daily limit reached'));
     assert.equal((await request('/agents/'+buyer.id+'/chat',{message:'Again'})).status,402);
     for(let i=0;i<50&&!hooks.some(h=>h.body.event==='limit');i++)await new Promise(r=>setTimeout(r,50));assert.ok(hooks.some(h=>h.body.event==='limit'));

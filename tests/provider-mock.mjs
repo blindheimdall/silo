@@ -108,6 +108,8 @@ globalThis.fetch=async (url,options)=>{
   else if(b.model==='cut')text='second half.';
   else if(b.model==='review-once')text=once(kind+':review')?'REVISE\nAdd a number to the plan.':'APPROVED\nGood now.';
   else if(b.model==='echo')text=last;
+  // 'max-echo' says the longest answer it was allowed to write.
+  else if(b.model==='max-echo')text='max='+(b.max_tokens??b.max_output_tokens??b.options?.num_predict??'none');
   // Result shapes: 'json-good' answers fitting JSON, 'json-fix' only after it is asked again, 'json-bad' never.
   // 'judge' passes a result that names Acme and fails any other.
   else if(b.model==='json-good')text=!/as JSON only[\s\S]*total \(a number\)/.test(last)?'No field list was given.':'Here it is:\n```json\n{"Total": "1,200.50", "supplier": "Acme", "due": "2026-11-20", "paid": "no"}\n```';

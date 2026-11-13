@@ -21,6 +21,9 @@ const sheetId=v=>{const s=String(v||'').trim(),m=s.match(/\/spreadsheets\/d\/([\
 const notionId=v=>{const s=String(v||'').replace(/-/g,''),m=s.match(/([0-9a-f]{32})(?:\?|$)/i)||s.match(/([0-9a-f]{32})/i);if(!m)throw new Error('Give the link of the Notion database, or its id.');return m[1];};
 // New ids in the order they came, the oldest first, and the list of ids to remember.
 function fresh(ids,seen){const known=new Set(seen?.ids||[]);return {ids:keepLast([...(seen?.ids||[]),...ids.filter(x=>!known.has(x))]),add:seen?ids.filter(x=>!known.has(x)):[]};}
+// When a check finds more than it hands on at once: what is remembered is what was there before plus what was handed
+// on (or skipped on purpose), so the rest is still new at the next check. The first check remembers everything.
+const seenAfter=(seen,f,done)=>seen?keepLast([...(seen.ids||[]),...done]):f.ids;
 
 const slackItem=(m,channel)=>({id:m.ts,title:one(m.text||'(message)',100),text:`Slack message in ${channel}\nFrom: ${m.user||m.bot_id||'someone'}\nTime: ${new Date(Number(m.ts)*1000).toISOString()}\n\n${clip(m.text||'',6000)}`});
 const issueItem=(i,repo)=>({id:'#'+i.number,title:`#${i.number} ${one(i.title,100)}`,text:`Issue #${i.number} in ${repo}: ${i.title}\nBy: ${i.user?.login||''}\nLabels: ${(i.labels||[]).map(l=>l.name).join(', ')||'none'}\n${i.html_url||''}\n\n${clip(i.body||'',8000)}`});
@@ -33,13 +36,14 @@ export const TRIGGERS={
       const q=['in:inbox',cfg.query||''].join(' ').trim();
       const list=await get('google',ctx,`${B('gmail')}/users/me/messages?maxResults=15&q=${enc(q)}`);
       const ids=(list.messages||[]).map(m=>m.id).reverse(),f=fresh(ids,seen);
-      const items=[];
-      for(const id of f.add.slice(-10)){
+      // At most 10 a check, the oldest first; the others come at the next check.
+      const take=f.add.slice(0,10),items=[];
+      for(const id of take){
         const m=await get('google',ctx,`${B('gmail')}/users/me/messages/${enc(id)}?format=full`);
         const h=n=>(m.payload?.headers||[]).find(x=>x.name.toLowerCase()===n)?.value||'';
         items.push({id,title:one(h('subject')||'(no subject)',120),text:`From: ${h('from')}\nTo: ${h('to')}\nDate: ${h('date')}\nSubject: ${h('subject')}\n\n${clip(gmailText(m.payload)||m.snippet||'')}`});
       }
-      return {seen:{ids:f.ids},items};
+      return {seen:{ids:seenAfter(seen,f,take)},items};
     }},
   'google.sheet_row':{service:'google',label:'New row in a Google Sheet',fields:[{key:'sheet',label:'Link of the sheet',required:true,placeholder:'https://docs.google.com/spreadsheets/d/...'},{key:'tab',label:'Tab name (optional, the first one if empty)',placeholder:'Orders'}],
     async check(ctx,cfg,seen){
@@ -47,9 +51,10 @@ export const TRIGGERS={
       const d=await get('google',ctx,`${B('sheets')}/spreadsheets/${enc(id)}/values/${enc(range)}?majorDimension=ROWS`);
       const rows=d.values||[],head=rows[0]||[],count=rows.length;
       if(!seen)return {seen:{rows:count},items:[]};
-      // Rows that were deleted move the count back; only rows past the last count are new.
-      const items=rows.slice(Math.min(seen.rows,count)).slice(-20).map((r,i)=>{const n=Math.min(seen.rows,count)+i+1;return {id:'row'+n,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')};});
-      return {seen:{rows:count},items};
+      // Rows that were deleted move the count back; only rows past the last count are new. At most 20 a check, the first
+      // new ones first, and the count moves on only past the rows handed on.
+      const from=Math.min(seen.rows,count),items=rows.slice(from,from+20).map((r,i)=>{const n=from+i+1;return {id:'row'+n,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')};});
+      return {seen:{rows:from+items.length},items};
     }},
   'google.drive_file':{service:'google',label:'New or changed file in Google Drive',fields:[{key:'query',label:'Name contains (optional)',placeholder:'invoice'}],
     async check(ctx,cfg,seen){
@@ -121,8 +126,11 @@ export const TRIGGERS={
   'web.feed':{service:null,label:'New item in an RSS or Atom feed',fields:[{key:'url',label:'Feed address',required:true,placeholder:'https://example.com/feed.xml'},{key:'contains',label:'Only items containing (optional)',placeholder:'release'}],
     async check(ctx,cfg,seen){
       const xml=await fetchText(cfg.url,ctx),items=parseFeed(xml);
-      const f=fresh(items.map(i=>i.id),seen);
-      return {seen:{ids:f.ids},items:items.filter(i=>f.add.includes(i.id)&&(!cfg.contains||(i.title+' '+i.text).toLowerCase().includes(cfg.contains.toLowerCase()))).slice(-10).map(i=>({id:i.id,title:one(i.title,120),text:`Feed item: ${i.title}\n${i.link}\n${i.date?'Date: '+i.date+'\n':''}\n${clip(i.text,6000)}`}))};
+      const f=fresh(items.map(i=>i.id),seen),wanted=i=>!cfg.contains||(i.title+' '+i.text).toLowerCase().includes(cfg.contains.toLowerCase());
+      // Of the new items that match, 10 a check, the oldest first. One that does not match is skipped for good once
+      // the check got past it; the rest stay new for the next check.
+      const added=items.filter(i=>f.add.includes(i.id)),take=added.filter(wanted).slice(0,10),end=take.length<10?added.length:added.indexOf(take.at(-1))+1;
+      return {seen:{ids:seenAfter(seen,f,added.slice(0,end).map(i=>i.id))},items:take.map(i=>({id:i.id,title:one(i.title,120),text:`Feed item: ${i.title}\n${i.link}\n${i.date?'Date: '+i.date+'\n':''}\n${clip(i.text,6000)}`}))};
     }},
   'web.page':{service:null,label:'A web page changes',fields:[{key:'url',label:'Page address',required:true,placeholder:'https://example.com/prices'},{key:'contains',label:'Only when the page contains (optional)',placeholder:'in stock'}],
     async check(ctx,cfg,seen){

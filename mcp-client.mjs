@@ -26,7 +26,7 @@ export class McpClient{
     return new Promise((resolve,reject)=>{
       child.once('error',e=>reject(new Error(`Could not start ${command}: ${e.message}`)));
       child.once('spawn',resolve);
-      child.once('exit',code=>{const e=new Error(`The connector program stopped (exit code ${code}). ${this.log.trim().split('\n').slice(-3).join(' ')}`.trim());this.failAll(e);this.closed=true;});
+      child.once('exit',code=>{const e=new Error(`The connector program stopped (exit code ${code}). ${this.log.trim().split('\n').slice(-3).join(' ')}`.trim());this.closed=true;this.failAll(e);});
     });
   }
   async startHttp(){
@@ -41,7 +41,7 @@ export class McpClient{
   }
   handle(m){
     if(m.id!==undefined&&(m.result!==undefined||m.error!==undefined)){
-      const p=this.pending.get(m.id);if(!p)return;this.pending.delete(m.id);clearTimeout(p.timer);
+      const p=this.pending.get(m.id);if(!p)return;
       if(m.error)p.reject(Object.assign(new Error(m.error.message||'The connector returned an error.'),{code:m.error.code}));else p.resolve(m.result);
       return;
     }
@@ -51,7 +51,8 @@ export class McpClient{
       this.write(result?{jsonrpc:'2.0',id:m.id,result}:{jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'Not supported by SILO.'}});
     }
   }
-  failAll(e){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(e);}this.pending.clear();}
+  // Ends every open request: each one's HTTP request is aborted too.
+  failAll(e){for(const p of [...this.pending.values()])p.end(e,false);this.pending.clear();}
   write(msg,signal){if(this.config.transport==='http')return this.post(msg,signal);if(!this.child||this.closed)throw new Error('The connector is not running.');this.child.stdin.write(JSON.stringify(msg)+'\n');}
   async post(msg,signal){
     if(signal?.aborted)throw signal.reason||new Error('Stopped.');
@@ -77,25 +78,30 @@ export class McpClient{
       if(data)this.receive(data);
     }else{const text=await r.text();if(text.trim())this.receive(text);}
   }
+  // One request. Its own AbortController carries the HTTP request, so a timeout, a stop from outside and closing the
+  // connector all end it the same way: the request on the wire is aborted, the server is told it was cancelled (unless
+  // the connector is closing) and the caller gets the reason.
   request(method,params,signal){
     if(signal?.aborted)return Promise.reject(signal.reason||new Error('Stopped.'));
-    const id=this.next++;
+    const id=this.next++,ctrl=new AbortController();
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`The connector did not answer ${method} within ${Math.round(this.timeout/1000)} seconds.`));},this.timeout);
-      this.pending.set(id,{resolve,reject,timer});
-      const onAbort=()=>{
-        if(!this.pending.delete(id))return;
-        clearTimeout(timer);
-        if(this.config.transport!=='http'&&this.child&&!this.closed){try{this.child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/cancelled',params:{requestId:id,reason:'Cancelled'}})+'\n');}catch{}}
-        reject(signal.reason||new Error('Stopped.'));
-      };
-      if(signal?.aborted){onAbort();return;}
+      const onAbort=()=>end(signal.reason||new Error('Stopped.'));
+      const settle=()=>{const p=this.pending.get(id);if(!p)return false;this.pending.delete(id);clearTimeout(p.timer);signal?.removeEventListener('abort',onAbort);return true;};
+      const end=(e,tell=true)=>{if(!settle())return;if(tell&&!this.closed)this.cancelled(id);ctrl.abort(e);reject(e);};
+      const timer=setTimeout(()=>end(new Error(`The connector did not answer ${method} within ${Math.round(this.timeout/1000)} seconds.`)),this.timeout);
+      this.pending.set(id,{timer,end,resolve:v=>{if(settle())resolve(v);},reject:e=>{if(settle())reject(e);}});
       signal?.addEventListener('abort',onAbort,{once:true});
       Promise.resolve().then(()=>{
-        if(signal?.aborted||!this.pending.has(id))return;
-        return this.write({jsonrpc:'2.0',id,method,...(params&&{params})},signal);
-      }).catch(e=>{if(this.pending.delete(id)){clearTimeout(timer);reject(e);}});
+        if(ctrl.signal.aborted||!this.pending.has(id))return;
+        return this.write({jsonrpc:'2.0',id,method,...(params&&{params})},ctrl.signal);
+      }).catch(e=>end(e,false));
     });
+  }
+  // Tells the server a request was given up, so it can stop working on it. Best effort: it may be gone.
+  cancelled(id){
+    const msg={jsonrpc:'2.0',method:'notifications/cancelled',params:{requestId:id,reason:'Cancelled'}};
+    if(this.config.transport==='http'){this.post(msg,AbortSignal.timeout(5000)).catch(()=>{});return;}
+    if(this.child&&!this.closed){try{this.child.stdin.write(JSON.stringify(msg)+'\n');}catch{}}
   }
   async initialize(){
     const r=await this.request('initialize',{protocolVersion:PROTOCOL_VERSION,capabilities:{},clientInfo:CLIENT});
@@ -112,7 +118,7 @@ export class McpClient{
   close(){
     this.closed=true;this.failAll(new Error('The connector was closed.'));
     if(this.child&&this.child.exitCode===null){try{this.child.stdin.end();}catch{}const c=this.child;setTimeout(()=>{if(c.exitCode===null)c.kill();},500).unref?.();}
-    if(this.config.transport==='http'&&this.session){fetch(this.config.url,{method:'DELETE',headers:{'Mcp-Session-Id':this.session,...(this.config.headers||{})}}).catch(()=>{});}
+    if(this.config.transport==='http'&&this.session){fetch(this.config.url,{method:'DELETE',headers:{'Mcp-Session-Id':this.session,...(this.config.headers||{})},signal:AbortSignal.timeout(5000)}).catch(()=>{});}
   }
 }
 

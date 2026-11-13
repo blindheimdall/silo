@@ -73,7 +73,9 @@ for line in IN:
 const SAFE_ENV = ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT', 'LANG', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA'];
 export class Kernel {
   // mode: 'docker' or 'local'. work: the workspace it starts from (copied, never changed).
-  constructor({ key, work, mode }) { this.key = key; this.work = work; this.mode = mode; this.used = Date.now(); this.count = 0; this.queue = Promise.resolve(); this.dead = false; }
+  constructor({ key, work, mode }) { this.key = key; this.work = work; this.mode = mode; this.used = Date.now(); this.count = 0; this.queue = Promise.resolve(); this.dead = false; this.pending = 0; }
+  // Busy while a cell runs or waits for its turn: such a kernel is never stopped to make room.
+  get busy() { return this.pending > 0; }
   async start() {
     this.temp = await fs.mkdtemp(path.join(os.tmpdir(), 'silo-kernel-'));this.dir = path.join(this.temp, 'work');
     await copyTree(this.work, this.dir, { files: 0, bytes: 0 });
@@ -113,6 +115,7 @@ export class Kernel {
   }
   // Runs one cell. Cells of one kernel run one after the other.
   exec(code, { timeout = 120000, signal } = {}) {
+    this.pending++;
     const job = this.queue.then(async () => {
       if (this.dead) throw new Error('The kernel is not running.');
       if (signal?.aborted) throw signal.reason || new Error('Stopped.');
@@ -133,7 +136,7 @@ export class Kernel {
         return { ...r, count: id, changed };
       } catch (e) { if (signal?.aborted) throw signal.reason || new Error('Stopped.'); throw e; }
       finally { signal?.removeEventListener('abort', onAbort); this.used = Date.now(); }
-    });
+    }).finally(() => { this.pending--; this.used = Date.now(); this.onIdle?.(); });
     this.queue = job.catch(() => {});
     return job;
   }
@@ -144,26 +147,40 @@ export class Kernel {
   }
 }
 
-// Keeps the kernels: at most `max` at once, each stopped after `idle` ms without a cell.
+// Keeps the kernels: at most `max` at once, each stopped after `idle` ms without a cell. To make room for a new one
+// only an idle kernel is stopped, the one unused the longest; when all are busy the new one waits up to `wait` ms.
 export class Kernels {
-  constructor({ work, max = 4, idle = 15 * 60_000 }) { this.work = work; this.max = max; this.idle = idle; this.list = new Map(); this.timer = setInterval(() => this.sweep(), 60_000); this.timer.unref?.(); }
+  constructor({ work, max = 4, idle = 15 * 60_000, wait = 120_000, make = o => new Kernel(o) }) { this.make = make; this.work = work; this.max = max; this.idle = idle; this.wait = wait; this.list = new Map(); this.waiters = new Set(); this.timer = setInterval(() => this.sweep(), 60_000); this.timer.unref?.(); }
+  // Resolves when a kernel finishes a cell or stops, or after ms.
+  freed(ms) { return new Promise(resolve => { const done = () => { clearTimeout(t); this.waiters.delete(done); resolve(); }; const t = setTimeout(done, ms); this.waiters.add(done); }); }
+  wake() { for (const w of [...this.waiters]) w(); }
   async get(key, sandbox) {
     const k = this.list.get(key);
     if (k && !k.dead) return { kernel: k, fresh: false };
     if (k) this.list.delete(key);
     const mode = sandbox === 'docker' || (sandbox === 'auto' && await dockerAvailable()) ? 'docker' : 'local';
     if (sandbox === 'docker' && !await dockerAvailable()) throw new Error('The sandbox is set to Docker, but Docker is not running.');
-    while (this.list.size >= this.max) { const [oldKey, old] = [...this.list.entries()].sort((a, b) => a[1].used - b[1].used)[0]; old.stop(); this.list.delete(oldKey); }
-    const kernel = new Kernel({ key, work: this.work, mode });
+    const until = Date.now() + this.wait;
+    while (this.list.size >= this.max) {
+      for (const [k, x] of this.list) if (x.dead) this.list.delete(k);
+      if (this.list.size < this.max) break;
+      const idle = [...this.list.entries()].filter(([, x]) => !x.busy && !x.starting).sort((a, b) => a[1].used - b[1].used)[0];
+      if (idle) { idle[1].stop(); this.list.delete(idle[0]); break; }
+      if (Date.now() >= until) throw new Error(`All ${this.max} notebook kernels are busy running cells. Try again when one is done.`);
+      await this.freed(Math.min(1000, until - Date.now()));
+      const again = this.list.get(key); if (again && !again.dead) return { kernel: again, fresh: false };
+    }
+    const kernel = this.make({ key, work: this.work, mode });
+    kernel.onIdle = () => this.wake(); kernel.starting = true;
     this.list.set(key, kernel);
-    try { await kernel.start(); } catch (e) { kernel.stop(); this.list.delete(key); throw e; }
+    try { await kernel.start(); } catch (e) { kernel.stop(); this.list.delete(key); this.wake(); throw e; } finally { kernel.starting = false; }
     return { kernel, fresh: true };
   }
-  stop(key) { const k = this.list.get(key); if (!k) return false; k.stop(); this.list.delete(key); return true; }
+  stop(key) { const k = this.list.get(key); if (!k) return false; k.stop(); this.list.delete(key); this.wake(); return true; }
   stopWhere(test) { for (const key of [...this.list.keys()]) if (test(key)) this.stop(key); }
   running(key) { const k = this.list.get(key); return !!k && !k.dead; }
-  sweep() { const now = Date.now(); for (const [key, k] of this.list) if (k.dead || now - k.used > this.idle) { k.stop(); this.list.delete(key); } }
-  close() { clearInterval(this.timer); for (const k of this.list.values()) k.stop(); this.list.clear(); }
+  sweep() { const now = Date.now(); for (const [key, k] of this.list) if (k.dead || (!k.busy && !k.starting && now - k.used > this.idle)) { k.stop(); this.list.delete(key); this.wake(); } }
+  close() { clearInterval(this.timer); for (const k of this.list.values()) k.stop(); this.list.clear(); this.wake(); }
 }
 
 // --- The .ipynb file (nbformat 4.5) ---
