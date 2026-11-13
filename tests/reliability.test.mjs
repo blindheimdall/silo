@@ -37,10 +37,23 @@ test('a trigger that finds more than it hands on keeps the rest for the next che
     let s=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},null);
     for(let i=0;i<30;i++)rows.push(['Row '+i,String(i)]);
     s=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},s.seen);
-    assert.equal(s.items.length,20);assert.equal(s.items[0].id,'row3');assert.equal(s.items.at(-1).id,'row22');
+    assert.equal(s.items.length,20);assert.match(s.items[0].id,/^row3:/);assert.match(s.items.at(-1).id,/^row22:/);
     s=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},s.seen);
-    assert.deepEqual([s.items.length,s.items[0].id,s.items.at(-1).id],[10,'row23','row32']);
+    assert.deepEqual([s.items.length,s.items[0].id.split(':')[0],s.items.at(-1).id.split(':')[0]],[10,'row23','row32']);
     s=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},s.seen);assert.equal(s.items.length,0);
+    // A row deleted and a new one added at the end: it takes the old number, but not the old id.
+    const before=(await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},{rows:rows.length-1})).items[0].id;
+    rows.splice(3,1);rows.push(['Brand new','99']);
+    const after=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345'},{rows:rows.length-1});
+    assert.equal(after.items[0].id.split(':')[0],before.split(':')[0]);assert.notEqual(after.items[0].id,before,'a new row is not taken for the deleted one');
+    // With an id column, a row is known by its id wherever it is.
+    rows.length=0;rows.push(['Order id','Client'],['A1','Ana'],['A2','Bob']);
+    let k=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345',idColumn:'order ID'},null);assert.equal(k.items.length,0);
+    rows.splice(1,1);rows.splice(1,0,['A3','Cid']);rows.push(['','not ready']);
+    k=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345',idColumn:'order ID'},k.seen);
+    assert.deepEqual(k.items.map(i=>i.id),['key:A3'],'inserted anywhere, a deleted one and an empty id do not count');
+    rows[3][0]='A4';k=await sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345',idColumn:'order ID'},k.seen);assert.deepEqual(k.items.map(i=>i.id),['key:A4']);
+    await assert.rejects(sheet.check(ctx,{sheet:'1AbCdEfGhIjKlMnOpQrStUvWxYz012345',idColumn:'Nope'},k.seen),/no column called "Nope"/);
 
     const posts=['p0'],feedCtx={fetch:async()=>new Response('<rss><channel>'+[...posts].reverse().map(id=>`<item><title>${id}</title><guid>${id}</guid><description>${id.startsWith('x')?'other':'release'} ${id}</description></item>`).join('')+'</channel></rss>')};
     const feed=TRIGGERS['web.feed'],cfg={url:'https://feed.example/rss',contains:'release'};

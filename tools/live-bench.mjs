@@ -2,7 +2,10 @@
 // several pages open at once. It starts its own SILO on a free port with a temporary folder (your data is never used),
 // fills it with long runs, then opens the pages through a proxy that slows every connection down.
 //
-//   node tools/live-bench.mjs [--runs 150] [--pages 4] [--kbps 512] [--latency 150]
+//   node tools/live-bench.mjs [--runs 150] [--active 10] [--pages 4] [--kbps 512] [--latency 150]
+//
+// active: runs not finished (they come back as interrupted after the start), with their plan, snapshot, journal and
+// checkpoints, as a long job that stopped half way has them.
 //
 // Printed per page: the bytes of the whole state as sent (compressed) and as read, and the time until the page has it.
 import http from 'node:http';
@@ -17,7 +20,7 @@ import {StateStore} from '../storage.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const arg=(k,d)=>{const i=process.argv.indexOf('--'+k);return i>0?Number(process.argv[i+1]):d;};
-const RUNS=arg('runs',150),PAGES=arg('pages',4),KBPS=arg('kbps',512),LATENCY=arg('latency',150);
+const RUNS=arg('runs',150),ACTIVE=arg('active',10),PAGES=arg('pages',4),KBPS=arg('kbps',512),LATENCY=arg('latency',150);
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const freePort=()=>new Promise(r=>{const s=net.createServer().listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
 
@@ -39,6 +42,12 @@ function fill(dir){
     const steps=Array.from({length:6},(_,k)=>({index:k,type:'agent',agentName:'Resident '+k,output:text(4000),tokens:900,time:Date.now()}));
     const toolCache=Object.fromEntries(Array.from({length:6},(_,k)=>[`${k}:0:0:0:read_file:x${k}`,{ok:true,summary:'read',text:text(3000),seq:k+1}]));
     s.runs.unshift({id:'bench'+i,workflowId:'w',name:'Bench '+i,input:text(600),trigger:'manual',status:'completed',started:Date.now()-i*60000,finished:Date.now()-i*60000+30000,total:6,steps,output:text(2000),tokens:5400,...(i%2&&{jobId:'job'+i,toolCache})});
+  }
+  for(let i=0;i<ACTIVE;i++){
+    const plan=Array.from({length:8},(_,k)=>({type:'agent',agentId:'a'+k,prompt:text(800)}));
+    const toolCache=Object.fromEntries(Array.from({length:30},(_,k)=>[`${k%8}:0:0:${k}:read_file:y${k}`,{ok:true,summary:'read',text:text(3000),seq:k+1}]));
+    const steps=Array.from({length:4},(_,k)=>({index:k,type:'agent',agentId:'a'+k,agentName:'Resident '+k,output:text(4000),tokens:900,time:Date.now()}));
+    s.runs.unshift({id:'active'+i,workflowId:'w'+i,name:'Long job '+i,input:text(600),trigger:'manual',status:'running',started:Date.now()-600000,total:8,at:4,steps,plan,snapshot:{version:1,steps:plan.map(p=>({...p,agent:{instructions:text(1500)}}))},outputs:steps.map(x=>x.output),toolCache,checkpoints:steps.map((x,k)=>({id:'cp'+k,stepIndex:k,nextAt:k+1,outputs:steps.slice(0,k+1).map(y=>y.output),toolSeq:k*7})),tokens:3600});
   }
   for(let i=0;i<300;i++)s.events.unshift({id:'e'+i,time:Date.now()-i*1000,title:'Event '+i,detail:text(120),type:'system'});
   return st.save(s).then(()=>st.close());
@@ -83,7 +92,7 @@ try{
   const ses=await fetch(`http://127.0.0.1:${port}/api/session`),{token}=await ses.json(),cookie=ses.headers.get('set-cookie').split(';')[0];
   const state=await (await fetch(`http://127.0.0.1:${port}/api/state`,{headers:{cookie,'x-silo-token':token}})).text();
   proxy=await slowProxy(port);
-  console.log(`State: ${(state.length/1024).toFixed(0)} KB as JSON (${RUNS} runs). ${PAGES} pages at ${KBPS} KB/s, ${LATENCY} ms.`);
+  console.log(`State: ${(state.length/1024).toFixed(0)} KB as JSON (${RUNS} finished runs, ${ACTIVE} not finished). ${PAGES} pages at ${KBPS} KB/s, ${LATENCY} ms.`);
   const direct=await page(port,cookie,token);
   console.log(`Direct: ${direct.ms} ms, ${(direct.wire/1024).toFixed(0)} KB sent, ${(direct.size/1024).toFixed(0)} KB read`);
   const all=await Promise.all(Array.from({length:PAGES},()=>page(proxy.address().port,cookie,token,port)));

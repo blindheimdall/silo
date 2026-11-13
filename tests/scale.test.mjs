@@ -13,7 +13,7 @@ import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {StateStore} from '../storage.mjs';
 import {liveChannel} from '../live-stream.mjs';
-import {enqueueTrigger,queueInfo,countLost,QUEUE_MAX} from '../trigger-queue.mjs';
+import {enqueueTrigger,queueInfo,countLost,keepLost,QUEUE_MAX,LOST_MAX} from '../trigger-queue.mjs';
 import {frameStats,spread} from '../public/profile-3d.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -97,10 +97,14 @@ test('events that wait for a workflow are counted, and none is lost without a tr
   let q=queueInfo(w,'The sector has no power.');
   assert.deepEqual([q.waiting,q.oldest,q.why,q.dropped,q.lastLost.kind],[QUEUE_MAX,1001,'The sector has no power.',1,'dropped']);
   assert.match(q.lastLost.detail,/file change from 1970/);
+  assert.deepEqual(w.lostEvents.map(l=>[l.trigger,l.input,l.time,l.reason]),[['file','f0',1000,'dropped']],'the dropped one is kept to start again');
   const c={missedPolicy:'coalesce'};enqueueTrigger(c,'schedule','same');enqueueTrigger(c,'schedule','same');
   assert.deepEqual([queueInfo(c).waiting,queueInfo(c).merged],[1,1],'the same event twice waits once, and that is counted');
   const s={missedPolicy:'skip'};assert.equal(enqueueTrigger(s,'email','x').queued,false);assert.equal(queueInfo(s).skipped,1);
   countLost(c,'gaveUp','The resident was removed.');assert.equal(queueInfo(c).gaveUp,1);
+  for(let i=0;i<LOST_MAX+5;i++)keepLost(c,{trigger:'webhook',input:'e'+i,time:i},'gaveUp','Busy',{id:()=>'id'+i});
+  assert.equal(c.lostEvents.length,LOST_MAX,'only the last ones are kept');assert.deepEqual([c.lostEvents[0].id,c.lostEvents.at(-1).input,c.lostEvents[0].detail],['id5','e'+(LOST_MAX+4),'Busy']);
+  assert.equal(c.lostEvents.filter(l=>l.reason==='merged').length,0,'merged events are only counted');
   assert.equal(queueInfo({}).why,'','nothing waits, so there is no reason');
 });
 
@@ -116,6 +120,14 @@ test('the 3D profiler reports typical and slow frames',()=>{
   assert.equal(code.bound,'code','a slow simulation is the code');
   const behind=frameStats({gap:[50,51,50],tick:[1,1,1,1],draw:[2,2,2,2],feeds:[1,1,1,1],throttle:50,ratio:1,size:[800,500]},200);
   assert.equal(behind.bound,'none','20 frames a second behind a terminal is on purpose');
+  // The limiter's pause is not the card's: 20 frames a second on purpose with 5 ms of work waits for nothing.
+  const limited=frameStats({gap:[50,50,50],tick:[1,1,1,1],draw:[3,3,3,3],feeds:[1,1,1,1],throttle:50,ratio:1,size:[800,500]},150);
+  assert.deepEqual([limited.targetFps,limited.cpu.p50,limited.waitGpu.p50,limited.gpu,limited.late],[20,5,0,null,0]);
+  const slower=frameStats({gap:[120,120,120],tick:[1,1,1,1],draw:[3,3,3,3],feeds:[1,1,1,1],throttle:50,ratio:1,size:[800,500]},360);
+  assert.deepEqual([slower.waitGpu.p50,slower.bound],[70,'graphics card'],'only what goes beyond the target counts');
+  // Measured by the card itself, when the browser allows it, its own time decides.
+  const measured=frameStats({gap:[90,90,90],tick:[60,60,60,60],draw:[2,2,2,2],feeds:[0,0,0,0],gpu:[8,8,8],ratio:1,size:[800,500]},270);
+  assert.deepEqual([measured.gpu.p50,measured.bound],[8,'code']);
   assert.deepEqual(spread([]),{p50:0,p95:0,p99:0,max:0});
   assert.equal(spread(Array.from({length:100},(_,i)=>i+1)).p99,99);
 });
@@ -225,4 +237,27 @@ test('checkpoints point into the run journal instead of copying it, and the serv
   assert.ok(perf.storage.saves>0&&perf.storage.rows>0&&perf.storage.lastMs>=0,'saves are measured');
   assert.ok(perf.loop.p99>=0&&perf.loop.max>=perf.loop.p50,'so is how late the server answers');
   assert.equal(typeof perf.live.streams,'number');
+});
+
+test('a camera picture that comes back late never paints over a newer one or another camera',async()=>{
+  const {FeedWall}=await import('../public/surveillance.js');
+  // A canvas that takes any drawing call and counts them.
+  const canvas=()=>{const c={calls:0,canvas:{isConnected:true}};const any=new Proxy(function(){},{get:(f,k)=>k==='data'?new Uint8ClampedArray(160*120*4):any,apply:()=>any});
+    return new Proxy(c,{get:(o,k)=>k in o?o[k]:(...a)=>{o.calls++;return any;},set:(o,k,v)=>{o[k]=v;return true;}});};
+  const reads=[],world={captureFeed:()=>new Promise(r=>reads.push(r)),feedProject:()=>null,lensGrime:0};
+  const cams=[{kind:'gallery',num:1,level:1},{kind:'gallery',num:2,level:2}];
+  const wall=new FeedWall(world,cams,[]),main=canvas();wall.mainCtx=main;wall.thumbs=[];
+  const pixels=new Uint8ClampedArray(160*120*4),settle=()=>new Promise(r=>setTimeout(r,0));
+
+  wall.paint(cams[0],main,[160,120],1,true);
+  wall.main=1;reads[0](pixels);await settle();
+  assert.equal(main.calls,0,'the big monitor switched camera: the old picture is dropped');
+  assert.equal(wall.pending,null);
+
+  wall.paint(cams[1],main,[160,120],2,true);wall.paint(cams[1],main,[160,120],3.5,true);
+  const newer=wall.pending;
+  reads[1](pixels);await settle();
+  assert.equal(main.calls,0,'the older capture is dropped');assert.equal(wall.pending,newer,'and does not free the place of the newer one');
+  reads[2](pixels);await settle();
+  assert.ok(main.calls>0,'the newest capture is painted');assert.equal(wall.pending,null);
 });

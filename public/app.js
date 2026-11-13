@@ -609,7 +609,10 @@ function queueLine(w){
   if(q.waiting)parts.push(`<strong>${q.waiting} event${q.waiting===1?'':'s'} waiting</strong>${q.waiting>=q.max?' (the queue is full: a new one pushes out the oldest)':''}${q.oldest?', the oldest since '+esc(age(q.oldest)):''}. ${esc(q.why||'They start at the next check.')}`);
   if(lost)parts.push(`<span class="tag-warn">${lost} lost</span>: ${q.dropped?q.dropped+' dropped because the queue was full':''}${q.dropped&&q.gaveUp?', ':''}${q.gaveUp?q.gaveUp+' given up after 5 failed starts':''}${q.lastLost?', the last '+esc(age(q.lastLost.time)):''}.`);
   if(q.skipped)parts.push(`${q.skipped} skipped while busy, as set in its triggers.`);
-  return parts.length?`<div class="queue-line">${icon('clock')} ${parts.join(' ')}</div>`:'';
+  // The lost events themselves, with what they carried, so each can be started again or let go.
+  const kept=(w.lost||[]).slice().reverse();
+  const list=kept.length?`<details class="lost-list"><summary>${kept.length} lost event${kept.length===1?'':'s'} kept, to start again</summary>${kept.map(l=>`<div class="lost-row"><div><strong>${esc(TRIGGER_NAME[l.trigger]||l.trigger)}</strong> from ${esc(age(l.time))}, ${l.reason==='gaveUp'?'given up after 5 failed starts':'dropped'}${l.detail?': '+esc(l.detail):''}<p class="small">${esc(l.preview)}</p></div><button class="btn small" data-action="lost-run" data-id="${w.id}" data-lost="${l.id}">Run it now</button><button class="btn small" data-action="lost-dismiss" data-id="${w.id}" data-lost="${l.id}">Let go</button></div>`).join('')}</details>`:'';
+  return parts.length||list?`<div class="queue-line">${icon('clock')} ${parts.join(' ')}${list}</div>`:'';
 }
 function triggerBadges(w){const t=[];if(w.enabled)t.push(w.mode==='daily'?`DAILY ${w.at} / ${dayList(w.days)}`:`EVERY ${w.interval} MIN`);if(w.hook)t.push('WEBHOOK');if(w.watch)t.push(`WATCHING ${w.watch.toUpperCase()}/`);if(w.mail)t.push(w.mailError?'EMAIL: CHECK FAILED':'EMAIL');if(w.app){const at=(state.appTriggers||[]).find(x=>x.kind===w.app.kind);t.push(w.appError?'APP: CHECK FAILED':(at?.label||'APP').toUpperCase());}if(w.budget)t.push(`MAX ${w.budget} TOKENS`);return t.length?t:['ON DEMAND'];}
 const whenText=w=>`IF ${w.step?'STEP '+pad2(w.step):'PREVIOUS'} ${w.op==='missing'?'LACKS':'SAYS'} "${w.text}"`;
@@ -630,7 +633,7 @@ function flowNodes(steps){
   while(i<steps.length){let h=i;while((steps[i].type||'agent')==='agent'&&h+1<steps.length&&steps[h+1].parallel)h++;const nodes=[];for(let k=i;k<=h;k++)nodes.push(flowNode(steps[k],k));out.push((i?'<span class="flow-arrow">⟶</span>':'')+(h>i?`<div class="flow-group"><span class="flow-group-label">SAME TIME</span>${nodes.join('')}</div>`:nodes[0]));i=h+1;}
   return out.join('');
 }
-const TRIGGER_NAME={schedule:'scheduled',webhook:'webhook',file:'file',replay:'replay',test:'test',email:'email',phone:'phone'};
+const TRIGGER_NAME={schedule:'scheduled',webhook:'webhook',file:'file',replay:'replay',test:'test',email:'email',phone:'phone',app:'app event'};
 const runLabel=r=>r.status==='check'?'check needed':r.waiting?'waiting for you':r.status==='running'&&r.current?.type==='wait'&&r.current.until?'waits until '+whenAt(r.current.until):r.status;
 function runHistory(){return state.runs.length?`<div class="section-card">${state.runs.slice(0,15).map(r=>`<div class="activity-row${r.waiting||r.status==='check'?' waiting':''}"><span class="event-icon">${icon(r.waiting||r.status==='check'||r.current?.type==='wait'?'clock':r.status==='completed'?'check':r.status==='running'?'activity':'close')}</span><div><strong>${esc(r.name)}</strong><p>${esc(runLabel(r))} ${checkTag(r)} · ${r.total||r.steps.length} steps${TRIGGER_NAME[r.trigger]?' · '+TRIGGER_NAME[r.trigger]:''}${r.error?' · '+esc(r.error):''}</p></div><time>${age(r.started)}</time><button class="btn small" data-action="trail-run" data-id="${r.id}" title="Show this run as a trail in the silo">Trail</button><button class="btn small" data-action="view-run" data-id="${r.id}">Open</button></div>`).join('')}</div>`:'<div class="section-card empty">No runs yet.</div>';}
 const providerInfo={openai:['OpenAI','◎','Uses the OpenAI Responses API.','OpenAI model ID'],anthropic:['Anthropic','✳','Uses the Anthropic Messages API.','Claude model ID'],ollama:['Ollama','◉','Local models through Ollama at 127.0.0.1:11434.','Installed Ollama model name'],compatible:['Custom provider','⌘','Any HTTPS endpoint that speaks the OpenAI chat completions format.','Provider model ID']};
@@ -1273,15 +1276,18 @@ function runDetail(r){
 // A finished run comes in the state without the output of its steps (see pageRun on the server). When it is shown, the
 // whole run is fetched once and kept until it changes; meanwhile the summary is shown.
 const wholeRuns=new Map();
-const runSign=r=>`${r.status}:${r.finished||''}:${r.steps?.length||0}:${r.checked?.length||0}:${r.compensated?1:0}:${(r.toolChanges||[]).length}`;
-function cachedRun(r){if(!r?.slim)return r;const had=wholeRuns.get(r.id);return had?.sign===runSign(r)?had.run:null;}
+const runSign=r=>`${r.status}:${r.at??''}:${r.finished||''}:${r.steps?.length||0}:${r.checked?.length||0}:${r.compensated?1:0}:${(r.toolChanges||[]).length}`;
+// What changes while a run goes on (its status, the step, a wait, a check) is always taken from the live state; the
+// fetched run adds what the page does not get: the outputs, the whole plan and brief.
+const withLive=(full,r)=>({...full,...r,steps:full.steps,plan:full.plan,input:full.input,output:full.output,slim:false});
+function cachedRun(r){if(!r?.slim)return r;const had=wholeRuns.get(r.id);return had?.sign===runSign(r)?withLive(had.run,r):null;}
 async function wholeRun(r){
   if(!r?.slim)return r;const hit=cachedRun(r);if(hit)return hit;
   const run=await api('/runs/'+r.id);wholeRuns.set(r.id,{sign:runSign(r),run});
   if(wholeRuns.size>20)wholeRuns.delete(wholeRuns.keys().next().value);
-  return run;
+  return withLive(run,r);
 }
-function fillTrace(r){wholeRun(r).then(full=>{if(full!==r&&openRunId===r.id&&modalKind==='trace')updateTrace(full);}).catch(e=>toast(e.message,true));}
+function fillTrace(r){wholeRun(r).then(()=>{if(openRunId===r.id&&modalKind==='trace')updateTrace(state.runs.find(x=>x.id===r.id)||r);}).catch(e=>toast(e.message,true));}
 function updateTrace(r){
   const box=$('#run-detail');if(!box)return;
   if(r?.slim){const full=cachedRun(r);if(!full){fillTrace(r);return;}r=full;}const note=$('#approval-note'),value=note?.value,focused=document.activeElement===note,top=modal.scrollTop;
@@ -1581,6 +1587,8 @@ const actions={
   'verify-goal':async el=>{el.disabled=true;try{const r=await post('/goals/'+el.dataset.id+'/verify',{});await refresh();if(view==='workflows')render();toast(r.verification.passed?`Verified: ${r.verification.passedCount}/${r.verification.totalCount} criteria passed.`:`Verification: ${r.verification.passedCount}/${r.verification.totalCount} passed.`);}catch(e){toast(e.message,true);}finally{el.disabled=false;}},
   'compensate-run':async el=>{el.disabled=true;try{const r=await post('/runs/'+el.dataset.id+'/compensate',{});await refresh();const run=state.runs.find(x=>x.id===el.dataset.id);if(run&&modalKind==='trace')updateTrace(run);toast(`Compensated ${r.compensated} external action(s).`);}catch(e){toast(e.message,true);el.disabled=false;}},
   'new-workflow':()=>openWorkflowEditor(),'edit-workflow':el=>openWorkflowEditor(state.workflows.find(w=>w.id===el.dataset.id)),'delete-workflow':el=>confirmRemoval('workflow',state.workflows.find(w=>w.id===el.dataset.id)),'run-workflow':el=>runWorkflow(state.workflows.find(w=>w.id===el.dataset.id)),'more-agents':()=>{agentLimit+=PAGE;$('#agent-grid').innerHTML=agentGrid();},
+  'lost-run':async el=>{el.disabled=true;try{await post(`/workflows/${el.dataset.id}/lost/${el.dataset.lost}/run`,{});await refresh();render();toast('Started again.');}catch(e){toast(e.message,true);el.disabled=false;}},
+  'lost-dismiss':async el=>{el.disabled=true;try{await post(`/workflows/${el.dataset.id}/lost/${el.dataset.lost}/dismiss`,{});await refresh();render();}catch(e){toast(e.message,true);el.disabled=false;}},
   'cam-select':el=>{mainCam=Number(el.dataset.cam);if(feedWall){feedWall.main=mainCam;feedWall.lastMain=-1;}syncSecurity();},
   'cam-pan':el=>{steer(cam(),{pan:.12*Number(el.dataset.d)});},'cam-tilt':el=>{steer(cam(),{tilt:.08*Number(el.dataset.d)});},'cam-zoom':el=>{steer(cam(),{zoom:Math.pow(1.25,Number(el.dataset.d))});syncZoom();},
   'cam-level':el=>moveCamLevel(Number(el.dataset.d)),'cam-reset':()=>{const c=cam();Object.assign(c,c.mount);syncSecurity();},

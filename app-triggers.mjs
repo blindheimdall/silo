@@ -28,6 +28,22 @@ const seenAfter=(seen,f,done)=>seen?keepLast([...(seen.ids||[]),...done]):f.ids;
 const slackItem=(m,channel)=>({id:m.ts,title:one(m.text||'(message)',100),text:`Slack message in ${channel}\nFrom: ${m.user||m.bot_id||'someone'}\nTime: ${new Date(Number(m.ts)*1000).toISOString()}\n\n${clip(m.text||'',6000)}`});
 const issueItem=(i,repo)=>({id:'#'+i.number,title:`#${i.number} ${one(i.title,100)}`,text:`Issue #${i.number} in ${repo}: ${i.title}\nBy: ${i.user?.login||''}\nLabels: ${(i.labels||[]).map(l=>l.name).join(', ')||'none'}\n${i.html_url||''}\n\n${clip(i.body||'',8000)}`});
 const pullItem=(i,repo)=>({id:'#'+i.number,title:`#${i.number} ${one(i.title,100)}`,text:`Pull request #${i.number} in ${repo}: ${i.title}\nBy: ${i.user?.login||''}\nFrom ${i.head?.ref||'?'} into ${i.base?.ref||'?'}\n${i.html_url||''}\n\n${clip(i.body||'',8000)}`});
+// GitHub, newest first, page after page (up to 5 of 100) until a number already seen. The first check reads one page.
+async function newest(ctx,url,seen,keep=()=>true){
+  const out=[];
+  for(let page=1;page<=5;page++){
+    const d=await get('github',ctx,`${url}&per_page=${seen?100:20}&page=${page}`),list=Array.isArray(d)?d:[];
+    out.push(...list.filter(keep));
+    if(!seen||list.length<100||list.some(i=>i.number<=seen.top))break;
+  }
+  return out;
+}
+// New numbers, the oldest first, at most 20 a check; the mark moves to the last one handed on.
+function afterTop(list,seen,item){
+  if(!seen)return {seen:{top:list.reduce((m,i)=>Math.max(m,i.number),0)},items:[]};
+  const add=list.filter(i=>i.number>seen.top).sort((a,b)=>a.number-b.number).slice(0,20);
+  return {seen:{top:add.length?add.at(-1).number:seen.top},items:add.map(item)};
+}
 const slackKept=(m,cfg)=>(!m.subtype||m.subtype==='file_share')&&(!cfg.contains||String(m.text||'').toLowerCase().includes(cfg.contains.toLowerCase()));
 
 export const TRIGGERS={
@@ -52,15 +68,26 @@ export const TRIGGERS={
       }
       return {seen:{ids:seenAfter(seen,f,take)},items};
     }},
-  'google.sheet_row':{service:'google',label:'New row in a Google Sheet',fields:[{key:'sheet',label:'Link of the sheet',required:true,placeholder:'https://docs.google.com/spreadsheets/d/...'},{key:'tab',label:'Tab name (optional, the first one if empty)',placeholder:'Orders'}],
+  'google.sheet_row':{service:'google',label:'New row in a Google Sheet',fields:[{key:'sheet',label:'Link of the sheet',required:true,placeholder:'https://docs.google.com/spreadsheets/d/...'},{key:'tab',label:'Tab name (optional, the first one if empty)',placeholder:'Orders'},{key:'idColumn',label:'Column with a unique id (optional, its header)',placeholder:'Order id'}],
     async check(ctx,cfg,seen){
       const id=sheetId(cfg.sheet),range=cfg.tab?`'${String(cfg.tab).replace(/'/g,"''")}'!A1:Z5000`:'A1:Z5000';
       const d=await get('google',ctx,`${B('sheets')}/spreadsheets/${enc(id)}/values/${enc(range)}?majorDimension=ROWS`);
       const rows=d.values||[],head=rows[0]||[],count=rows.length;
+      const item=(r,n,key)=>({id:key?'key:'+key:`row${n}:${createHash('sha256').update(JSON.stringify(r)).digest('base64url').slice(0,12)}`,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')});
+      // With an id column a row is known by its id, wherever it is: rows inserted, moved or deleted anywhere are handled,
+      // and a row whose id cell is still empty waits until it is filled.
+      if(cfg.idColumn){
+        const col=head.findIndex(h=>String(h).trim().toLowerCase()===String(cfg.idColumn).trim().toLowerCase());
+        if(col<0)throw new Error(`The sheet has no column called "${cfg.idColumn}" in its first row.`);
+        const keyed=rows.slice(1).map((r,i)=>({r,n:i+2,key:String(r[col]??'').trim()})).filter(x=>x.key);
+        if(!seen?.keys)return {seen:{keys:keepLast(keyed.map(x=>x.key),5000)},items:[]};
+        const known=new Set(seen.keys),add=keyed.filter(x=>!known.has(x.key)).slice(0,20);
+        return {seen:{keys:keepLast([...seen.keys,...add.map(x=>x.key)],5000)},items:add.map(x=>item(x.r,x.n,x.key))};
+      }
       if(!seen)return {seen:{rows:count},items:[]};
-      // Rows that were deleted move the count back; only rows past the last count are new. At most 20 a check, the first
-      // new ones first, and the count moves on only past the rows handed on.
-      const from=Math.min(seen.rows,count),items=rows.slice(from,from+20).map((r,i)=>{const n=from+i+1;return {id:'row'+n,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')};});
+      // Without one, only rows added at the end are new: deleted rows move the count back, and at most 20 a check go out,
+      // the first ones first. Each id holds the row's content, so a row that takes the number of a deleted one is new.
+      const from=Math.min(seen.rows??count,count),items=rows.slice(from,from+20).map((r,i)=>item(r,from+i+1));
       return {seen:{rows:from+items.length},items};
     }},
   'google.drive_file':{service:'google',label:'New or changed file in Google Drive',fields:[{key:'query',label:'Name contains (optional)',placeholder:'invoice'}],
@@ -105,43 +132,62 @@ export const TRIGGERS={
   'microsoft.event_soon':{service:'microsoft',label:'Outlook Calendar event about to start',fields:[{key:'minutes',label:'Minutes before it starts',placeholder:'15',number:true}],
     async check(ctx,cfg,seen){
       const ahead=Math.max(1,Math.min(1440,Number(cfg.minutes)||15)),now=new Date();
-      const d=await get('microsoft',ctx,`${B('graph')}/me/calendarView?startDateTime=${enc(now.toISOString())}&endDateTime=${enc(new Date(now.getTime()+ahead*60000).toISOString())}&$top=20&$select=id,subject,start,end,location,attendees,bodyPreview`);
-      const evs=d.value||[],f=fresh(evs.map(e=>e.id+'@'+e.start?.dateTime),seen||{ids:[]});
+      // Every page of the window (up to 5 of 50), so a busy calendar does not lose the events after the first page.
+      const evs=[];let next=`${B('graph')}/me/calendarView?startDateTime=${enc(now.toISOString())}&endDateTime=${enc(new Date(now.getTime()+ahead*60000).toISOString())}&$top=50&$select=id,subject,start,end,location,attendees,bodyPreview`;
+      for(let n=0;n<5&&next;n++){const d=await get('microsoft',ctx,next);evs.push(...(d.value||[]));next=d['@odata.nextLink'];if(next&&!String(next).startsWith(B('graph')+'/'))next='';}
+      const f=fresh(evs.map(e=>e.id+'@'+e.start?.dateTime),seen||{ids:[]});
       return {seen:{ids:f.ids},items:evs.filter(e=>f.add.includes(e.id+'@'+e.start?.dateTime)).map(e=>({id:e.id+'@'+e.start?.dateTime,title:one(e.subject||'(no title)',120),text:`Event: ${e.subject||''}\nStarts: ${e.start?.dateTime} (${e.start?.timeZone||'UTC'})\n${e.location?.displayName?'Where: '+e.location.displayName+'\n':''}${(e.attendees||[]).length?'With: '+e.attendees.map(a=>a.emailAddress?.address).join(', ')+'\n':''}\n${e.bodyPreview||''}`}))};
     }},
   'slack.message':{service:'slack',instant:'slack',label:'New message in a Slack channel',fields:[{key:'channel',label:'Channel id',required:true,placeholder:'C0123456789'},{key:'contains',label:'Only messages containing (optional)',placeholder:'urgent'}],
     async check(ctx,cfg,seen){
       if(!/^[CGD][A-Z0-9]{6,}$/.test(String(cfg.channel)))throw new Error('Give the Slack channel id, like C0123456789. The channels action of the Slack tool lists them.');
-      const d=await get('slack',ctx,`${B('slack')}/conversations.history?channel=${enc(cfg.channel)}&limit=30${seen?.ts?'&oldest='+enc(seen.ts):''}`);
-      const msgs=(d.messages||[]).filter(m=>slackKept(m,{})).sort((a,b)=>Number(a.ts)-Number(b.ts));
-      const ts=(d.messages||[]).reduce((m,x)=>Number(x.ts)>Number(m)?x.ts:m,seen?.ts||'0');
-      if(!seen)return {seen:{ts:ts==='0'?String(Date.now()/1000):ts},items:[]};
-      const items=msgs.filter(m=>Number(m.ts)>Number(seen.ts)&&slackKept(m,cfg)).map(m=>slackItem(m,cfg.channel));
+      if(!seen){
+        const d=await get('slack',ctx,`${B('slack')}/conversations.history?channel=${enc(cfg.channel)}&limit=20`);
+        const top=(d.messages||[]).reduce((m,x)=>Number(x.ts)>Number(m)?x.ts:m,'0');
+        return {seen:{ts:top==='0'?String(Date.now()/1000):top},items:[]};
+      }
+      // Everything after the mark, page after page (up to 5 of 200), the oldest first. At most 20 go out a check, and the
+      // mark moves only to the last message looked at, so what did not fit comes at the next check.
+      const all=[];let cursor='';
+      for(let n=0;n<5;n++){
+        const d=await get('slack',ctx,`${B('slack')}/conversations.history?channel=${enc(cfg.channel)}&limit=200&oldest=${enc(seen.ts)}${cursor?'&cursor='+enc(cursor):''}`);
+        all.push(...(d.messages||[]));cursor=d.has_more?d.response_metadata?.next_cursor||'':'';if(!cursor)break;
+      }
+      const items=[];let ts=seen.ts;
+      for(const m of all.filter(m=>Number(m.ts)>Number(seen.ts)).sort((a,b)=>Number(a.ts)-Number(b.ts))){
+        const take=slackKept(m,{})&&slackKept(m,cfg);if(take&&items.length>=20)break;
+        if(take)items.push(slackItem(m,cfg.channel));ts=m.ts;
+      }
       return {seen:{ts},items};
     }},
   'github.issue':{service:'github',instant:'github',label:'New issue on GitHub',fields:[{key:'repo',label:'Repository',required:true,placeholder:'owner/name'},{key:'label',label:'Only with this label (optional)',placeholder:'bug'}],
     async check(ctx,cfg,seen){
       const repo=repoOf(cfg.repo);
-      const d=await get('github',ctx,`${B('github')}/repos/${repo}/issues?state=all&sort=created&direction=desc&per_page=20${cfg.label?'&labels='+enc(cfg.label):''}`);
-      const list=(Array.isArray(d)?d:[]).filter(i=>!i.pull_request),top=list.reduce((m,i)=>Math.max(m,i.number),seen?.top||0);
-      if(!seen)return {seen:{top},items:[]};
-      return {seen:{top},items:list.filter(i=>i.number>seen.top).reverse().map(i=>issueItem(i,repo))};
+      const list=await newest(ctx,`${B('github')}/repos/${repo}/issues?state=all&sort=created&direction=desc${cfg.label?'&labels='+enc(cfg.label):''}`,seen,i=>!i.pull_request);
+      return afterTop(list,seen,i=>issueItem(i,repo));
     }},
   'github.pull':{service:'github',instant:'github',label:'New pull request on GitHub',fields:[{key:'repo',label:'Repository',required:true,placeholder:'owner/name'}],
     async check(ctx,cfg,seen){
       const repo=repoOf(cfg.repo);
-      const d=await get('github',ctx,`${B('github')}/repos/${repo}/pulls?state=all&sort=created&direction=desc&per_page=20`);
-      const list=Array.isArray(d)?d:[],top=list.reduce((m,i)=>Math.max(m,i.number),seen?.top||0);
-      if(!seen)return {seen:{top},items:[]};
-      return {seen:{top},items:list.filter(i=>i.number>seen.top).reverse().map(i=>pullItem(i,repo))};
+      const list=await newest(ctx,`${B('github')}/repos/${repo}/pulls?state=all&sort=created&direction=desc`,seen);
+      return afterTop(list,seen,i=>pullItem(i,repo));
     }},
   'notion.database':{service:'notion',label:'New or changed page in a Notion database',fields:[{key:'database',label:'Link of the database',required:true,placeholder:'https://www.notion.so/...'}],
     async check(ctx,cfg,seen){
-      const id=notionId(cfg.database),since=seen?.since||new Date().toISOString();
-      const d=await post('notion',ctx,`${B('notion')}/databases/${enc(id)}/query`,{page_size:20,sorts:[{timestamp:'last_edited_time',direction:'descending'}],filter:{timestamp:'last_edited_time',last_edited_time:{after:since}}});
-      const pages=(d.results||[]).filter(p=>p.last_edited_time>since).reverse(),last=pages.reduce((m,p)=>p.last_edited_time>m?p.last_edited_time:m,since);
-      if(!seen)return {seen:{since:new Date().toISOString()},items:[]};
-      return {seen:{since:last},items:pages.map(p=>{const props=notionProps(p.properties);return {id:p.id+'@'+p.last_edited_time,title:one(props.title||'(untitled)',120),text:`Notion page ${p.created_time===p.last_edited_time?'added':'changed'}: ${props.title||''}\nEdited: ${p.last_edited_time}\n${p.url||''}\n\n${props.lines.join('\n')}`};})};
+      const id=notionId(cfg.database);
+      if(!seen)return {seen:{since:new Date().toISOString(),at:[]},items:[]};
+      // The oldest edits first, page after page (up to 5 of 100), at most 20 a check. Notion keeps edit times to the
+      // minute, so the mark is on or after the last edit handed on, and the pages already handed on at that time are
+      // remembered (at): none is lost and none comes twice.
+      const since=seen.since,done=new Set(seen.at||[]),pages=[];let cursor;
+      for(let n=0;n<5&&pages.length<20;n++){
+        const d=await post('notion',ctx,`${B('notion')}/databases/${enc(id)}/query`,{page_size:100,sorts:[{timestamp:'last_edited_time',direction:'ascending'}],filter:{timestamp:'last_edited_time',last_edited_time:{on_or_after:since}},...(cursor&&{start_cursor:cursor})});
+        for(const p of d.results||[])if(pages.length<20&&p.last_edited_time>=since&&!done.has(p.id+'@'+p.last_edited_time))pages.push(p);
+        cursor=d.has_more?d.next_cursor:null;if(!cursor)break;
+      }
+      const last=pages.reduce((m,p)=>p.last_edited_time>m?p.last_edited_time:m,since);
+      const at=[...(last===since?seen.at||[]:[]),...pages.filter(p=>p.last_edited_time===last).map(p=>p.id+'@'+p.last_edited_time)].slice(-300);
+      return {seen:{since:last,at},items:pages.map(p=>{const props=notionProps(p.properties);return {id:p.id+'@'+p.last_edited_time,title:one(props.title||'(untitled)',120),text:`Notion page ${p.created_time===p.last_edited_time?'added':'changed'}: ${props.title||''}\nEdited: ${p.last_edited_time}\n${p.url||''}\n\n${props.lines.join('\n')}`};})};
     }},
   // Any of about 40 apps that send signed events (webhook-apps.mjs). Nothing to ask: the app calls SILO.
   'webhook.app':{service:null,instant:'any',label:'An app sends an event (Stripe, Shopify, Jira, Linear, Zoom and more)',fields:[{key:'app',label:'App',required:true,options:HOOK_APP_LIST},{key:'events',label:'Only events containing (optional, comma separated)',placeholder:'checkout.session.completed, invoice.paid'}],

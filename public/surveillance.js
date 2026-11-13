@@ -38,7 +38,12 @@ export function steer(cam,{pan=0,tilt=0,zoom=1}={}){
 // Renders the monitors. One camera per frame at most: the big monitor about 18 times a second,
 // the small ones in turn, so the main view of the silo stays smooth.
 export class FeedWall{
-  constructor(world,cameras,floors){this.world=world;this.cameras=cameras;this.floors=floors;this.main=0;this.next=0;this.lastMain=-1;this.lastThumb=-1;this.pending=0;this.track=null;this.aim=true;this.hook=t=>this.frame(t);}
+  constructor(world,cameras,floors){this.world=world;this.cameras=cameras;this.floors=floors;this._main=0;this.next=0;this.lastMain=-1;this.lastThumb=-1;this.pending=null;this.seq=0;this.latest=new Map();this.track=null;this.aim=true;this.hook=t=>this.frame(t);}
+  // Each capture has a number, and each monitor remembers the newest one meant for it. A capture that comes back late
+  // (after the one-second limit let another start, or after the big monitor switched camera) is dropped, so a monitor
+  // never shows an older picture or another camera, and a late answer never frees the place of a newer capture.
+  get main(){return this._main;}
+  set main(i){if(i!==this._main){this._main=i;if(this.mainCtx)this.latest.set(this.mainCtx,++this.seq);}}
   attach(root){
     this.root=root;const c=root.querySelector('#feed-main');this.mainCanvas=c;this.mainCtx=c.getContext('2d');
     this.thumbs=[...root.querySelectorAll('canvas[data-feed]')].map(canvas=>({canvas,ctx:canvas.getContext('2d'),index:Number(canvas.dataset.feed)}));
@@ -50,7 +55,7 @@ export class FeedWall{
     if(!this.mainCanvas?.isConnected){this.detach();return;}
     if(document.hidden)return;
     // One read in flight at a time. A read that never comes back is dropped after a second.
-    if(this.pending){if(t-this.pending<1)return;this.pending=0;}
+    if(this.pending){if(t-this.pending.t<1)return;this.pending=null;}
     // Whichever is more overdue goes first, so a slow machine still refreshes the small monitors.
     const mainDue=(t-this.lastMain)*18,thumbDue=this.thumbs.length?(t-this.lastThumb)*12:0;
     if(Math.max(mainDue,thumbDue)<1)return;
@@ -61,14 +66,14 @@ export class FeedWall{
     const outside=cam.kind==='outside',read=this.world.captureFeed(cam,w,h,true);
     // Where the followed resident is, measured now, while the camera still points the way it rendered.
     const mark=!small&&this.track?{p:this.world.feedProject(this.track.id),name:this.track.name}:null;
-    this.pending=t||1e-6;
+    const ticket={id:++this.seq,t:t||1e-6};this.pending=ticket;this.latest.set(ctx,ticket.id);
     read.then(pixels=>{
-      this.pending=0;
-      if(!pixels||!ctx.canvas.isConnected)return;
+      if(this.pending===ticket)this.pending=null;
+      if(!pixels||!ctx.canvas.isConnected||this.latest.get(ctx)!==ticket.id)return;
       paintFeed(ctx,pixels,w,h,{palette:'green',exposure:outside?1.15:1.35,noise:small?.1:.07,grime:outside?this.world.lensGrime:0,time:t+cam.num});
       if(mark)this.drawMark(ctx,w,h,mark,cam);
       feedOverlay(ctx,w,h,{label:small?`CAM ${String(cam.num).padStart(2,'0')}`:cameraLabel(cam,this.floors),time:t,small,rec:!small||cam.num%3===1});
-    },()=>{this.pending=0;});
+    },()=>{if(this.pending===ticket)this.pending=null;});
     // Following: the camera turns toward the resident on its own, as far as its mount allows.
     if(!small&&this.track&&this.aim&&cam.kind!=='outside'){
       const g=this.world.feedBearing(cam,this.track.id),l=limits(cam);

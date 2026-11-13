@@ -197,3 +197,175 @@ test('changes outside SILO are not repeated by a 503 or a rewind, money limits n
     assert.match(JSON.stringify(r.steps),/did not allow the changed tool/);
   });
 });
+
+test('a save that fails leaves no run stuck, a resident asked for help keeps the journal, and lost events can start again',async t=>{
+  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'silo-consistency-')),sh=shop();let silo;
+  t.after(async()=>{await silo?.stop();sh.server.closeAllConnections();sh.server.close();await fs.rm(temp,{recursive:true,force:true,maxRetries:5,retryDelay:300});});
+  const base=await listen(sh.server);
+  silo=await boot(14449,temp,{SILO_TEST_FAULTS:'1'});let {request,state}=silo;
+  const shopId=(await request('/mcp',{name:'Shop',transport:'openapi',spec:base+'/spec.json'})).data.id;
+  await request('/connections',{provider:'compatible',key:'fixture-key-consistency',model:'fixture',endpoint:'https://example.com/v1/chat/completions'});
+  const agent=async(name,model,tools=[])=>(await request('/agents',{name,role:'Fixture',floor:2,provider:'compatible',model,instructions:'Fixture.',tools})).data;
+  const CALL=o=>'CALL '+JSON.stringify(o);
+  const settled=async id=>until(async()=>{const r=(await state()).runs.find(x=>x.id===id);return r&&!['running','queued'].includes(r.status)&&r;},30000,'the run');
+  const failNext=async runId=>assert.equal((await request('/test/fail-save',{runId})).status,200);
+
+  await t.test('a resume whose save fails answers 503 and leaves the run as it was',async()=>{
+    const broken=await agent('Broken','failure');
+    const flow=(await request('/workflows',{name:'Resume me',steps:[{agentId:broken.id,prompt:'Hi'}]})).data;
+    const run=await settled((await request('/workflows/'+flow.id+'/run',{input:'go'})).data.id);
+    assert.equal(run.status,'failed');
+    const logged=(await state()).events.length;
+    await failNext(run.id);
+    const r=await request('/runs/'+run.id+'/resume',{});
+    assert.equal(r.status,503,JSON.stringify(r.data));assert.match(r.data.error,/could not be saved/);
+    const st=await state(),after=st.runs.find(x=>x.id===run.id);
+    assert.equal(after.status,'failed','not left running');assert.equal(after.error,run.error);
+    assert.equal(st.events.length,logged,'the resume is not in the log');
+    assert.equal((await request('/runs/'+run.id+'/resume',{})).status,202,'a later resume works');
+    await settled(run.id);
+  });
+
+  await t.test('a queued job whose save fails stays queued and starts at the next try',async()=>{
+    const plain=await agent('Plain','fixture');
+    const flow=(await request('/workflows',{name:'Queued',steps:[{agentId:plain.id,prompt:'Hi'}]})).data;
+    await request('/pause',{paused:true});
+    const job=(await request('/jobs',{workflowId:flow.id,maxAttempts:1})).data;
+    await failNext(job.runId);
+    await request('/pause',{paused:false});
+    await until(async()=>(await state()).events.some(e=>/Job could not start/.test(e.title)),15000,'the failed start');
+    const st=await state();
+    assert.equal(st.jobs.find(j=>j.id===job.id).status,'queued');assert.equal(st.runs.find(r=>r.id===job.runId).status,'queued');
+    await request('/pause',{paused:true});await request('/pause',{paused:false});
+    await until(async()=>(await state()).jobs.find(j=>j.id===job.id)?.status==='completed',30000,'the job');
+  });
+
+  await t.test('an order a delegated resident made is in the run journal and not made again by a rewind',async()=>{
+    const reader=await agent('Reader','tool-user',['read_files']);await request('/file',{name:'notes/b.md',content:'B'});
+    const clerk=await agent('Clerk','tool-user',['mcp:'+shopId]);
+    const boss=await agent('Boss','tool-user',['delegate','mcp:'+shopId]);
+    const ask=CALL({tool:'ask_resident',id:clerk.id,task:CALL({tool:'shop__createOrder',body:{item:'rug'}})});
+    const flow=(await request('/workflows',{name:'Delegated order',steps:[{agentId:reader.id,prompt:CALL({tool:'read_file',name:'notes/b.md'})},{agentId:boss.id,prompt:ask}]})).data;
+    const before=sh.posts.length;
+    const job=(await request('/jobs',{workflowId:flow.id,maxAttempts:1})).data;
+    // The clerk asks before it uses the shop: each time it asks, it is allowed.
+    const finished=()=>until(async()=>{const st=await state();for(const q of st.requests.filter(q=>q.status==='pending'&&q.agentId===clerk.id))await request('/requests/'+q.id,{allow:true});return st.jobs.find(j=>j.id===job.id)?.status==='completed';},60000,'the job');
+    await finished();
+    assert.equal(sh.posts.length,before+1,'the clerk ordered once');
+    const asked=await request('/jobs/'+job.id+'/rewind',{stepIndex:0});
+    assert.equal(asked.status,409,'the rewind names the order the clerk made: '+JSON.stringify(asked.data));
+    assert.deepEqual(asked.data.effects.map(e=>[e.op,e.step]),[['shop__createOrder',1]]);assert.match(asked.data.effects[0].input,/rug/);
+    assert.equal((await request('/jobs/'+job.id+'/rewind',{stepIndex:0,repeat:false})).status,202);
+    await finished();
+    assert.equal(sh.posts.length,before+1,'kept: not ordered again');
+  });
+
+  await t.test('the page view slims runs that are still going too',async()=>{
+    const plain=await agent('Waiter','fixture');
+    const flow=(await request('/workflows',{name:'Waits',steps:[{type:'approval',prompt:'Look first'},{agentId:plain.id,prompt:'Hi'}]})).data;
+    const id=(await request('/workflows/'+flow.id+'/run',{input:'x'.repeat(2000)})).data.id;
+    await until(async()=>(await state()).runs.find(x=>x.id===id)?.waiting,15000,'the approval');
+    const page=(await request('/state?view=page')).data.runs.find(x=>x.id===id);
+    assert.equal(page.status,'running');assert.equal(page.slim,true);
+    assert.equal(page.input.length,300);assert.equal(page.toolCache,undefined);assert.equal(page.checkpoints,undefined);
+    assert.deepEqual(page.plan,[{type:'approval'},{type:'agent',agentId:plain.id}]);
+    await request('/runs/'+id+'/stop',{});
+  });
+
+  await t.test('events that never ran are kept with the reason and start again or go when asked',async()=>{
+    const plain=await agent('Again','fixture');
+    const flow=(await request('/workflows',{name:'Lost ones',steps:[{agentId:plain.id,prompt:'Hi'}]})).data;
+    await silo.stop();
+    const store=new StateStore(path.join(temp,'data')),s=store.load(()=>({}));
+    s.workflows.find(x=>x.id===flow.id).lostEvents=[
+      {id:'l1',trigger:'webhook',input:'Order 7 arrived',time:Date.now()-5000,lostAt:Date.now(),reason:'dropped',detail:'15 events were already waiting'},
+      {id:'l2',trigger:'schedule',input:'Nightly report',time:Date.now()-4000,lostAt:Date.now(),reason:'gaveUp',detail:'Busy'}];
+    await store.save(s);store.close();
+    silo=await boot(14449,temp,{SILO_TEST_FAULTS:'1'});({request,state}=silo);
+    const w=(await state()).workflows.find(x=>x.id===flow.id);
+    assert.equal(w.lostEvents,undefined,'the inputs stay on the server');
+    assert.deepEqual(w.lost.map(l=>[l.id,l.reason,l.preview]),[['l1','dropped','Order 7 arrived'],['l2','gaveUp','Nightly report']]);
+    const r=await request('/workflows/'+flow.id+'/lost/l1/run',{});
+    assert.equal(r.status,202,JSON.stringify(r.data));assert.equal(r.data.input,'Order 7 arrived');assert.equal(r.data.trigger,'webhook');
+    assert.equal((await settled(r.data.id)).status,'completed');
+    assert.equal((await request('/workflows/'+flow.id+'/lost/l2/dismiss',{})).status,200);
+    assert.deepEqual((await state()).workflows.find(x=>x.id===flow.id).lost,[]);
+    assert.equal((await request('/workflows/'+flow.id+'/lost/l2/run',{})).status,404,'a dismissed one is gone');
+  });
+});
+
+
+// A fake Slack, GitHub, Notion and Outlook Calendar that give few results a page, so a burst spans several pages.
+function chatAndTrackers(){
+  const s={slack:[],issues:[],notion:[],events:[]};
+  s.server=http.createServer((req,res)=>{
+    let raw='';req.on('data',c=>{raw+=c;});req.on('end',()=>{
+      const u=new URL(req.url,'http://x'),json=d=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(d));};
+      if(u.pathname==='/slack/conversations.history'){
+        // Slack gives the newest first, at most limit (here never more than 30) a page.
+        const oldest=Number(u.searchParams.get('oldest')||0),at=Number(u.searchParams.get('cursor')||0),size=Math.min(30,Number(u.searchParams.get('limit')));
+        const all=s.slack.filter(m=>Number(m.ts)>oldest).sort((a,b)=>Number(b.ts)-Number(a.ts)),more=at+size<all.length;
+        return json({ok:true,messages:all.slice(at,at+size),has_more:more,...(more&&{response_metadata:{next_cursor:String(at+size)}})});
+      }
+      if(u.pathname==='/github/repos/acme/app/issues'){
+        const per=Number(u.searchParams.get('per_page')),page=Number(u.searchParams.get('page')),all=[...s.issues].sort((a,b)=>b.number-a.number);
+        return json(all.slice((page-1)*per,page*per));
+      }
+      if(u.pathname.startsWith('/notion/databases/')){
+        const b=JSON.parse(raw||'{}'),since=b.filter.last_edited_time.on_or_after,at=Number(b.start_cursor||0),size=Math.min(8,b.page_size);
+        const all=s.notion.filter(p=>p.last_edited_time>=since).sort((x,y)=>x.last_edited_time.localeCompare(y.last_edited_time)),more=at+size<all.length;
+        return json({results:all.slice(at,at+size),has_more:more,next_cursor:more?String(at+size):null});
+      }
+      if(u.pathname==='/graph/me/calendarView'){
+        const at=Number(u.searchParams.get('skip')||0),size=10,next=new URL(req.url,`http://127.0.0.1:${s.server.address().port}`);next.searchParams.set('skip',String(at+size));
+        return json({value:s.events.slice(at,at+size),...(at+size<s.events.length&&{'@odata.nextLink':next.toString()})});
+      }
+      res.writeHead(404);res.end('{}');
+    });
+  });
+  return s;
+}
+
+test('Slack, GitHub, Notion and Outlook Calendar read every page of a burst, and the mark only moves past what was handed on',async t=>{
+  const fake=chatAndTrackers(),base=await listen(fake.server);t.after(()=>{fake.server.closeAllConnections();fake.server.close();});
+  process.env.SILO_TEST_CONNECTOR_BASE=base;
+  const {TRIGGERS}=await import('../app-triggers.mjs');const ctx={token:async()=>'fixture-token'};
+  const drain=async(trigger,cfg,seen,n)=>{const got=[];for(let i=0;i<n;i++){const r=await trigger.check(ctx,cfg,seen);seen=r.seen;got.push(r.items.map(x=>x.id));}return got;};
+
+  await t.test('Slack: 45 messages after the mark come 20, 20 and 5, the oldest first, a join notice left out',async()=>{
+    const slack=TRIGGERS['slack.message'],cfg={channel:'C0123456789'};
+    fake.slack=[{ts:'1000.000100',text:'old'},{ts:'1000.000200',text:'old'}];
+    const seen=(await slack.check(ctx,cfg,null)).seen;assert.equal(seen.ts,'1000.000200');
+    for(let i=0;i<46;i++)fake.slack.push(i===10?{ts:'2000.000010',subtype:'channel_join',text:'joined'}:{ts:`2000.${String(i).padStart(6,'0')}`,text:'m'+i});
+    const got=await drain(slack,cfg,seen,4);
+    assert.deepEqual(got.map(x=>x.length),[20,20,5,0]);
+    assert.deepEqual(got.flat(),Array.from({length:46},(_,i)=>`2000.${String(i).padStart(6,'0')}`).filter(ts=>ts!=='2000.000010'));
+  });
+
+  await t.test('GitHub: 147 new issues come 20 a check, the oldest first, pull requests left out',async()=>{
+    const issues=TRIGGERS['github.issue'],cfg={repo:'acme/app'};
+    fake.issues=[1,2,3].map(number=>({number,title:'Old '+number}));
+    const seen=(await issues.check(ctx,cfg,null)).seen;assert.equal(seen.top,3);
+    for(let n=4;n<=151;n++)fake.issues.push({number:n,title:'Issue '+n,...(n===50&&{pull_request:{}})});
+    const got=await drain(issues,cfg,seen,9);
+    assert.deepEqual(got.flat(),Array.from({length:148},(_,i)=>'#'+(i+4)).filter(x=>x!=='#50'));
+    assert.deepEqual(got.at(-1),[],'nothing comes twice');
+  });
+
+  await t.test('Notion: 30 edits, several in the same minute, come 20 and then 10, each once',async()=>{
+    const notion=TRIGGERS['notion.database'],cfg={database:'0123456789abcdef0123456789abcdef'};
+    const seen=(await notion.check(ctx,cfg,null)).seen,t0=Date.parse(seen.since)+60000;
+    const at=i=>new Date(t0+Math.floor(i/4)*60000).toISOString().replace(/:\d\d\.\d+Z$/,':00.000Z');
+    fake.notion=Array.from({length:30},(_,i)=>({id:'p'+i,created_time:at(i),last_edited_time:at(i),properties:{Name:{type:'title',title:[{plain_text:'Page '+i}]}}}));
+    const got=await drain(notion,cfg,seen,3);
+    assert.deepEqual(got.map(x=>x.length),[20,10,0]);
+    assert.deepEqual(got.flat().map(x=>x.split('@')[0]),Array.from({length:30},(_,i)=>'p'+i));
+  });
+
+  await t.test('Outlook Calendar: 23 events about to start come from three pages',async()=>{
+    const soon=TRIGGERS['microsoft.event_soon'],start=new Date(Date.now()+5*60000).toISOString();
+    fake.events=Array.from({length:23},(_,i)=>({id:'e'+i,subject:'Meeting '+i,start:{dateTime:start,timeZone:'UTC'},end:{dateTime:start}}));
+    const got=await drain(soon,{minutes:15},{ids:[]},2);
+    assert.deepEqual(got.map(x=>x.length),[23,0]);
+  });
+});

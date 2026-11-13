@@ -322,6 +322,7 @@ export class SiloWorld3D{
       if(!this.paused&&!this.reduced){this.clock+=dt;for(const a of this.agents)if(a.status!=='working'&&!this.busy(a.id))this.motion.set(a.id,(this.motion.get(a.id)||0)+dt);}
       const t0=performance.now();this.tick(dt);const t1=performance.now();
       if(this.shadersReady===false){this.last=stamp;return;}
+      const gpuQuery=this.rec&&this.gpuTimerBegin();
       this.draw(stamp/1000);this.lastDraw=stamp;
       const t2=performance.now();
       // Extra cameras only run when visible (Security view or main world cafeteria screen).
@@ -332,6 +333,7 @@ export class SiloWorld3D{
         this.feedErrors=0;
       }catch(error){console.warn('Camera feed skipped.',error);if(++this.feedErrors>=3){this.afterDraw=null;this.wallCtx=null;}}
       const t3=performance.now(),totalMs=t3-t0;
+      if(gpuQuery)this.gpuTimerEnd(gpuQuery);
       this.frameAvgMs=this.frameAvgMs*.9+totalMs*.1;this.tickAvgMs=(this.tickAvgMs??t1-t0)*.9+(t1-t0)*.1;
       if(!this.background)this.adaptSharpness(dt*1000);
       // Less detail when the frames are slow, whether the time goes into the code (frameAvgMs) or into waiting for the
@@ -1772,10 +1774,24 @@ export class SiloWorld3D{
   }
   // Frame times for profiling. record() starts, record(false) stops and returns, for every drawn frame, the time since
   // the frame before (gap) and what each part took (tick, draw, feeds), in ms.
+  // Where the browser allows it (EXT_disjoint_timer_query_webgl2), also what the graphics card itself took for the
+  // drawing and the cameras of each frame (gpu); the answers come a few frames later. Many browsers leave it out.
   record(on=true){
-    if(on){this.rec={gap:[],tick:[],draw:[],feeds:[],low:0,prev:0};return null;}
+    if(on){this.rec={gap:[],tick:[],draw:[],feeds:[],gpu:[],queries:[],low:0,prev:0};return null;}
     const r=this.rec;this.rec=null;
-    return r&&{gap:r.gap,tick:r.tick,draw:r.draw,feeds:r.feeds,lowFrames:r.low,throttle:this.background?50:0,ratio:this.renderer.getPixelRatio(),size:[Math.round(this.width||0),Math.round(this.height||0)]};
+    if(r){this.gpuTimerPoll(r);const gl=this.renderer.getContext();for(const q of r.queries)gl.deleteQuery(q);}
+    return r&&{gap:r.gap,tick:r.tick,draw:r.draw,feeds:r.feeds,gpu:r.gpu,gpuTimer:!!this.gpuTimer(),lowFrames:r.low,throttle:this.background?50:0,ratio:this.renderer.getPixelRatio(),size:[Math.round(this.width||0),Math.round(this.height||0)]};
+  }
+  gpuTimer(){if(this.timerExt===undefined){const gl=this.renderer.getContext();this.timerExt=(gl instanceof WebGL2RenderingContext&&gl.getExtension('EXT_disjoint_timer_query_webgl2'))||null;}return this.timerExt;}
+  gpuTimerBegin(){const ext=this.gpuTimer();if(!ext)return null;const gl=this.renderer.getContext();this.gpuTimerPoll(this.rec);const q=gl.createQuery();gl.beginQuery(ext.TIME_ELAPSED_EXT,q);return q;}
+  gpuTimerEnd(q){const gl=this.renderer.getContext();gl.endQuery(this.timerExt.TIME_ELAPSED_EXT);if(this.rec)this.rec.queries.push(q);else gl.deleteQuery(q);}
+  gpuTimerPoll(rec){
+    const gl=this.renderer.getContext(),ext=this.timerExt;if(!ext||!rec)return;
+    while(rec.queries.length&&gl.getQueryParameter(rec.queries[0],gl.QUERY_RESULT_AVAILABLE)){
+      const q=rec.queries.shift(),ns=gl.getQueryParameter(q,gl.QUERY_RESULT);gl.deleteQuery(q);
+      // A disjoint period (the card was switched or reset) makes the number meaningless: it is left out.
+      if(!gl.getParameter(ext.GPU_DISJOINT_EXT))rec.gpu.push(ns/1e6);
+    }
   }
   // gap: time since the frame before. The best gap seen is the screen's own rhythm (16.7 ms at 60 Hz).
   // A weak graphics card makes frames of several hundred ms while the code takes a few: such frames count (as 250 ms),
