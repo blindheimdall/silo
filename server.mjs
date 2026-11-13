@@ -325,18 +325,21 @@ function patchFrom(snap,fromTag){
 // Rows passed here changed and may be finished (see settledRow), so they are written even if they look settled.
 function persist(...touched){
   stateRev++;
-  // Tests only (SILO_TEST_FAULTS=1): a save that names this run fails, as a full disk or a locked database would.
-  if(failSaveFor&&touched.some(t=>t?.id===failSaveFor)){failSaveFor='';return Promise.reject(new Error('The disk refused the write (test).'));}
+  // Tests only (SILO_TEST_FAULTS=1): a save that names this run or workflow fails a moment later, as a slow full disk
+  // or a locked database would. SILO_TEST_FAIL_SAVE names one from the start.
+  if(failSaveFor&&touched.some(t=>t?.id===failSaveFor)){failSaveFor='';return new Promise((_,no)=>setTimeout(()=>no(new Error('The disk refused the write (test).')),200));}
   return store.save(state,touched);
 }
-let failSaveFor='';
-// Log lines written after mark (the newest come first) are taken out again.
-const dropEventsSince=mark=>{const i=state.events.indexOf(mark);if(i>0)state.events.splice(0,i);};
+let failSaveFor=process.env.SILO_TEST_FAULTS==='1'&&process.env.SILO_TEST_FAIL_SAVE||'';
+// The log lines written after mark (the newest come first), by id. They are taken while nothing else can write, before
+// the save, so a line another run writes while the save waits is never among them.
+const eventsSince=mark=>{const i=mark?state.events.indexOf(mark):state.events.length;return new Set(state.events.slice(0,Math.max(0,i)).map(e=>e.id));};
 // A run is driven only once the change that starts it is saved. If the save fails, undo() puts back what was changed,
 // so a run that never started cannot count as running, hold back its workflow or refuse a resume.
-async function startSaved(run,undo,...more){
-  try{await persist(run,...more);}
-  catch(e){undo();stateRev++;fail(`The run could not be saved, so it did not start: ${e.message}`,503);}
+async function startSaved(run,undo,{since,also=[]}={}){
+  const own=eventsSince(since);
+  try{await persist(run,...also);}
+  catch(e){undo();if(own.size)state.events=state.events.filter(x=>!own.has(x.id));stateRev++;fail(`The run could not be saved, so it did not start: ${e.message}`,503);}
   startDrive(run);
 }
 // The audit log keeps only the title of an event: details can quote what someone wrote to a resident.
@@ -2415,7 +2418,7 @@ defineTool({name:'ask_resident',permission:'delegate',parallel:true,description:
       const r=await answer(helper,[{role:'user',content:`${agent.name} (${agent.role}, level ${agent.level}) asks you:\n\n${task}`}],ctx.signal,{},`Asked by ${agent.name}`,(ctx.depth||0)+1,ctx.chain,{budget:ctx.budget,attenuated:callerCaps,runId:ctx.runId,workflowId:ctx.workflowId,goalId:ctx.goalId,test:ctx.test,
         // The run's journal goes along, under a place of its own for this call, so what the helper changes outside SILO
         // is written down before it is sent and not sent again when the run is resumed.
-        toolCache:ctx.toolCache,compensations:ctx.compensations,stepIndex:ctx.stepIndex,revRound:ctx.revRound,scope:ctx.toolCache?`${ctx.scope||''}${ctx.stepIndex??0}:${ctx.revRound??0}:${ctx.round??0}:${ctx.callIndex??0}>${helper.id}|`:''});
+        toolCache:ctx.toolCache,compensations:ctx.compensations,stepIndex:ctx.stepIndex,revRound:ctx.revRound,itemScope:ctx.itemScope,scope:ctx.toolCache?`${ctx.scope||''}${ctx.stepIndex??0}:${ctx.revRound??0}:${ctx.round??0}:${ctx.callIndex??0}>${helper.id}|`:''});
       return {ok:true,tokens:r.tokens||0,summary:`asked ${helper.name} (${helper.role})`.slice(0,100),text:`<answer from=${JSON.stringify(helper.name)} role=${JSON.stringify(helper.role)}>\n${r.text}\n</answer>`};
     }catch(e){
       if(e?.deadlock)return {ok:false,summary:'asked back up the chain',text:helper.name+' is already waiting for your answer. Do it yourself.'};
@@ -3065,7 +3068,7 @@ async function runToolRaw(agent,call,ctx){
   const outside=cacheKey&&externalWrite(spec,args),app=SERVICES[spec.name]?.name||state.mcp.find(c=>'mcp:'+c.id===spec.permission)?.name||spec.name,op=args.action||spec.name;
   // The same change in the same step, asked for again in another turn of the conversation (after a resume the model may
   // not repeat itself word for word), is not sent twice either.
-  if(outside){const tail=cacheKey.slice(cacheKey.lastIndexOf(':'+name+':')),head=`${ctx.stepIndex??0}:${ctx.revRound??0}:`,who=ctx.scope?`>${agent.id}|`:'',same=Object.entries(ctx.toolCache).find(([k])=>k.startsWith(head)&&k.endsWith(tail)&&(who?k.includes(who):!k.includes('>')))?.[1];if(same){if(same.pending||same.unknown)throw unsureError(same);return {...same,replayed:true};}}
+  if(outside){const tail=cacheKey.slice(cacheKey.lastIndexOf(':'+name+':')),head=`${ctx.itemScope||''}${ctx.stepIndex??0}:${ctx.revRound??0}:`,who=ctx.scope?`>${agent.id}|`:'',same=Object.entries(ctx.toolCache).find(([k])=>k.startsWith(head)&&k.endsWith(tail)&&(who?k.includes(who):!k.includes('>')))?.[1];if(same){if(same.pending||same.unknown)throw unsureError(same);return {...same,replayed:true};}}
   // An MCP tool whose definition changed after the run started (its description, inputs or read-only mark) is never
   // called silently: the run notes the change and you are asked, also where the connector would not ask.
   const drift=mcpDrift(spec,ctx);
@@ -3135,8 +3138,8 @@ function canSee(agent){
 // A full answer with tools: the resident may call tools, gets each result back, and then answers.
 async function answer(agent,messages,signal,hooks={},source='chat',depth=0,chain=[],runOpts={}){
   const convo=[...messages],tools=[];let tokens=0,retries=0,shown='',used=0,lastText='',routed=null,compacted=false,modelFallback=null;
-  const {budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,noTools,test,scope}=runOpts;
-  const baseCtx={source,signal,depth,hooks,chain:[...chain,agent.id],budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,test:!!test,scope:scope||''};
+  const {budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,noTools,test,scope,itemScope}=runOpts;
+  const baseCtx={source,signal,depth,hooks,chain:[...chain,agent.id],budget,toolCache,compensations,stepIndex,revRound,runId,workflowId,goalId,attenuated,test:!!test,scope:scope||'',itemScope:itemScope||''};
   const ctx={...baseCtx,caps:effectiveCapabilities(agent,baseCtx)};
   for(let round=0;;round++){
     if(budget)budget.check();
@@ -3641,6 +3644,9 @@ async function runAgentStepRaw(run,index,part,signal){
   const feed={text:'',note:''};live.get(run.id).feeds[index]=feed;
   const revRound=Object.values(run.rounds||{}).reduce((s,v)=>s+v,0);
   run.toolCache||={};run.compensations||=[];
+  // In a step that repeats for each item, each item has a place of its own in the journal: two items that give a tool
+  // the same arguments are two calls, as app steps already keep them apart (see doneKey).
+  const itemScope=run.item===undefined?'':`item${run.itemAt}|`;
   const budget=makeRunBudget(run);
   let message='';
   try{
@@ -3649,7 +3655,7 @@ async function runAgentStepRaw(run,index,part,signal){
     // A model comparison runs every step on the model under test.
     const work=workingAgent(run,index,a),who=run.override?{...work.agent,provider:run.override.provider,model:run.override.model}:work.agent;
     if(work.changed&&!run.steps.some(s=>s.index===index&&s.configChanged))event(`${a.name} changed since ${run.name} started`,`Step ${index+1} uses the instructions and model from the start of the run, and only the permissions ${a.name} still has.`,'workflow');
-    const result=await answer(who,[{role:'user',content:message}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1}`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,test:!!run.test});
+    const result=await answer(who,[{role:'user',content:message}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1}`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,test:!!run.test,scope:itemScope,itemScope});
     const entry={index,type:step.type,agentId:a.id,agentName:a.name,output:result.text,tokens:result.tokens||0,time:Date.now()};
     if(work.changed)entry.configChanged=true;if(result.truncated)entry.truncated=true;if(result.retries)entry.retries=result.retries;if(result.tools.length)entry.tools=result.tools;if(run.feedback[index])entry.revision=true;
     run.outputs[index]=result.text;run.names[index]=a.name;run.valid[index]=true;delete run.feedback[index];
@@ -3664,14 +3670,18 @@ async function runAgentStepRaw(run,index,part,signal){
         dispatchLetter(a,shadow,`Shadow handoff for ${run.name} step ${index+1}`);
         feed.text='';feed.note=`${shadow.name} (Shadow of ${a.name}) stepped in...`;
         const shadowProxy=buildPolicyPreservingAgent(a,shadow);
-        const sr=await answer(shadowProxy,[{role:'user',content:`[SHADOW HANDOFF: Your mentor ${a.name} (${a.role}, L${a.level}) could not finish this step (${e.message}). You are their designated Shadow. Complete the step.]\n\n${message}`}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1} (Shadow)`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,attenuated:effectiveCapabilities(a,{runId:run.id,workflowId:run.workflowId}),test:!!run.test});
+        const sr=await answer(shadowProxy,[{role:'user',content:`[SHADOW HANDOFF: Your mentor ${a.name} (${a.role}, L${a.level}) could not finish this step (${e.message}). You are their designated Shadow. Complete the step.]\n\n${message}`}],signal,{onText:d=>{feed.text+=d;},reset:base=>{feed.text=base;},note:n=>{feed.note=n;}},`${run.name} / step ${index+1} (Shadow)`,0,[],{budget,toolCache:run.toolCache,compensations:run.compensations,stepIndex:index,revRound,runId:run.id,workflowId:run.workflowId,attenuated:effectiveCapabilities(a,{runId:run.id,workflowId:run.workflowId}),test:!!run.test,scope:itemScope,itemScope});
         const entry={index,type:step.type,agentId:shadow.id,agentName:`${shadow.name} (Shadow of ${a.name})`,shadowFor:a.name,policyPreserved:true,output:sr.text,tokens:sr.tokens||0,time:Date.now()};
         if(sr.truncated)entry.truncated=true;if(sr.retries)entry.retries=sr.retries;if(sr.tools.length)entry.tools=sr.tools;if(run.feedback[index])entry.revision=true;
         run.outputs[index]=sr.text;run.names[index]=shadow.name;run.valid[index]=true;delete run.feedback[index];
         event(`Shadow takeover: ${shadow.name} finished step ${index+1}`,`${run.name} / stepped in for ${a.name}`,'success');
         bumpStat(shadow,'ok');
         return entry;
-      }catch{}finally{releaseAgent(shadow);}
+      }catch(se){
+        // A change outside SILO the Shadow left unsure, a spent budget or a stop is what the run has to show: the run
+        // waits for a check with what was sent, instead of failing with the first resident's error.
+        if(se?.unknownOutcome||se?.budgetExceeded||signal?.aborted){bumpStat(a,'fail');throw se;}
+      }finally{releaseAgent(shadow);}
     }
     bumpStat(a,'fail');throw e;
   }finally{releaseAgent(a);}
@@ -3917,7 +3927,7 @@ async function executeWorkflow(w,input,trigger='manual',opts={}){
   trimRuns();
   const started=state.events[0];
   event(`Workflow started: ${w.name}`,(trigger==='manual'?'':`[${trigger}] `)+input.slice(0,150),'workflow');
-  await startSaved(run,()=>{state.runs=state.runs.filter(r=>r!==run);dropEventsSince(started);});
+  await startSaved(run,()=>{state.runs=state.runs.filter(r=>r!==run);opts.undo?.();},{since:started,also:opts.also});
   return run;
 }
 // Your answer after a change outside SILO may or may not have gone through. It went through: its result is what you
@@ -3951,7 +3961,7 @@ async function resumeRun(run){
   }
   run.status='running';delete run.error;delete run.finished;run.resumed=(run.resumed||0)+1;
   event(`Workflow resumed: ${run.name}`,`From step ${run.at+1} of ${run.total}.`,'workflow');
-  await startSaved(run,()=>{for(const [k,v] of Object.entries(was))if(v===undefined)delete run[k];else run[k]=v;dropEventsSince(logged);});
+  await startSaved(run,()=>{for(const [k,v] of Object.entries(was))if(v===undefined)delete run[k];else run[k]=v;},{since:logged});
   return run;
 }
 // Run again with the same brief, from the start or from a later step. Earlier steps keep the outputs of the old run.
@@ -4047,7 +4057,7 @@ async function pumpJobQueue(){
       run.status='running';delete run.error;delete run.finished;
       next.status='running';next.updatedAt=now;delete next.nextAttemptAt;
       // Not saved: both go back to how they were and the queue stops for now; the next pump tries again.
-      try{await startSaved(run,()=>{for(const [o,v] of [[run,was.run],[next,was.job]])for(const [k,x] of Object.entries(v))if(x===undefined)delete o[k];else o[k]=x;},next);}
+      try{await startSaved(run,()=>{for(const [o,v] of [[run,was.run],[next,was.job]])for(const [k,x] of Object.entries(v))if(x===undefined)delete o[k];else o[k]=x;},{also:[next]});}
       catch(e){event('Job could not start',`${next.workflowName||run.name}: ${e.message}`,'error');break;}
     }
   }finally{pumpingJobs=false;}
@@ -5681,8 +5691,11 @@ const server=http.createServer(async(req,res)=>{
         const w=state.workflows.find(w=>w.id===lm[1]);if(!w)fail('Workflow not found.',404);
         const lost=(w.lostEvents||[]).find(x=>x.id===lm[2]);if(!lost)fail('That event is no longer kept.',404);
         if(lm[3]==='dismiss'){w.lostEvents=w.lostEvents.filter(x=>x!==lost);await persist();return send(res,200,{ok:true});}
-        const run=await executeWorkflow(w,lost.input,lost.trigger||'manual');
-        w.lostEvents=w.lostEvents.filter(x=>x!==lost);event(`Lost event started again: ${w.name}`,`${TRIGGER_WORD[lost.trigger]||lost.trigger} from ${new Date(lost.time).toISOString()}`,'workflow');await persist();
+        // The event leaves the list in the same save that records its run: a stop in between can neither start it twice
+        // nor lose it. If the run cannot start, it is put back where it was.
+        const at=w.lostEvents.indexOf(lost);w.lostEvents.splice(at,1);
+        const run=await executeWorkflow(w,lost.input,lost.trigger||'manual',{also:[w],undo:()=>{(w.lostEvents||=[]).splice(at,0,lost);}});
+        event(`Lost event started again: ${w.name}`,`${TRIGGER_WORD[lost.trigger]||lost.trigger} from ${new Date(lost.time).toISOString()}`,'workflow');persist().catch(()=>{});
         return send(res,202,run);
       }
       const wm=route.match(/^\/api\/workflows\/([^/]+)(\/run)?$/);
@@ -5708,7 +5721,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(route==='/api/jobs'&&req.method==='POST')return send(res,202,await enqueueJob(b));
       // Tests only: the next save that names this run fails. Off unless SILO_TEST_FAULTS=1, and only from this computer.
-      if(route==='/api/test/fail-save'&&req.method==='POST'&&process.env.SILO_TEST_FAULTS==='1'&&loopback(clientIp)){failSaveFor=string(b.runId||'',80);return send(res,200,{ok:true});}
+      if(route==='/api/test/fail-save'&&req.method==='POST'&&process.env.SILO_TEST_FAULTS==='1'&&loopback(clientIp)){failSaveFor=string(b.runId||b.id||'',80);return send(res,200,{ok:true});}
       if(route==='/api/jobs/recover'&&req.method==='POST')return send(res,200,await recoverInterruptedJobs());
       const jm=route.match(/^\/api\/jobs\/([^/]+)\/(cancel|compensate|rewind)$/);
       if(jm&&req.method==='POST'){
@@ -5967,18 +5980,18 @@ const scheduler=setInterval(async()=>{
         enqueueWorkflowTrigger(w,'schedule',input);
         w.nextRun=nextRunFor(w);
         event(`Scheduled run deferred: ${w.name}`,!hasPower?`${floors[first.floor].name} is on low power (queued for recovery).`:'Previous run still active (queued for recovery).','system');
-        await persist();
+        await persist().catch(()=>{});
         continue;
       }
+      // The next time is set before the start, so it is saved together with the run: a save that fails after the run is
+      // recorded cannot leave the same time due again, and a start that fails queues it once.
+      w.nextRun=nextRunFor(w);
       try{
-        await executeWorkflow(w,input,'schedule');
-        w.nextRun=nextRunFor(w);
-        await persist();
+        await executeWorkflow(w,input,'schedule',{also:[w]});
       }catch(e){
         enqueueWorkflowTrigger(w,'schedule',input);
-        w.nextRun=nextRunFor(w);
         event('Scheduled run failed',e.message,'error');
-        await persist();
+        await persist().catch(()=>{});
       }
     }
   }

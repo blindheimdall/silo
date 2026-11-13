@@ -292,6 +292,73 @@ test('a save that fails leaves no run stuck, a resident asked for help keeps the
     assert.deepEqual((await state()).workflows.find(x=>x.id===flow.id).lost,[]);
     assert.equal((await request('/workflows/'+flow.id+'/lost/l2/run',{})).status,404,'a dismissed one is gone');
   });
+  await t.test('a failed start takes out only its own log lines, and a lost event stays until a run takes it',async()=>{
+    const broken=await agent('Broken again','failure');
+    const flow=(await request('/workflows',{name:'Resume quietly',steps:[{agentId:broken.id,prompt:'Hi'}]})).data;
+    const run=await settled((await request('/workflows/'+flow.id+'/run',{input:'go'})).data.id);
+    await failNext(run.id);
+    // The save fails a moment later; meanwhile something else writes to the log.
+    const resumed=request('/runs/'+run.id+'/resume',{});await wait(50);
+    await request('/file',{name:'notes/meanwhile.md',content:'M'});
+    assert.equal((await resumed).status,503);
+    const events=(await state()).events,log=events.map(e=>e.title);
+    assert.ok(events.some(e=>e.detail==='notes/meanwhile.md'),'the line written meanwhile stays');
+    assert.ok(!log.some(x=>x===`Workflow resumed: ${run.name}`),'the line of the failed resume goes');
+
+    const plain=await agent('Lost again','fixture');
+    const lostFlow=(await request('/workflows',{name:'Lost twice',steps:[{agentId:plain.id,prompt:'Hi'}]})).data;
+    await silo.stop();
+    const store=new StateStore(path.join(temp,'data')),s=store.load(()=>({}));
+    s.workflows.find(x=>x.id===lostFlow.id).lostEvents=[{id:'k1',trigger:'webhook',input:'Keep me',time:Date.now(),lostAt:Date.now(),reason:'dropped',detail:''}];
+    await store.save(s);store.close();
+    silo=await boot(14449,temp,{SILO_TEST_FAULTS:'1'});({request,state}=silo);
+    await failNext(lostFlow.id);
+    assert.equal((await request('/workflows/'+lostFlow.id+'/lost/k1/run',{})).status,503);
+    let w=(await state()).workflows.find(x=>x.id===lostFlow.id);
+    assert.deepEqual(w.lost.map(l=>l.id),['k1'],'not started, so still kept');
+    assert.ok(!(await state()).runs.some(r=>r.workflowId===lostFlow.id));
+    const r=await request('/workflows/'+lostFlow.id+'/lost/k1/run',{});assert.equal(r.status,202);
+    await settled(r.data.id);
+    w=(await state()).workflows.find(x=>x.id===lostFlow.id);assert.deepEqual(w.lost,[]);
+    assert.equal((await request('/workflows/'+lostFlow.id+'/lost/k1/run',{})).status,404,'taken by its run');
+  });
+
+  await t.test('a scheduled time whose start cannot be saved runs once, from the queue',async()=>{
+    const plain=await agent('Timed','fixture');
+    const flow=(await request('/workflows',{name:'Every hour',steps:[{agentId:plain.id,prompt:'Hi'}],enabled:true,interval:60})).data;
+    await silo.stop();
+    const store=new StateStore(path.join(temp,'data')),s=store.load(()=>({}));
+    Object.assign(s.workflows.find(x=>x.id===flow.id),{enabled:true,interval:60,nextRun:Date.now()});
+    await store.save(s);store.close();
+    silo=await boot(14449,temp,{SILO_TEST_FAULTS:'1',SILO_TEST_FAIL_SAVE:flow.id});({request,state}=silo);
+    await until(async()=>(await state()).events.some(e=>e.title==='Scheduled run failed'),20000,'the failed start');
+    const runs=await until(async()=>{const r=(await state()).runs.filter(x=>x.workflowId===flow.id);return r.length&&r.every(x=>x.status==='completed')&&r;},20000,'the queued run');
+    await wait(6000);
+    const st=await state(),w=st.workflows.find(x=>x.id===flow.id);
+    assert.equal(st.runs.filter(x=>x.workflowId===flow.id).length,1,'one time, one run');assert.equal(runs.length,1);
+    assert.equal(w.queue.waiting,0,'nothing left in the queue');
+    assert.ok(w.nextRun>Date.now()+50*60000,'the next time is an hour on');
+  });
+
+  await t.test('two items with the same arguments are two calls, and an unsure change by a Shadow waits for a check',async()=>{
+    const allow=async()=>{for(const q of (await state()).requests.filter(q=>q.status==='pending'))await request('/requests/'+q.id,{allow:true});};
+    const buyer=await agent('Each buyer','tool-user',['mcp:'+shopId]);
+    const flow=(await request('/workflows',{name:'Same order twice',steps:[{agentId:buyer.id,each:'{{brief}}',prompt:CALL({tool:'shop__createOrder',body:{item:'mug'}})}]})).data;
+    const before=sh.posts.length;
+    const id=(await request('/workflows/'+flow.id+'/run',{input:'["first","second"]'})).data.id;
+    const r=await until(async()=>{await allow();const x=(await state()).runs.find(x=>x.id===id);return x&&!['running','queued'].includes(x.status)&&x;},30000,'the run');
+    assert.equal(r.status,'completed',r.error);
+    assert.equal(sh.posts.length,before+2,'each item made its order');
+
+    const shadow=await agent('Shadow buyer','tool-user',['mcp:'+shopId]);
+    const mentor=(await request('/agents',{name:'Mentor buyer',role:'Fixture',floor:2,provider:'compatible',model:'failure',instructions:'Fixture.',tools:['mcp:'+shopId],shadowId:shadow.id})).data;
+    const flow2=(await request('/workflows',{name:'Shadow order',steps:[{agentId:mentor.id,prompt:CALL({tool:'shop__createOrder',body:{item:'lamp shade'}})}]})).data;
+    sh.mode='unavailable';
+    const id2=(await request('/workflows/'+flow2.id+'/run',{input:'go'})).data.id;
+    const r2=await until(async()=>{await allow();const x=(await state()).runs.find(x=>x.id===id2);return x&&!['running','queued'].includes(x.status)&&x;},30000,'the run');
+    sh.mode='ok';
+    assert.equal(r2.status,'check',r2.error);assert.match(r2.check.op,/createOrder/);assert.match(r2.check.input,/lamp shade/);
+  });
 });
 
 
