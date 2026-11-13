@@ -4,6 +4,11 @@
 
 <h1 align="center">SILO</h1>
 
+<p align="center">
+  <a href="https://github.com/sponsors/blindheimdall">Sponsor SILO on GitHub</a> &middot;
+  <a href="https://paypal.me/blindheimdall">Support via PayPal</a>
+</p>
+
 <p align="center"><strong>Independent silos. A shared chain of work.</strong></p>
 <p align="center">Run AI agents on separate machines, delegate access across instances, and inspect each handoff in a 144-level operations room.</p>
 
