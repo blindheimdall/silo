@@ -664,12 +664,12 @@ function validateWorkflow(b,existing={}){
   if(b.app&&typeof b.app==='object'&&b.app.kind){
     let app;try{app=triggerConfig(b.app);}catch(e){fail(e.message);}
     const svc=TRIGGERS[app.kind].service;if(svc&&!serviceConnected(svc))fail(`Connect ${SERVICES[svc].name} in IT / Uplink first, then pick this trigger.`);
-    if(JSON.stringify(triggerWhat(app))!==JSON.stringify(triggerWhat(existing.app||null))){w.appSeen=null;w.appFired=[];delete w.appError;delete w.appNext;delete w.appChecked;}
+    if(JSON.stringify(triggerWhat(app))!==JSON.stringify(triggerWhat(existing.app||null))){w.appSeen=null;w.appFired=[];w.appInbox=[];delete w.appError;delete w.appNext;delete w.appChecked;}
     if(app.every!==existing.app?.every)delete w.appNext;
     w.app=app;
     // The secret address GitHub or Slack sends events to. It stays the same while instant events stay on.
     w.appHook=app.instant?(existing.appHook||randomBytes(16).toString('hex')):null;
-  }else{w.app=null;w.appSeen=null;w.appHook=null;w.appFired=[];delete w.appError;delete w.appNext;}
+  }else{w.app=null;w.appSeen=null;w.appHook=null;w.appFired=[];w.appInbox=[];delete w.appError;delete w.appNext;}
   return w;
 }
 function appHookUrl(w){return w.appHook&&tunnel.host()?`https://${tunnel.host()}/apphook/${w.appHook}`:null;}
@@ -849,9 +849,10 @@ function recordUsage(provider,model,input,output){
   stateRev++;
   tokenLog.push([Date.now(),(input||0)+(output||0)]);if(tokenLog.length>2000)tokenLog.splice(0,1000);
   const d=state.usage.days[today()]||={};const u=d[provider]||={input:0,output:0,cost:0,calls:0};
+  // A call to a model without a price has an unknown cost: it is counted as such, never as free.
   const price=priceFor(provider,model),cost=price?((input||0)*price.input+(output||0)*price.output)/1e6:0;
-  u.input+=input||0;u.output+=output||0;u.cost=(u.cost||0)+cost;u.calls++;
-  const m=(u.models||={})[model||'default']||={input:0,output:0,cost:0,calls:0};m.input+=input||0;m.output+=output||0;m.cost+=cost;m.calls++;
+  u.input+=input||0;u.output+=output||0;u.cost=(u.cost||0)+cost;u.calls++;if(!price)u.unpriced=(u.unpriced||0)+1;
+  const m=(u.models||={})[model||'default']||={input:0,output:0,cost:0,calls:0};m.input+=input||0;m.output+=output||0;m.cost+=cost;m.calls++;if(!price)m.unpriced=(m.unpriced||0)+1;
   const days=Object.keys(state.usage.days).sort();for(const k of days.slice(0,-62))delete state.usage.days[k];
   // A warning at 80 percent and another when a limit is reached, once a day each.
   for(const [kind,ratio,used,limit] of limitRatios(provider)){
@@ -880,6 +881,8 @@ function reserveSpending(provider,model,estInput=5,estOutput=7,{minOutput}={}){
   checkSpending(provider);
   const price=priceFor(provider,model),cur=inflightSpend.get(provider)||{cost:0,tokens:0,calls:0},l=state.limits[provider];
   let out=estOutput;
+  // A money limit cannot be kept for a model whose cost is unknown, so such calls wait for its price.
+  if(l&&(l.daily||l.monthly)&&!price)fail(`${provider} has a ${l.daily?'daily':'monthly'} money limit, but no price is set for ${model||'its default model'}, so what the call costs is unknown. Set its price (or ${provider}:*) in IT under Spending, or remove the money limit.`,402);
   if(l){
     const day=spent(provider,'day'),month=l.monthly?spent(provider,'month'):null,inCost=price?estInput*price.input/1e6:0;
     // For each limit: how many answer tokens still fit after the question.
@@ -1152,20 +1155,52 @@ async function fireAppItem(w,t,item,via='check'){
   event(`${t.label}${via==='event'?' (instant)':''}: ${w.name}`,item.title,'workflow');
   try{await executeWorkflow(w,input,'app');}catch(e){enqueueWorkflowTrigger(w,'app',input);event('App trigger failed',`${w.name}: ${e.message}`,'error');}
 }
+// Items an app handed on wait in the workflow's inbox until each has started a run or joined its queue. The inbox is
+// saved in the same transaction as the app's mark, before anything starts, and each item leaves it in the save that
+// holds its run or queue entry. So a restart in the middle of a batch starts the rest, and nothing starts twice.
+const APP_INBOX_MAX=100,appDraining=new Set();
+function acceptAppItems(w,items,via){
+  const known=new Set([...(w.appFired||[]),...(w.appInbox||[]).map(i=>i.id)]),add=[];
+  for(const i of items)if(!known.has(i.id)){known.add(i.id);add.push({id:i.id,title:String(i.title||''),text:String(i.text||''),via,time:Date.now()});}
+  if(!add.length)return 0;
+  w.appInbox=[...(w.appInbox||[]),...add];
+  const over=w.appInbox.length-APP_INBOX_MAX;
+  if(over>0){
+    for(const g of w.appInbox.splice(0,over))countLost(w,'dropped',`app event "${g.title.slice(0,80)}" from ${new Date(g.time).toISOString()}`);
+    event('App events dropped',`${w.name}: ${over} waited too long to start, the oldest went`,'error');
+  }
+  stateRev++;return add.length;
+}
+async function drainAppInbox(w){
+  if(appDraining.has(w.id))return;appDraining.add(w.id);
+  try{
+    while(w.appInbox?.length&&state.workflows.includes(w)&&w.app){
+      const t=TRIGGERS[w.app.kind];if(!t)break;
+      const item=w.appInbox[0];w.appInbox=w.appInbox.slice(1);
+      if(!(w.appFired||[]).includes(item.id))await fireAppItem(w,t,item,item.via);
+      await persist();
+    }
+  }finally{appDraining.delete(w.id);}
+}
 async function checkAppTriggers(){
   if(appBusy||state.paused)return;appBusy=true;
   try{
     for(const w of state.workflows){
-      const t=w.app&&TRIGGERS[w.app.kind];if(!t||t.instant==='any')continue;
+      const t=w.app&&TRIGGERS[w.app.kind];if(!t)continue;
+      // What a restart or a failed save left in the inbox starts first.
+      if(w.appInbox?.length){try{await drainAppInbox(w);}catch(e){event('App trigger failed',`${w.name}: ${e.message}`,'error');}}
+      if(t.instant==='any')continue;
       if(w.appNext&&w.appNext>Date.now())continue;
       if(!w.appNext&&w.appChecked&&Date.now()-w.appChecked<appInterval(w)-500)continue;
       try{
         const r=await t.check(t.service?serviceCtx(t.service):{},w.app,w.appSeen||null);
         if(!state.workflows.includes(w)||!w.app)continue;
-        w.appSeen=r.seen;w.appChecked=Date.now();delete w.appError;delete w.appNext;stateRev++;
-        // An item an event already started is not started again.
-        for(const item of r.items)if(!(w.appFired||[]).includes(item.id))await fireAppItem(w,t,item);
-        await persist();
+        // The new mark and the items it covers are saved together; only then do they start. If the save fails the mark
+        // goes back, so the same items are fetched again on the next check.
+        const before={seen:w.appSeen,inbox:w.appInbox};
+        w.appSeen=r.seen;w.appChecked=Date.now();delete w.appError;delete w.appNext;acceptAppItems(w,r.items,'check');stateRev++;
+        try{await persist();}catch(e){w.appSeen=before.seen;w.appInbox=before.inbox;throw e;}
+        await drainAppInbox(w);
       }catch(e){w.appError=String(e.message).slice(0,200);w.appChecked=Date.now();w.appNext=Date.now()+Math.min(5*60000,appInterval(w)*5);stateRev++;}
     }
   }finally{appBusy=false;}
@@ -2982,9 +3017,16 @@ async function runToolRaw(agent,call,ctx){
   // The same change in the same step, asked for again in another turn of the conversation (after a resume the model may
   // not repeat itself word for word), is not sent twice either.
   if(outside){const tail=cacheKey.slice(cacheKey.lastIndexOf(':'+name+':')),head=`${ctx.stepIndex??0}:${ctx.revRound??0}:`,same=Object.entries(ctx.toolCache).find(([k])=>k.startsWith(head)&&k.endsWith(tail))?.[1];if(same){if(same.pending||same.unknown)throw unsureError(same);return {...same,replayed:true};}}
+  // An MCP tool whose definition changed after the run started (its description, inputs or read-only mark) is never
+  // called silently: the run notes the change and you are asked, also where the connector would not ask.
+  const drift=mcpDrift(spec,ctx);
+  if(drift&&ctx.test)return {ok:false,summary:`${name} changed since the run started`.slice(0,80),text:`${drift.connector} changed the definition of ${drift.tool} after this run started, so it was not called.`};
   try{
     let approvedCodeHash,approvedExecMode;
-    if(spec.ask){
+    if(drift){
+      const dec=await askOperator(agent,{tool:spec.approval,forceAsk:true,title:`use ${drift.tool} on ${drift.connector}, which changed since this run started`,detail:`The tool's description, inputs or read-only mark are not what they were when the run started (${drift.was?'fingerprint '+drift.was:'it was not there'}, now ${drift.now}).\n\n${JSON.stringify(args,null,2)}`,source:ctx.source},ctx.signal);
+      if(!dec.allowed)return {ok:false,summary:`${name} changed and was not allowed`.slice(0,80),text:`${drift.connector} changed ${drift.tool} after this run started, and the operator did not allow the changed tool. Do not try it again. Continue without it or explain what you need.`};
+    }else if(spec.ask){
       const q=await spec.ask(agent,args);
       if(q){
         const dec=await askOperator(agent,{...q,tool:q.tool||spec.approval||spec.name,source:ctx.source},ctx.signal);
@@ -3002,13 +3044,16 @@ async function runToolRaw(agent,call,ctx){
     return out;
   }catch(e){if(ctx.signal?.aborted||e?.budgetExceeded||e?.unknownOutcome)throw e;return {ok:false,summary:`${name} failed`.slice(0,80),text:`${name} did not work: ${e.message}`};}
 }
-// Whether a failed request may still have reached the service: the connection broke or timed out after it was sent, or
-// a gateway in front of the service gave up waiting for it (502, 504, 408). A refused connection, an unknown host, a
-// missing sign-in and an answer from the service itself (400 to 429, 500, 503) mean it is known to have failed.
+// Whether a failed change may still have been done. A service can apply a change and then fail before it answers, so
+// only an answer that refuses it (a 4xx status other than 408) proves it was not done; any 5xx, 408, a timeout or a
+// connection that broke after sending leave it unknown. A refused connection, an unknown host or a missing sign-in
+// mean nothing was sent. The status is taken from the error or the answer's status line, never from text inside it.
 function outcomeUnknown(e){
-  const t=`${e?.message||e||''} ${e?.cause?.code||''} ${e?.cause?.message||''} ${e?.code||''}`;
-  if(/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL|not connected|sign-in|sign in|is turned off|\b(400|401|403|404|405|409|410|413|415|422|429|503)\b/i.test(t))return false;
-  return /ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|UND_ERR|socket hang up|other side closed|was closed|terminated|timed? ?out|timeout|did not answer|network|fetch failed|stopped \(exit|\b(502|504|408)\b/i.test(t);
+  const msg=String(e?.message||e||''),t=`${msg} ${e?.cause?.code||''} ${e?.cause?.message||''} ${e?.code||''}`;
+  const code=Number(e?.status||(msg.match(/^(\d{3})\b/)||msg.match(/\banswered (\d{3})\b/)||[])[1]);
+  if(code>=400&&code<600)return code>=500||code===408;
+  if(/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL|not connected|sign-in|sign in|is turned off/i.test(t))return false;
+  return /ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|UND_ERR|socket hang up|other side closed|was closed|terminated|timed? ?out|timeout|did not answer|network|fetch failed|stopped \(exit/i.test(t);
 }
 const externalWrite=(spec,args)=>spec.permission?.startsWith('mcp:')?!spec.readOnly:!!ACTIONS[spec.name]?.[args?.action]?.write;
 // A pending change that failed: unknown when it may have gone through, otherwise taken off the journal. A failed answer
@@ -3332,6 +3377,22 @@ function awaitDecision(run,signal){
     signal?.addEventListener('abort',onAbort,{once:true});
   });
 }
+// Compares an MCP tool with its fingerprint in the run's snapshot of the step. A change is noted on the run once (shown
+// with the run) and in the log. Runs from before fingerprints were kept, and steps without the connector, are not checked.
+function mcpDrift(spec,ctx){
+  if(!spec.permission?.startsWith('mcp:')||!ctx?.runId)return null;
+  const cid=spec.permission.slice(4),run=state.runs.find(r=>r.id===ctx.runId);
+  const pinned=run?.snapshot?.steps?.[ctx.stepIndex??0]?.agent?.mcpHashes?.[cid];if(typeof pinned!=='string')return null;
+  const pre=`mcp:${cid}:`,tool=spec.approval.slice(pre.length,spec.approval.lastIndexOf(':')),now=spec.approval.slice(spec.approval.lastIndexOf(':')+1);
+  const was=pinned?pinned.split(',').map(x=>[x.slice(0,x.lastIndexOf(':')),x.slice(x.lastIndexOf(':')+1)]).find(([n])=>n===tool)?.[1]||'':'';
+  if(was===now)return null;
+  const connector=state.mcp.find(c=>c.id===cid)?.name||cid;
+  if(!(run.toolChanges||=[]).some(x=>x.cid===cid&&x.tool===tool&&x.now===now)){
+    run.toolChanges.push({cid,connector,tool,was,now,step:ctx.stepIndex??0,at:Date.now()});stateRev++;
+    event(`${connector} changed ${tool} during ${run.name}`,`The tool is not what it was when the run started, so it is used only if you allow it.`,'error');
+  }
+  return {connector,tool,was,now};
+}
 function agentFrozenConfig(agentId){
   const a=state.agents.find(x=>x.id===agentId);if(!a)return null;
   const mcpHashes={};
@@ -3370,7 +3431,8 @@ function makeRunBudget(run){
 // A change is only tried again when it surely did not happen: the app said it was busy, or no connection was made.
 function transientFailure(text,write,thrown){
   const t=String(text||''),code=Number((t.match(/^(\d{3})\b/)||t.match(/\b(408|425|429|50[0234])\b/)||[])[1]);
-  if(write)return [429,503].includes(code)||(thrown&&/ECONNREFUSED|EAI_AGAIN|ENOTFOUND/.test(t));
+  // A change only when it surely was not done: refused for now (425, 429) or never sent. A 503 may come after the change.
+  if(write)return [425,429].includes(code)||(thrown&&/ECONNREFUSED|EAI_AGAIN|ENOTFOUND/.test(t));
   return [408,425,429,500,502,503,504].includes(code)||(thrown&&/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|timed? ?out|did not answer/i.test(t));
 }
 // A step that repeats: once for each item of a list from before, one after the other. Its answer is the list of answers.
@@ -3731,7 +3793,8 @@ async function drive(run){
     run.checks=[...new Set(run.steps.filter(x=>x.verdict==='approved'&&!x.skipped).map(x=>x.type==='review'?'reviewed':run.test?'test':'approved by you'))];
     if(run.data!==undefined)run.checks.push('shape');
     if(!run.test)notify('completed',`${run.name} finished`,String(run.output).slice(0,600));phoneRunDone(run);
-    for(const k of ['plan','outputs','feedback','rounds','at','note','valid','names','toolCache'])delete run[k];
+    // A job can be rewound after it finished, so its journal stays: without it a rewind would make every change again.
+    for(const k of ['plan','outputs','feedback','rounds','at','note','valid','names',...(run.jobId?[]:['toolCache'])])delete run[k];
   }catch(e){
     delete run.waiting;
     if(e?.rejected){
@@ -3803,7 +3866,15 @@ async function executeWorkflow(w,input,trigger='manual',opts={}){
   if(opts.prefill)Object.assign(run,opts.prefill);
   state.runs.unshift(run);
   trimRuns();
-  event(`Workflow started: ${w.name}`,(trigger==='manual'?'':`[${trigger}] `)+input.slice(0,150),'workflow');await persist();
+  event(`Workflow started: ${w.name}`,(trigger==='manual'?'':`[${trigger}] `)+input.slice(0,150),'workflow');
+  // The run starts only once it is saved. If the save fails it is taken out again, with its log line, so a run that
+  // never started cannot count as running and hold back the workflow's queue.
+  const started=state.events[0];
+  try{await persist(run);}
+  catch(e){
+    state.runs=state.runs.filter(r=>r!==run);state.events=state.events.filter(x=>x!==started);stateRev++;
+    fail(`The run could not be saved, so it did not start: ${e.message}`,503);
+  }
   startDrive(run);
   return run;
 }
@@ -3940,13 +4011,25 @@ async function pumpJobQueue(){
 // After a crash or for another try the whole journal is kept, so nothing done is done twice. Checkpoints from before
 // the journal hold a full copy instead; that copy is merged in.
 const journalTop=cache=>Object.values(cache||{}).reduce((n,v)=>Math.max(n,Number(v?.seq)||0),0);
-function journal(cache,key,entry){const was=cache[key];cache[key]={...entry,seq:was?.seq??journalTop(cache)+1};return cache[key];}
+// A change outside SILO keeps what it was (ext) through every later entry, so a rewind can name it.
+function journal(cache,key,entry){
+  const was=cache[key],ext=entry.pending?{app:entry.app,op:entry.op,step:entry.step??0,input:entry.input||'',at:entry.at||Date.now()}:entry.ext||was?.ext;
+  cache[key]={...entry,seq:was?.seq??journalTop(cache)+1,...(ext&&{ext})};return cache[key];
+}
 const keptToolCache=(run,cp)=>({...structuredClone(cp?.toolCache||{}),...(run.toolCache||{})});
 // Back to a checkpoint: the results journaled after it are dropped (an older checkpoint has its own copy).
 function journalAt(run,cp){
   if(cp.toolCache)return structuredClone(cp.toolCache);
   const keep=Number(cp.toolSeq)||0;
   return Object.fromEntries(Object.entries(run.toolCache||{}).filter(([,v])=>!(v?.seq>keep)));
+}
+// Changes outside SILO the run made after a checkpoint: going back there would make them again.
+function effectsAfter(run,cp){
+  const kept=journalAt(run,cp);
+  // Entries from before ext was kept still name the change while it was being sent or unknown.
+  const ext=v=>v?.ext||(v?.app&&v.op&&{app:v.app,op:v.op,step:v.step??0,input:v.input||'',at:v.at||0});
+  return Object.entries(run.toolCache||{}).filter(([k,v])=>ext(v)&&!Object.hasOwn(kept,k)).sort(([,a],[,b])=>(a.seq||0)-(b.seq||0))
+    .map(([key,v])=>({key,app:ext(v).app,op:ext(v).op,step:ext(v).step,input:String(ext(v).input).slice(0,600),at:ext(v).at,status:v.pending?'sending':v.unknown?'unknown':v.ok?'done':'failed'}));
 }
 async function rewindJob(job,opts={}){
   if(job.status==='running')fail('Stop the job before rewinding it.',409);
@@ -3957,19 +4040,25 @@ async function rewindJob(job,opts={}){
   const cps=run.checkpoints||[];
   const cp=opts.checkpointId?cps.find(c=>c.id===opts.checkpointId):opts.stepIndex!==undefined?cps.find(c=>c.stepIndex===Number(opts.stepIndex)):cps.at(-1);
   if(!cp)fail('Checkpoint not found.',404);
+  // A rewind never repeats a change outside SILO by itself. Unless repeat says what to do, it stops and lists them:
+  // repeat:false keeps their results, so the steps after the checkpoint get the saved answer instead of sending again;
+  // repeat:true drops them, so they are sent again.
+  const effects=effectsAfter(run,cp);
+  if(effects.length&&typeof opts.repeat!=='boolean')throw Object.assign(new Error(`Going back to this checkpoint would make ${effects.length} change${effects.length>1?'s':''} outside SILO again: ${effects.map(e=>`${e.app} ${e.op} (step ${e.step+1})`).join(', ')}. Say repeat:false to keep what was done, or repeat:true to do it again.`),{status:409,effects});
+  const keepEffects=effects.length&&opts.repeat===false?Object.fromEntries(effects.map(e=>[e.key,run.toolCache[e.key]])):{};
   run.at=cp.nextAt;
   run.outputs=structuredClone(cp.outputs||[]);
   run.valid=[...(cp.valid||[])];
   run.rounds=structuredClone(cp.rounds||{});
   run.names=structuredClone(cp.names||{});
   run.steps=(run.steps||[]).slice(0,cp.stepsCount);
-  run.toolCache=journalAt(run,cp);
+  run.toolCache={...journalAt(run,cp),...keepEffects};
   const cpIdx=cps.indexOf(cp);
   run.checkpoints=cps.slice(0,cpIdx+1);
   job.checkpoints=run.checkpoints.map(({toolCache,...rest})=>rest);
   job.status='queued';job.attempts=0;delete job.error;job.updatedAt=Date.now();
   run.status='queued';delete run.error;delete run.finished;
-  event(`Job rewound to checkpoint: ${job.workflowName}`,`Resuming from step ${run.at+1} of ${run.total}.`,'workflow');
+  event(`Job rewound to checkpoint: ${job.workflowName}`,`Resuming from step ${run.at+1} of ${run.total}.${effects.length?` ${effects.length} change${effects.length>1?'s':''} outside SILO ${opts.repeat?'will be made again':'kept, not repeated'}: ${effects.map(e=>`${e.app} ${e.op}`).join(', ')}.`:''}`,'workflow');
   await persist();
   await pumpJobQueue();
   return {job,run};
@@ -4707,19 +4796,21 @@ const server=http.createServer(async(req,res)=>{
         const r=readWebhook(w.app,{method:req.method,headers:req.headers,raw,query:url.searchParams,url:`${viaTunnel?'https':'http'}://${host}${url.pathname}${url.search}`,token:ah[1],secret:sec.app===w.app.app?sec.secret||'':''});
         if(r.learn){secrets.set(hk,{secret:r.learn,by:'learned',app:w.app.app});await persistSecrets();event(`${HOOK_APPS[w.app.app].name} webhook made`,w.name,'connection');}
         if(r.status===200&&req.method==='POST'){w.appEventAt=Date.now();stateRev++;}
+        // The events are saved before the app hears they arrived, so one that SILO takes cannot be lost to a restart.
+        if(r.items.length&&acceptAppItems(w,r.items,'event'))await persist();
         res.writeHead(r.status,{...(r.headers||{}),...(r.json!==undefined?{'Content-Type':'application/json'}:r.text!==undefined?{'Content-Type':'text/plain; charset=utf-8'}:{}),'Cache-Control':'no-store'});
         res.end(r.json!==undefined?JSON.stringify(r.json):r.text!==undefined?r.text:'');
-        for(const item of r.items){if((w.appFired||[]).includes(item.id))continue;await fireAppItem(w,t,item,'event');}
-        if(r.items.length)await persist();
+        if(r.items.length)await drainAppInbox(w);
         return;
       }
       if(!verifyAppEvent(w.app.kind,secrets.get('apphook:'+w.id)?.secret,req.headers,raw))fail('Invalid signature.',401);
       let body;try{body=JSON.parse(raw);}catch{fail('Invalid JSON.');}
       const r=appEvent(w.app.kind,w.app,req.headers,body);w.appEventAt=Date.now();stateRev++;
-      // Answer at once (Slack waits only 3 seconds), then start the workflow.
+      // Save the events, answer (Slack waits only 3 seconds), then start the workflow. A failed save answers 503, so the
+      // app sends the event again.
+      if(r.items.length&&acceptAppItems(w,r.items,'event'))await persist();
       send(res,200,r.reply||{ok:true,items:r.items.length});
-      for(const item of r.items){if((w.appFired||[]).includes(item.id))continue;await fireAppItem(w,t,item,'event');}
-      if(r.items.length)await persist();
+      if(r.items.length)await drainAppInbox(w);
       return;
     }
     // This silo's public radio key, so another owner can add it and compare the fingerprint.
@@ -5577,7 +5668,7 @@ const server=http.createServer(async(req,res)=>{
           const run=state.runs.find(r=>r.id===job.runId)||job;
           return send(res,200,await compensateRun(run));
         }
-        if(jm[2]==='rewind')return send(res,202,await rewindJob(job,b));
+        if(jm[2]==='rewind'){try{return send(res,202,await rewindJob(job,b));}catch(e){if(e.effects)return send(res,409,{error:e.message,effects:e.effects});throw e;}}
       }
       if(route==='/api/goals'&&req.method==='GET')return send(res,200,{goals:state.goals});
       if(route==='/api/goals'&&req.method==='POST')return send(res,202,await startGoal(b));

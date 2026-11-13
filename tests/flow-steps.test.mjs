@@ -140,12 +140,12 @@ test('app steps try a busy app again, repeat for each item, and wait, also acros
   // because the app may have done it; after "429 slow down" it is.
   const mixed = async to => { const r = await request('/workflows', { name: 'Some ' + to, brief: '', steps: [{ type: 'action', app, op: 'sendEmail', fields: { 'body.to': to } }] }); return finished(await start(r.data.id)); };
   posts = 0; run = await mixed('fail@example.com');
-  assert.equal(run.status, 'failed'); assert.equal(posts, 1, 'a change that failed with 500 is not sent twice');
+  assert.equal(run.status, 'check', 'a 500 may come after the change was made, so you are asked'); assert.equal(posts, 1, 'a change that failed with 500 is not sent twice');
   posts = 0; run = await mixed('slow@example.com');
   assert.equal(run.status, 'completed', run.error); assert.equal(posts, 3); assert.equal(run.steps[0].retries, 2);
   posts = 0;
   run = await finished(await start(await make('Item fails', [list('mixed'), { ...mail, fields: { 'body.to': '{{item.email}}' } }])));
-  assert.equal(run.status, 'failed'); assert.match(run.error, /^Item 2 of 3: .*failed: 500/); assert.equal(posts, 2, 'the items after a failed one are not sent');
+  assert.equal(run.status, 'check'); assert.match(run.error, /^Item 2 of 3: .*may or may not have gone through/); assert.equal(posts, 2, 'the items after an unsure one are not sent');
 
   // A resident repeats for each item and gets only that item, not the whole list.
   const resident = (await request('/state')).data.agents[0];

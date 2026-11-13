@@ -34,8 +34,15 @@ export const TRIGGERS={
   'google.mail':{service:'google',label:'New email in Gmail',fields:[{key:'query',label:'Only mail matching (Gmail search, optional)',placeholder:'from:billing@acme.com has:attachment'}],
     async check(ctx,cfg,seen){
       const q=['in:inbox',cfg.query||''].join(' ').trim();
-      const list=await get('google',ctx,`${B('gmail')}/users/me/messages?maxResults=15&q=${enc(q)}`);
-      const ids=(list.messages||[]).map(m=>m.id).reverse(),f=fresh(ids,seen);
+      // Newest first, page after page until a message seen before (or 5 pages of 100), so a burst of mail between two
+      // checks is not cut at the first page. The first check only learns the first page.
+      const known=new Set(seen?.ids||[]),got=[];let page='';
+      for(let n=0;n<5;n++){
+        const list=await get('google',ctx,`${B('gmail')}/users/me/messages?maxResults=${seen?100:15}&q=${enc(q)}${page?'&pageToken='+enc(page):''}`);
+        const ids=(list.messages||[]).map(m=>m.id);got.push(...ids);
+        page=list.nextPageToken;if(!seen||!page||ids.some(id=>known.has(id)))break;
+      }
+      const ids=got.reverse(),f=fresh(ids,seen);
       // At most 10 a check, the oldest first; the others come at the next check.
       const take=f.add.slice(0,10),items=[];
       for(const id of take){
@@ -59,10 +66,19 @@ export const TRIGGERS={
   'google.drive_file':{service:'google',label:'New or changed file in Google Drive',fields:[{key:'query',label:'Name contains (optional)',placeholder:'invoice'}],
     async check(ctx,cfg,seen){
       const since=seen?.since||new Date().toISOString(),name=String(cfg.query||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-      const q=`modifiedTime > '${since}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'${name?` and name contains '${name}'`:''}`;
-      const d=seen?await get('google',ctx,`${B('gdrive')}/files?pageSize=20&orderBy=modifiedTime&fields=${enc('files(id,name,mimeType,modifiedTime,webViewLink,lastModifyingUser(displayName))')}&q=${enc(q)}`):{files:[]};
-      const files=d.files||[],last=files.reduce((m,f)=>f.modifiedTime>m?f.modifiedTime:m,since);
-      return {seen:{since:last},items:files.map(f=>({id:f.id+'@'+f.modifiedTime,title:one(f.name,120),text:`File: ${f.name}\nKind: ${f.mimeType}\nChanged: ${f.modifiedTime}${f.lastModifyingUser?.displayName?' by '+f.lastModifyingUser.displayName:''}\nId: ${f.id}\n${f.webViewLink||''}`}))};
+      if(!seen)return {seen:{since,at:[]},items:[]};
+      // The oldest changes first, page after page, at most 20 a check. The mark moves only to the last change handed on;
+      // changes made in that same second and already handed on are remembered (at), so none is lost or given twice.
+      const q=`modifiedTime >= '${since}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'${name?` and name contains '${name}'`:''}`;
+      const done=new Set(seen.at||[]),files=[];let page='';
+      for(let n=0;n<10&&files.length<20;n++){
+        const d=await get('google',ctx,`${B('gdrive')}/files?pageSize=100&orderBy=modifiedTime&fields=${enc('nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,lastModifyingUser(displayName))')}&q=${enc(q)}${page?'&pageToken='+enc(page):''}`);
+        for(const f of d.files||[])if(files.length<20&&!done.has(f.id+'@'+f.modifiedTime))files.push(f);
+        page=d.nextPageToken;if(!page)break;
+      }
+      const last=files.reduce((m,f)=>f.modifiedTime>m?f.modifiedTime:m,since);
+      const at=[...(last===since?seen.at||[]:[]),...files.filter(f=>f.modifiedTime===last).map(f=>f.id+'@'+f.modifiedTime)].slice(-300);
+      return {seen:{since:last,at},items:files.map(f=>({id:f.id+'@'+f.modifiedTime,title:one(f.name,120),text:`File: ${f.name}\nKind: ${f.mimeType}\nChanged: ${f.modifiedTime}${f.lastModifyingUser?.displayName?' by '+f.lastModifyingUser.displayName:''}\nId: ${f.id}\n${f.webViewLink||''}`}))};
     }},
   'google.event_soon':{service:'google',label:'Google Calendar event about to start',fields:[{key:'minutes',label:'Minutes before it starts',placeholder:'15',number:true}],
     async check(ctx,cfg,seen){
@@ -73,11 +89,18 @@ export const TRIGGERS={
     }},
   'microsoft.mail':{service:'microsoft',label:'New email in Outlook',fields:[{key:'from',label:'Only from (optional)',placeholder:'billing@acme.com'},{key:'subject',label:'Subject contains (optional)',placeholder:'invoice'}],
     async check(ctx,cfg,seen){
-      const d=await get('microsoft',ctx,`${B('graph')}/me/mailFolders/inbox/messages?$top=15&$orderby=receivedDateTime%20desc&$select=id,subject,from,toRecipients,receivedDateTime,body`);
-      const list=(d.value||[]).reverse(),f=fresh(list.map(m=>m.id),seen);
-      const items=list.filter(m=>f.add.includes(m.id)).filter(m=>(!cfg.from||String(m.from?.emailAddress?.address||'').toLowerCase().includes(cfg.from.toLowerCase()))&&(!cfg.subject||String(m.subject||'').toLowerCase().includes(cfg.subject.toLowerCase())))
+      // Newest first, page after page until a message seen before (or 5 pages), at most 10 handed on a check, the oldest
+      // first; the rest stay new for the next check.
+      const known=new Set(seen?.ids||[]),got=[];let next=`${B('graph')}/me/mailFolders/inbox/messages?$top=${seen?50:15}&$orderby=receivedDateTime%20desc&$select=id,subject,from,toRecipients,receivedDateTime,body`;
+      for(let n=0;n<5&&next;n++){
+        const d=await get('microsoft',ctx,next);got.push(...(d.value||[]));
+        next=seen&&!(d.value||[]).some(m=>known.has(m.id))?d['@odata.nextLink']:'';
+        if(next&&!String(next).startsWith(B('graph')+'/'))next='';
+      }
+      const list=got.reverse(),f=fresh(list.map(m=>m.id),seen),take=new Set(f.add.slice(0,10));
+      const items=list.filter(m=>take.has(m.id)).filter(m=>(!cfg.from||String(m.from?.emailAddress?.address||'').toLowerCase().includes(cfg.from.toLowerCase()))&&(!cfg.subject||String(m.subject||'').toLowerCase().includes(cfg.subject.toLowerCase())))
         .map(m=>({id:m.id,title:one(m.subject||'(no subject)',120),text:`From: ${m.from?.emailAddress?.address||''}\nTo: ${(m.toRecipients||[]).map(r=>r.emailAddress?.address).join(', ')}\nDate: ${m.receivedDateTime}\nSubject: ${m.subject}\n\n${clip(m.body?.contentType==='html'?htmlText(m.body.content):m.body?.content||'')}`}));
-      return {seen:{ids:f.ids},items};
+      return {seen:{ids:seenAfter(seen,f,[...take])},items};
     }},
   'microsoft.event_soon':{service:'microsoft',label:'Outlook Calendar event about to start',fields:[{key:'minutes',label:'Minutes before it starts',placeholder:'15',number:true}],
     async check(ctx,cfg,seen){
