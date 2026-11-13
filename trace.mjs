@@ -8,14 +8,14 @@ import { randomUUID } from 'node:crypto';
 const als=new AsyncLocalStorage();
 
 export class Tracer{
-  // list: the array traces are kept in (newest first). onChange: called after every change.
+  // list: the array traces are kept in (newest first). onChange(trace): called after every change, with the trace.
   constructor({list,onChange=()=>{},onFinish=()=>{},maxTraces=40,maxSpans=250}){this.list=list;this.onChange=onChange;this.onFinish=onFinish;this.maxTraces=maxTraces;this.maxSpans=maxSpans;}
   start({kind,name,refId,agentId,test}){
     const t={id:randomUUID(),kind,name:String(name).slice(0,160),refId,...(agentId&&{agentId}),...(test&&{test:true}),started:Date.now(),status:'running',spans:[],dropped:0};
     const list=this.list();list.unshift(t);
     // Old traces go first, test traces before the others, but never one that is still running.
     while(list.length>this.maxTraces){let i=list.findLastIndex(x=>x.test&&x.status!=='running');if(i<0)i=list.findLastIndex(x=>x.status!=='running');if(i<0)break;list.splice(i,1);}
-    this.onChange();return t;
+    this.onChange(t);return t;
   }
   // Runs fn with t as the current trace. Spans made inside, however deep, belong to it.
   async within(t,fn){
@@ -24,7 +24,7 @@ export class Tracer{
   }
   finish(t,status,error){
     if(t.ended)return;t.ended=Date.now();t.ms=t.ended-t.started;t.status=status;if(error)t.error=String(error).slice(0,300);
-    t.totals=totals(t.spans);this.onChange();try{this.onFinish(t);}catch{}
+    t.totals=totals(t.spans);this.onChange(t);try{this.onFinish(t);}catch{}
   }
   current(){return als.getStore()?.trace||null;}
   currentSpan(){const s=als.getStore();return s?.trace&&s.parent?s.trace.spans.find(x=>x.id===s.parent)||null:null;}
@@ -33,15 +33,15 @@ export class Tracer{
     const store=als.getStore();if(!store?.trace)return fn(null);
     const t=store.trace,s={id:randomUUID(),parent:store.parent,kind,name:String(name).slice(0,160),start:Date.now(),status:'running',...attrs};
     if(t.spans.length<this.maxSpans)t.spans.push(s);else t.dropped++;
-    this.onChange();
+    this.onChange(t);
     try{
       const r=await als.run({trace:t,parent:s.id},()=>fn(s));
       if(s.status==='running')s.status='ok';return r;
     }catch(e){s.status=e?.name==='AbortError'||/stopped/i.test(e?.message||'')?'cancelled':'error';s.error=String(e?.message||e).slice(0,300);throw e;}
-    finally{s.end=Date.now();s.ms=s.end-s.start;this.onChange();}
+    finally{s.end=Date.now();s.ms=s.end-s.start;this.onChange(t);}
   }
   // Something the current span produced, such as a proposed file.
-  artifact(a){const s=this.currentSpan();if(!s)return;(s.artifacts||=[]).push(a);if(s.artifacts.length>10)s.artifacts.length=10;this.onChange();}
+  artifact(a){const s=this.currentSpan();if(!s)return;(s.artifacts||=[]).push(a);if(s.artifacts.length>10)s.artifacts.length=10;this.onChange(als.getStore()?.trace);}
 }
 
 export function totals(spans){

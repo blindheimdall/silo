@@ -981,7 +981,7 @@ function voiceCard(){
 // How the server keeps up: what a save costs, how late it answers, and live pages that fall behind.
 function perfLine(p){
   if(!p)return '';const s=p.storage||{},l=p.loop||{},v=p.live||{};
-  return `<p class="mono-line">Saving: last ${s.lastMs} ms, average ${s.avgMs} ms, slowest ${s.maxMs} ms. Last save: ${s.serialized} of ${s.rows} rows serialized (${s.kb} KB), ${s.skipped} finished ones skipped, ${s.written} written.<br>Server delay: ${l.p50} ms typical, ${l.p99} ms at worst 1 in 100, ${l.max} ms slowest.<br>Live pages: ${v.streams} open${v.behind?', '+v.behind+' behind':''}. Updates merged while a page was behind: ${v.skipped}, full refreshes: ${v.resyncs}, too slow and closed: ${v.slowClosed}.</p>`;
+  return `<p class="mono-line">Saving: last ${s.lastMs} ms, average ${s.avgMs} ms, slowest ${s.maxMs} ms. Last save: ${s.serialized} of ${s.rows} rows serialized (${s.kb} KB), ${s.skipped} finished ones skipped, ${s.written} written.${s.missed?` <span class="warn-text">${s.missed} change${s.missed>1?"s":""} to a finished row found only by the full comparison (last: ${esc(s.lastMissed.col)}/${esc(String(s.lastMissed.id))}); they are saved, but report it.</span>`:""}<br>Server delay: ${l.p50} ms typical, ${l.p99} ms at worst 1 in 100, ${l.max} ms slowest.<br>Live pages: ${v.streams} open${v.behind?', '+v.behind+' behind':''}. Updates merged while a page was behind: ${v.skipped}, full refreshes: ${v.resyncs}, too slow and closed: ${v.slowClosed}.</p>`;
 }
 // Updates and start: the version, start at sign-in, and signed updates from a feed you pick.
 function updateCard(u){
@@ -1270,8 +1270,21 @@ function runDetail(r){
   return `<div class="run-toolbar">${tools}${r.output?`<button class="btn small" data-action="copy-run" data-id="${r.id}" data-step="-1">Copy final output</button>`:''}</div>${scrub}<div class="run-status">${esc(runLabel(r)).toUpperCase()} ${checkTag(r)} · ${total} STEPS${r.finished?' · '+Math.round((r.finished-r.started)/1000)+'s':''}${tokens?' · '+tokens+' TOKENS':''}${r.budget?' · MAX '+r.budget:''}${r.resumed?' · RESUMED':''}${r.version?' · V'+r.version:''}${r.from?' · FROM STEP '+r.from:''}${TRIGGER_NAME[r.trigger]?' · '+TRIGGER_NAME[r.trigger].toUpperCase():''}</div>${r.status==='running'?`<div class="run-progress"><span style="width:${Math.round(done/Math.max(1,total)*100)}%"></span></div>`:''}<div class="run-detail"><strong>Original brief</strong>\n${esc(r.input)}</div>${(r.toolChanges||[]).length?`<div class="info-banner warn"><span><strong>Tools changed during this run.</strong> These MCP tools are not what they were when the run started, so each was used only if you allowed it: ${r.toolChanges.map(c=>`${esc(c.connector)} / ${esc(c.tool)} (step ${c.step+1}${c.was?'':', new'})`).join(', ')}.</span></div>`:''}${r.steps.map((s,i)=>traceStep(r,s,i)).join('')}${traceCurrent(r,total)}${courierFor(r.id)?`<div class="courier-line"><span>A COURIER IS CARRYING THE FOLDER TO THE NEXT RESIDENT</span><button class="btn small" data-action="watch-courier" data-id="${r.id}">Watch the courier</button></div>`:''}${r.error?`<div class="modal-error">${esc(r.error)}</div>`:''}${r.status==='running'&&!r.waiting&&r.current?.type!=='wait'?'<div class="chat-hint">LIVE / TEXT APPEARS AS IT IS WRITTEN</div>':''}`;
 }
 // Keeps a note being typed and the scroll position when the trace is redrawn.
+// A finished run comes in the state without the output of its steps (see pageRun on the server). When it is shown, the
+// whole run is fetched once and kept until it changes; meanwhile the summary is shown.
+const wholeRuns=new Map();
+const runSign=r=>`${r.status}:${r.finished||''}:${r.steps?.length||0}:${r.checked?.length||0}:${r.compensated?1:0}:${(r.toolChanges||[]).length}`;
+function cachedRun(r){if(!r?.slim)return r;const had=wholeRuns.get(r.id);return had?.sign===runSign(r)?had.run:null;}
+async function wholeRun(r){
+  if(!r?.slim)return r;const hit=cachedRun(r);if(hit)return hit;
+  const run=await api('/runs/'+r.id);wholeRuns.set(r.id,{sign:runSign(r),run});
+  if(wholeRuns.size>20)wholeRuns.delete(wholeRuns.keys().next().value);
+  return run;
+}
+function fillTrace(r){wholeRun(r).then(full=>{if(full!==r&&openRunId===r.id&&modalKind==='trace')updateTrace(full);}).catch(e=>toast(e.message,true));}
 function updateTrace(r){
-  const box=$('#run-detail');if(!box)return;const note=$('#approval-note'),value=note?.value,focused=document.activeElement===note,top=modal.scrollTop;
+  const box=$('#run-detail');if(!box)return;
+  if(r?.slim){const full=cachedRun(r);if(!full){fillTrace(r);return;}r=full;}const note=$('#approval-note'),value=note?.value,focused=document.activeElement===note,top=modal.scrollTop;
   box.innerHTML=runDetail(r);const n=$('#approval-note');if(n&&value!=null){n.value=value;if(focused)n.focus({preventScroll:true});}modal.scrollTop=top;watchLive();
 }
 function paintLive(){
@@ -1430,7 +1443,7 @@ function projectRunStep(runId,idx){
   if(prev&&world?.dispatchCourier){const cid=world.dispatchCourier({fromId:prev.agentId,toId:a.id,label:`Replay step ${pad2((s.index??idx)+1)}: ${a.name}`});if(cid)world.followCourier(cid);}
   toast(`Time-Machine · Step ${(s.index??idx)+1} (${a.name}, L${pad3(a.level)})`);
 }
-function openRun(r){if(openRunId!==r.id){stopLiveWatch();liveGen++;liveCache={id:r.id,gen:liveGen,feeds:{}};}openRunId=r.id;showModal(`${modalHead(esc(r.name),'Output of each step.')}<div class="modal-body" id="run-detail">${runDetail(r)}</div><div class="modal-footer"><button class="btn" data-action="trail-run" data-id="${r.id}">${icon('silo')} Show in silo</button>${r.traceId?`<button class="btn" data-action="open-trace" data-id="${r.traceId}">Time and cost</button>`:''}<button class="btn" data-action="close-modal">Close</button></div>`,'trace');$('#run-detail')?.addEventListener('input',e=>{if(e.target.id==='run-scrub'){const row=$(`[data-step-row="${e.target.value}"]`);row?.scrollIntoView({behavior:'smooth',block:'center'});}});watchLive();}
+function openRun(r){if(!r)return;if(r.slim){r=cachedRun(r)||(fillTrace(r),r);}if(openRunId!==r.id){stopLiveWatch();liveGen++;liveCache={id:r.id,gen:liveGen,feeds:{}};}openRunId=r.id;showModal(`${modalHead(esc(r.name),'Output of each step.')}<div class="modal-body" id="run-detail">${runDetail(r)}</div><div class="modal-footer"><button class="btn" data-action="trail-run" data-id="${r.id}">${icon('silo')} Show in silo</button>${r.traceId?`<button class="btn" data-action="open-trace" data-id="${r.traceId}">Time and cost</button>`:''}<button class="btn" data-action="close-modal">Close</button></div>`,'trace');$('#run-detail')?.addEventListener('input',e=>{if(e.target.id==='run-scrub'){const row=$(`[data-step-row="${e.target.value}"]`);row?.scrollIntoView({behavior:'smooth',block:'center'});}});watchLive();}
 const pending=()=>(state.proposals||[]).filter(p=>p.status==='pending');
 function proposalList(){
   const list=pending(),rev=(state.proposals||[]).filter(p=>p.canRevert).slice(0,5);if(!list.length&&!rev.length)return '';
@@ -1551,7 +1564,7 @@ async function refresh(fromPoll=false){
     if(!streamFresh)return false;
     streamFresh=false;if(state?.tag===streamState.tag)return false;
     state=structuredClone(streamState);
-  }else{const next=await api('/state',{headers:state?.tag?{'x-silo-since':state.tag}:{}});if(!next?.agents)return false;state=next;}
+  }else{const next=await api('/state?view=page',{headers:state?.tag?{'x-silo-since':state.tag}:{}});if(!next?.agents)return false;state=next;}
   sendCouriers();if(!getAgent(selected))selected=state.agents[0]?.id;syncStatus();return true;
 }
 const actions={
@@ -1760,8 +1773,8 @@ const actions={
   'chat-mic':()=>toggleMic(),
   'speak-msg':el=>{const m=getAgent(el.dataset.id)?.chats[Number(el.dataset.i)];if(m)speakText(m.content);},
   'save-embeddings':async()=>{try{await post('/settings',{embeddings:{provider:$('#em-provider').value,model:$('#em-model').value.trim()}});await refresh();toast('Saved. The Archive is indexed again in the background.');loadSystemInfo();}catch(e){toast(e.message,true);}},
-  rerun:el=>{const r=state.runs.find(r=>r.id===el.dataset.id);if(r)runWorkflow(state.workflows.find(w=>w.id===r.workflowId),r.input);},
-  'copy-run':async el=>{const r=state.runs.find(r=>r.id===el.dataset.id),i=Number(el.dataset.step),text=i<0?r?.output:r?.steps[i]?.output;if(!text)return;try{await navigator.clipboard.writeText(text);toast('Copied.');}catch{toast('Copy is blocked by the browser. Select the text instead.',true);}},
+  rerun:async el=>{const r=state.runs.find(r=>r.id===el.dataset.id);if(!r)return;try{const full=await wholeRun(r);runWorkflow(state.workflows.find(w=>w.id===full.workflowId),full.input);}catch(e){toast(e.message,true);}},
+  'copy-run':async el=>{const i=Number(el.dataset.step);let r=state.runs.find(r=>r.id===el.dataset.id);try{r=await wholeRun(r);}catch(e){return toast(e.message,true);}const text=i<0?r?.output:r?.steps[i]?.output;if(!text)return;try{await navigator.clipboard.writeText(text);toast('Copied.');}catch{toast('Copy is blocked by the browser. Select the text instead.',true);}},
   'add-shape-field':()=>{if($$('.shape-field').length>=30){toast('A result keeps at most 30 fields.',true);return;}$('#shape-fields').insertAdjacentHTML('beforeend',shapeFieldRow({}));$$('.shape-field .sf-name').at(-1).focus();},
   'remove-shape-field':el=>{if($$('.shape-field').length>1)el.closest('.shape-field').remove();else el.closest('.shape-field').querySelector('.sf-name').value='';},
   'add-step':()=>{if($$('.flow-step-editor').length>=12){toast('A workflow can contain up to 12 steps.',true);return;}$('#step-editors').insertAdjacentHTML('beforeend',stepEditor({type:'agent'},$$('.flow-step-editor').length));},'remove-step':el=>{el.closest('.flow-step-editor').remove();renumber();},'step-up':el=>{const s=el.closest('.flow-step-editor');if(s.previousElementSibling)s.parentNode.insertBefore(s,s.previousElementSibling);renumber();},'step-down':el=>{const s=el.closest('.flow-step-editor');if(s.nextElementSibling)s.parentNode.insertBefore(s.nextElementSibling,s);renumber();},

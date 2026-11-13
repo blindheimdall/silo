@@ -40,6 +40,36 @@ test('a save serializes only rows that can have changed, and still writes every 
   assert.ok(st.stats.saves>10&&st.stats.maxMs>=st.stats.lastMs&&st.stats.bytes>0);
 });
 
+test('a change to a settled row reaches SQLite without another save, and one that was not named is reported',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-scale-store-'));let st;t.after(()=>{st?.close();return fs.rm(dir,{recursive:true,force:true});});
+  const read=()=>{const r=new StateStore(dir);try{return r.reconstructFromTables();}finally{r.db.close();r.db=null;r.closed=true;}};
+  st=new StateStore(dir,{settled:(c,x)=>c==='runs'&&x.status==='completed',settleMs:20,verifyEvery:3600000,jsonEvery:3600000,snapshotEvery:3600000});
+  const missed=[];st.onMissed=m=>missed.push(m);
+  const s=st.load(()=>({agents:[],events:[],runs:[{id:'done',status:'completed',n:1}]}));
+  await st.save(s);await wait(40);await st.save(s);await st.save(s);assert.ok(st.stats.skipped>=1,'the row is settled');
+  // Named at the place it changed, with no save of its own: the store's timer writes it.
+  s.runs[0].n=2;st.touch(s.runs[0]);st.tick();await st.writing;await wait(10);
+  assert.equal(read().runs[0].n,2,'a touched row is written by the timer');assert.equal(missed.length,0);
+  await wait(40);await st.save(s);await st.save(s);
+  // Not named: nothing else saves, but the full comparison the timer runs when it is due finds and writes it.
+  s.runs[0].n=3;st.verifyEvery=0;st.tick();await wait(10);await st.writing;
+  assert.equal(read().runs[0].n,3,'the timer runs the full comparison by itself');
+  assert.deepEqual(missed,[{col:'runs',id:'done'}],'and says which row was changed without being named');
+  assert.equal(st.stats.missed,1);assert.equal(st.stats.lastMissed.id,'done');
+  st.close();
+});
+
+test('a span that ends after its trace names the trace',async()=>{
+  const {Tracer}=await import('../trace.mjs');const list=[],changed=[];
+  const tr=new Tracer({list:()=>list,onChange:x=>changed.push(x)});
+  const t=tr.start({kind:'run',name:'Late'});let release;
+  const late=new Promise(r=>{release=r;});
+  let pending;await tr.within(t,async()=>{pending=tr.span('tool','slow',{},()=>late);});
+  assert.ok(t.ended,'the trace ended');changed.length=0;
+  release();await pending;
+  assert.ok(changed.length&&changed.every(x=>x===t),'the late change says which trace it was');
+});
+
 test('a live page that does not keep up gets merged updates, and is closed when it stays behind',async()=>{
   let now=0;const res={writableLength:0,writableNeedDrain:false,writes:[],ended:false,write(t){this.writes.push(t);return true;},end(){this.ended=true;}};
   let closed=0;const c=liveChannel(res,'',{limits:{behind:100,cut:1000,stall:50},now:()=>now,onClose:()=>closed++});
@@ -78,6 +108,14 @@ test('the 3D profiler reports typical and slow frames',()=>{
   const r=frameStats({gap:[16,17,16,16,48],tick:[1,1,1,2,1],draw:[5,6,5,5,30],feeds:[0,0,0,0,9],lowFrames:1,ratio:1.5,size:[800,500]},1000);
   assert.deepEqual([r.frames,r.fps,r.late,r.gap.p50,r.work.max],[5,5,1,16,40]);
   assert.deepEqual(r.slowest[0],{work:40,tick:1,draw:30,feeds:9},'the slowest frame says what took the time');
+  assert.equal(r.bound,'none');
+  // A weak card: the code takes 3 ms of 400, the rest is waiting for the card, which the code timings alone never show.
+  const card=frameStats({gap:[400,410,395],tick:[1,1,1,1],draw:[2,2,2,2],feeds:[0,0,0,0],ratio:1,size:[800,500]},1600);
+  assert.equal(card.bound,'graphics card');assert.equal(card.waitGpu.p50,397);assert.equal(card.work.p50,3);
+  const code=frameStats({gap:[70,72,71],tick:[60,62,61,60],draw:[5,5,5,5],feeds:[0,0,0,0],ratio:1,size:[800,500]},280);
+  assert.equal(code.bound,'code','a slow simulation is the code');
+  const behind=frameStats({gap:[50,51,50],tick:[1,1,1,1],draw:[2,2,2,2],feeds:[1,1,1,1],throttle:50,ratio:1,size:[800,500]},200);
+  assert.equal(behind.bound,'none','20 frames a second behind a terminal is on purpose');
   assert.deepEqual(spread([]),{p50:0,p95:0,p99:0,max:0});
   assert.equal(spread(Array.from({length:100},(_,i)=>i+1)).p99,99);
 });
@@ -174,6 +212,14 @@ test('checkpoints point into the run journal instead of copying it, and the serv
   await request('/workflows',{name:'Waiting',steps:[{agentId:first.id,prompt:'Hi'}],missedPolicy:'queue'});
   const w=(await state()).workflows.find(x=>x.name==='Waiting');
   assert.deepEqual([w.queue.waiting,w.queue.max,w.queue.dropped],[0,15,0],'the card can show the queue');
+
+  // Pages get finished runs without their history; the whole run comes when it is opened, and API clients get it all.
+  await until(async()=>['failed','completed'].includes((await state()).runs.find(r=>r.id===run.id)?.status),60000,'the rewound run');
+  const pageView=(await request('/state?view=page')).data.runs.find(r=>r.id===run.id),whole=(await request('/runs/'+run.id)).data;
+  assert.equal(pageView.slim,true);assert.equal(pageView.toolCache,undefined);assert.equal(pageView.checkpoints,undefined);
+  assert.equal(pageView.steps.length,whole.steps.length,'the steps are there, for the world and the history');
+  assert.ok(pageView.steps.every(s=>s.output===undefined)&&whole.steps.some(s=>s.output),'without their output');
+  assert.ok((await state()).runs.find(r=>r.id===run.id).steps.some(s=>s.output),'/api/state without a view stays whole');
 
   const perf=(await request('/system/update')).data.perf;
   assert.ok(perf.storage.saves>0&&perf.storage.rows>0&&perf.storage.lastMs>=0,'saves are measured');

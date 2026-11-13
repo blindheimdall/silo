@@ -332,10 +332,12 @@ export class SiloWorld3D{
         this.feedErrors=0;
       }catch(error){console.warn('Camera feed skipped.',error);if(++this.feedErrors>=3){this.afterDraw=null;this.wallCtx=null;}}
       const t3=performance.now(),totalMs=t3-t0;
-      this.frameAvgMs=this.frameAvgMs*.9+totalMs*.1;
+      this.frameAvgMs=this.frameAvgMs*.9+totalMs*.1;this.tickAvgMs=(this.tickAvgMs??t1-t0)*.9+(t1-t0)*.1;
       if(!this.background)this.adaptSharpness(dt*1000);
-      if(this.frameAvgMs>24&&!this.lowQuality)this.lowQuality=true;
-      else if(this.frameAvgMs<14&&this.lowQuality)this.lowQuality=false;
+      // Less detail when the frames are slow, whether the time goes into the code (frameAvgMs) or into waiting for the
+      // graphics card, which only shows in the time between frames (gpuSlow, see adaptSharpness).
+      if((this.frameAvgMs>24||this.gpuSlow)&&!this.lowQuality)this.lowQuality=true;
+      else if(this.frameAvgMs<14&&!this.gpuSlow&&this.lowQuality)this.lowQuality=false;
       this.timing={tick:t1-t0,draw:t2-t1,feeds:t3-t2,avg:this.frameAvgMs,lowQuality:this.lowQuality};
       const rec=this.rec;if(rec){if(rec.prev)rec.gap.push(stamp-rec.prev);rec.prev=stamp;rec.tick.push(t1-t0);rec.draw.push(t2-t1);rec.feeds.push(t3-t2);if(this.lowQuality)rec.low++;}
       if((this.framesDrawn=(this.framesDrawn||0)+1)<=3)(this.startup.frames||=[]).push({tick:Math.round(t1-t0),draw:Math.round(t2-t1),feeds:Math.round(t3-t2)});
@@ -1773,17 +1775,25 @@ export class SiloWorld3D{
   record(on=true){
     if(on){this.rec={gap:[],tick:[],draw:[],feeds:[],low:0,prev:0};return null;}
     const r=this.rec;this.rec=null;
-    return r&&{gap:r.gap,tick:r.tick,draw:r.draw,feeds:r.feeds,lowFrames:r.low,ratio:this.renderer.getPixelRatio(),size:[Math.round(this.width||0),Math.round(this.height||0)]};
+    return r&&{gap:r.gap,tick:r.tick,draw:r.draw,feeds:r.feeds,lowFrames:r.low,throttle:this.background?50:0,ratio:this.renderer.getPixelRatio(),size:[Math.round(this.width||0),Math.round(this.height||0)]};
   }
   // gap: time since the frame before. The best gap seen is the screen's own rhythm (16.7 ms at 60 Hz).
+  // A weak graphics card makes frames of several hundred ms while the code takes a few: such frames count (as 250 ms),
+  // and the check runs every 90 frames or 1.5 seconds, whichever comes first, so the picture gets lighter within seconds.
   adaptSharpness(gap){
-    if(gap<=0||gap>200)return;
+    if(gap<=0)return;gap=Math.min(gap,250);
     this.gapAvg=this.gapAvg?this.gapAvg*.94+gap*.06:gap;this.gapBest=Math.max(6,Math.min(this.gapBest,this.gapAvg));
-    if(++this.scaleCheck<90)return;this.scaleCheck=0;
-    const pr=this.renderer.getPixelRatio(),now=performance.now(),step=.25;
-    const late=this.gapAvg>this.gapBest*1.35||this.frameAvgMs>22,onTime=this.gapAvg<this.gapBest*1.1&&this.frameAvgMs<9;
+    // Held back by the card: under 25 frames a second while the simulation uses less than a tenth of each frame. Drawing
+    // counts as the card's time, since a driver may block the draw call until the card is done. An absolute measure,
+    // since on a card that is slow from the start the best gap seen is slow too.
+    this.gpuSlow=this.gapAvg>40&&(this.tickAvgMs||0)<this.gapAvg/10;
+    const now=performance.now();
+    if(++this.scaleCheck<90&&now-(this.scaleAt||0)<1500)return;this.scaleCheck=0;this.scaleAt=now;
+    const pr=this.renderer.getPixelRatio(),step=.25;
+    // Below the screen's own sharpness only for a card that cannot keep up: a softer picture beats a slide show.
+    const late=this.gapAvg>this.gapBest*1.35||this.frameAvgMs>22||this.gpuSlow,onTime=this.gapAvg<this.gapBest*1.1&&this.frameAvgMs<9,floor=this.gpuSlow?Math.max(.5,this.ratioMin*.6):this.ratioMin;
     let next=pr;
-    if(late&&pr>this.ratioMin){next=Math.max(this.ratioMin,pr-step);if(now-this.ratioChanged<6000&&this.lastRaise===pr)this.ratioMax=next;}
+    if(late&&pr>floor){next=Math.max(floor,pr-step);if(now-this.ratioChanged<6000&&this.lastRaise===pr)this.ratioMax=next;}
     else if(onTime&&pr<this.ratioMax&&now-this.ratioChanged>4000){next=Math.min(this.ratioMax,pr+step);this.lastRaise=next;}
     if(next!==pr){this.renderer.setPixelRatio(next);this.ratioChanged=now;this.resize();this.canvas.dataset.sharpness=next.toFixed(2);}
   }

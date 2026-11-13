@@ -23,7 +23,12 @@ export function frameStats(rec,ms){
   const frames=rec.tick.length,work=rec.tick.map((t,i)=>t+rec.draw[i]+rec.feeds[i]);
   const gap=spread(rec.gap),rhythm=gap.p50||16.7;
   const slowest=work.map((w,i)=>({i,w})).sort((a,b)=>b.w-a.w).slice(0,5).map(({i,w})=>({work:round(w),tick:round(rec.tick[i]),draw:round(rec.draw[i]),feeds:round(rec.feeds[i])}));
-  return {frames,fps:round(frames/(ms/1000)),late:rec.gap.filter(g=>g>rhythm*1.5).length,gap,work:spread(work),tick:spread(rec.tick),draw:spread(rec.draw),feeds:spread(rec.feeds),lowQualityFrames:rec.lowFrames||0,pixelRatio:rec.ratio,size:rec.size,slowest};
+  // The code only hands the drawing to the graphics card; what the card takes shows as time between frames that the
+  // code did not use (gap[k] ends frame k+1). bound says what holds the frames back: the card, the code, or nothing.
+  const waitGpu=spread(rec.gap.map((g,k)=>Math.max(0,g-(work[k+1]??0)))),w=spread(work);
+  // Behind a terminal the silo is drawn about 20 times a second on purpose (throttle), which is not a slow frame.
+  const enough=Math.max(25,(rec.throttle||0)*1.25),bound=gap.p50<=enough?'none':waitGpu.p50>w.p50?'graphics card':'code';
+  return {frames,fps:round(frames/(ms/1000)),late:rec.gap.filter(g=>g>rhythm*1.5).length,gap,work:w,tick:spread(rec.tick),draw:spread(rec.draw),feeds:spread(rec.feeds),waitGpu,bound,lowQualityFrames:rec.lowFrames||0,pixelRatio:rec.ratio,size:rec.size,slowest};
 }
 async function measure(world,ms){world.record(true);await wait(ms);return frameStats(world.record(false),ms);}
 // The level with the most residents on it, counting visitors where they are now.
@@ -53,6 +58,6 @@ export async function profileScenarios(world,{ms=5000,settle=1500}={}){
     try{world.background=true;wall.attach(box);await wait(settle);results.surveillance={cameras:9,...await measure(world,ms)};}
     finally{wall.detach();box.remove();}
   }finally{world.afterDraw=was.afterDraw;world.background=was.background;}
-  console.table(Object.fromEntries(Object.entries(results).map(([k,r])=>[k,{fps:r.fps,late:r.late,'gap p50':r.gap.p50,'gap p99':r.gap.p99,'work p50':r.work.p50,'work p95':r.work.p95,'work p99':r.work.p99,'work max':r.work.max,'feeds p95':r.feeds.p95}])));
+  console.table(Object.fromEntries(Object.entries(results).map(([k,r])=>[k,{fps:r.fps,late:r.late,'gap p50':r.gap.p50,'gap p99':r.gap.p99,'work p50':r.work.p50,'work p95':r.work.p95,'work p99':r.work.p99,'work max':r.work.max,'feeds p95':r.feeds.p95,'card wait p50':r.waitGpu.p50,bound:r.bound,'pixel ratio':r.pixelRatio}])));
   return results;
 }

@@ -23,7 +23,7 @@ import { checkMail } from './mail-watch.mjs';
 import { showToast, toastAvailable } from './desktop-notify.mjs';
 import { BrowserPool, browserName, pageText } from './browser-agent.mjs';
 import { DesktopWorker, desktopSupported, blockedReason, sendKeysFor, windowText } from './desktop-agent.mjs';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { compareVersions, fetchManifest, downloadRelease, stageUpdate, applyUpdate, rollback, updateInfo, markAnnounced, feedUrl } from './update.mjs';
 import { startupStatus, setStartup } from './startup.mjs';
 import { AuditLog, auditCsv, auditJsonl } from './audit.mjs';
@@ -78,7 +78,16 @@ function seed() {
 // while. A change to one names it (persist(row)); the store also compares every row once a minute and on close.
 const FINAL_RUN=new Set(['completed','failed','stopped','cancelled']),FINAL_JOB=new Set(['completed','failed','cancelled','compensated']);
 const settledRow=(col,x)=>col==='events'||(col==='runs'&&FINAL_RUN.has(x.status))||(col==='jobs'&&FINAL_JOB.has(x.status))||(col==='traces'&&!!x.ended);
-const store = new StateStore(DATA,{settled:settledRow});
+// SILO_SAVE_SETTLE_MS and SILO_SAVE_VERIFY_MS shorten both for tests. A settled row changed without being named is
+// still written by the full comparison, but it is logged (and with SILO_STRICT_SAVES=<file> written there, so a test
+// run can fail on it): every change to a finished row has to name it at the place it is made.
+const envMs=k=>Number(process.env[k])>0?Number(process.env[k]):undefined;
+const store = new StateStore(DATA,{settled:settledRow,settleMs:envMs('SILO_SAVE_SETTLE_MS'),verifyEvery:envMs('SILO_SAVE_VERIFY_MS')});
+store.onMissed=({col,id})=>{
+  const line=`${new Date().toISOString()} ${col}/${id} changed without persist(row)`;
+  if(process.env.SILO_STRICT_SAVES)try{appendFileSync(process.env.SILO_STRICT_SAVES,line+'\n');}catch{}
+  else console.warn('[storage] '+line);
+};
 const loopDelay=monitorEventLoopDelay({resolution:10});loopDelay.enable();
 let state = store.load(seed);
 if(state.version===1){
@@ -165,7 +174,8 @@ state.users||=[];
 // Traces of conversations, runs and goals. A trace that was running when the server stopped is marked as such.
 state.traces||=[];
 for(const t of state.traces)if(t.status==='running'){t.status='interrupted';t.ended||=Date.now();t.ms=t.ended-t.started;for(const sp of t.spans)if(sp.status==='running')sp.status='interrupted';t.totals=totals(t.spans);}
-const tracer=new Tracer({list:()=>state.traces,onChange:()=>{stateRev++;},onFinish:t=>otel.addTrace(t)});
+// A trace can still change after it ended (a span that finishes late), so every change names its trace for the next save.
+const tracer=new Tracer({list:()=>state.traces,onChange:t=>{stateRev++;if(t?.ended)store.touch(t);},onFinish:t=>otel.addTrace(t)});
 // For companies: an audit log that cannot be changed unseen, OpenTelemetry export, and single sign-on.
 state.settings.audit={months:0,...(state.settings.audit||{})};
 state.settings.otel={enabled:false,endpoint:'',service:'silo',traces:true,logs:true,content:false,instance:randomBytes(8).toString('hex'),...(state.settings.otel||{})};
@@ -277,15 +287,32 @@ const publicUser=u=>u&&{id:u.id,name:u.name,role:u.role,...(u.sso&&{sso:{email:u
 let stateRev = 1;
 // The state as the page sees it, one per role, made again only when something changed. The live channel keeps the
 // one before too, so it can send the difference.
+// page: the view the live pages get (see pageRun), kept apart from the whole state that /api/state gives by default.
 const snapshots=new Map();
 function stateKey(role){const now=Date.now();while(tokenLog.length&&now-tokenLog[0][0]>60000)tokenLog.shift();return role+':'+stateRev+':'+busy.size+':'+state.meetings.length+':'+tokenLog.length+':'+Math.floor(now/60000);}
-function snapshotFor(role){
-  const key=stateKey(role),cur=snapshots.get(role);
+function snapshotFor(role,page=false){
+  const name=role+(page?':page':''),key=stateKey(name),cur=snapshots.get(name);
   if(cur?.key===key)return cur;
-  const body=JSON.stringify(publicState(role)),tag=createHash('sha1').update(body).digest('base64url');
+  const body=JSON.stringify(publicState(role,{page})),tag=createHash('sha1').update(body).digest('base64url');
   if(cur?.tag===tag){cur.key=key;return cur;}
   const next={key,body,tag,history:cur?[{tag:cur.tag,body:cur.body},...cur.history].slice(0,4):[],patches:new Map()};
-  snapshots.set(role,next);return next;
+  snapshots.set(name,next);return next;
+}
+// What a page needs of a finished run: its summary and its steps without their output. The history is most of the
+// state (long outputs, the journal, checkpoints), and a page that connects again would get all of it each time; the
+// page asks for the whole run (GET /api/runs/:id) when it is opened. Runs still going are sent whole. Made once per run
+// and kept until the run changes.
+const PAGE_RUN_DROP=['toolCache','checkpoints','outputs','plan','snapshot','eachDone','data','rounds','valid','names','feedback','compensations','stepHashes'];
+const pageRuns=new WeakMap();
+function pageRun(r){
+  if(!FINAL_RUN.has(r.status))return r.eachDone?{...r,eachDone:undefined}:r;
+  const sign=`${r.status}:${r.finished||''}:${r.steps?.length||0}:${r.checked?.length||0}:${r.compensated?1:0}:${(r.toolChanges||[]).length}:${String(r.error||'').length}:${String(r.output||'').length}`,had=pageRuns.get(r);
+  if(had?.sign===sign)return had.x;
+  const x={...r,slim:true};for(const k of PAGE_RUN_DROP)delete x[k];
+  if(typeof x.input==='string'&&x.input.length>300)x.input=x.input.slice(0,300);
+  if(typeof x.output==='string'&&x.output.length>300)x.output=x.output.slice(0,300);
+  x.steps=(r.steps||[]).map(({output,tools,input,...step})=>step);
+  pageRuns.set(r,{sign,x});return x;
 }
 // The difference from one of the last four versions, made once and shared by every page that had that version.
 function patchFrom(snap,fromTag){
@@ -355,7 +382,7 @@ setInterval(()=>{loopWindow=loopNow();loopDelay.reset();},300000).unref();
 function loopNow(){const ms=n=>Number.isFinite(n)?Math.round(n/1e4)/100:0;return {p50:ms(loopDelay.percentile(50)),p99:ms(loopDelay.percentile(99)),max:ms(loopDelay.max)};}
 function performanceInfo(){
   const st=store.stats,r=n=>Math.round(n*100)/100,now=loopNow(),was=loopWindow;
-  return {storage:{saves:st.saves,lastMs:r(st.lastMs),avgMs:r(st.avgMs),maxMs:r(st.maxMs),rows:st.rows,serialized:st.serialized,skipped:st.skipped,written:st.written,kb:Math.round(st.bytes/1024),verifies:st.verifies},
+  return {storage:{saves:st.saves,lastMs:r(st.lastMs),avgMs:r(st.avgMs),maxMs:r(st.maxMs),rows:st.rows,serialized:st.serialized,skipped:st.skipped,written:st.written,kb:Math.round(st.bytes/1024),verifies:st.verifies,missed:st.missed,lastMissed:st.lastMissed},
     loop:was?{p50:Math.max(now.p50,was.p50),p99:Math.max(now.p99,was.p99),max:Math.max(now.max,was.max)}:now,live:liveStats()};
 }
 async function updateState(){
@@ -397,10 +424,10 @@ function liveTick(only){
     if(!sess||(state.users.length&&!u)||(sess.userId||null)!==(c.userId||null)){c.send('end',{reason:'signed out'});c.close();continue;}
     sess.seen=Date.now();
     if(c.behind()){c.skipped++;liveCount.skipped++;continue;}
-    const role=u?.role||'owner',snap=roles.get(role)||snapshotFor(role);roles.set(role,snap);
+    const role=u?.role||'owner',snap=roles.get(role)||snapshotFor(role,true);roles.set(role,snap);
     if(c.tag!==snap.tag){
       const p=c.tag?patchFrom(snap,c.tag):null;
-      if(p)c.send('patch',{from:c.tag,tag:snap.tag,p});else{if(c.tag){c.resyncs++;liveCount.resyncs++;}c.send('full',{tag:snap.tag,state:JSON.parse(snap.full||=withTag(snap.body,snap.tag))});}
+      if(p)c.send('patch',{from:c.tag,tag:snap.tag,p});else{if(c.tag){c.resyncs++;liveCount.resyncs++;}c.write(snap.fullEvent||=`event: full\ndata: {"tag":"${snap.tag}","state":${snap.full||=withTag(snap.body,snap.tag)}}\n\n`);}
       c.tag=snap.tag;
     }
     for(const [id,feed] of chatLive){
@@ -418,7 +445,7 @@ setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
 setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner'){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):'')};return role==='viewer'?{...x,hook:w.hook?'redacted':null,appHook:w.appHook?'redacted':null}:x;}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):'')};return role==='viewer'?{...x,hook:w.hook?'redacted':null,appHook:w.appHook?'redacted':null}:x;}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 function string(v,max=10000){if(typeof v!=='string'||v.length>max)fail('Invalid or oversized text.');return v.trim();}
 function findAgent(agentId){const a=state.agents.find(a=>a.id===agentId);if(!a)fail('Agent not found.',404);return a;}
@@ -3888,7 +3915,7 @@ async function checkRun(run,b,who){
   else delete cache[u.key];
   run.checked=[...(run.checked||[]),{...u,done:b.done,by:name,time:Date.now()}].slice(-20);
   delete run.check;run.status='failed';
-  const job=run.jobId&&state.jobs.find(j=>j.id===run.jobId);if(job){job.status='failed';job.updatedAt=Date.now();}
+  const job=run.jobId&&state.jobs.find(j=>j.id===run.jobId);if(job){job.status='failed';job.updatedAt=Date.now();store.touch(job);}
   event(`${u.app} checked: ${b.done?'it went through':'it did not go through'}`,`${run.name}, step ${u.step+1}. ${b.done?'It is not sent again.':'It is sent again now.'}`,'workflow');
   try{return await resumeRun(run);}catch(e){await persist(run);throw e;}
 }
@@ -5061,7 +5088,7 @@ const server=http.createServer(async(req,res)=>{
         await fs.rm(path.join(DATA,'secrets.enc'),{force:true});vaultError='';await persistSecrets();event('Saved secrets cleared','Enter your keys again in IT.','system');await persist();return send(res,200,{ok:true});
       }
       // The page polls every 2 seconds. It sends the tag of the state it has, and gets an empty answer when nothing changed.
-      if(route==='/api/state'&&req.method==='GET'){const snap=snapshotFor(me?.role||'owner'),{body,tag}=snap;if(req.headers['x-silo-since']===tag){res.writeHead(204,{'Cache-Control':'no-store'});return res.end();}const full=snap.full||=withTag(body,tag),enc=encodingFor(req),sh={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'};if(!enc){res.writeHead(200,sh);return res.end(full);}snap.packed||={};const packed=snap.packed[enc]||=pack(Buffer.from(full),enc);res.writeHead(200,{...sh,'Content-Encoding':enc,'Vary':'Accept-Encoding'});return res.end(packed);}
+      if(route==='/api/state'&&req.method==='GET'){const snap=snapshotFor(me?.role||'owner',url.searchParams.get('view')==='page'),{body,tag}=snap;if(req.headers['x-silo-since']===tag){res.writeHead(204,{'Cache-Control':'no-store'});return res.end();}const full=snap.full||=withTag(body,tag),enc=encodingFor(req),sh={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'};if(!enc){res.writeHead(200,sh);return res.end(full);}snap.packed||={};const packed=snap.packed[enc]||=pack(Buffer.from(full),enc);res.writeHead(200,{...sh,'Content-Encoding':enc,'Vary':'Accept-Encoding'});return res.end(packed);}
       // The live channel: Server-Sent Events. The page gets the whole state once, then only what changes, as it
       // changes, and the text a resident is writing. When it cannot connect, the page asks every two seconds as before.
       if(route==='/api/stream'&&req.method==='GET'){
@@ -5660,7 +5687,8 @@ const server=http.createServer(async(req,res)=>{
           if(c)c.abort(new Error('Stopped by you.'));
           job.status='cancelled';job.updatedAt=Date.now();
           if(run&&run.status==='queued')run.status='stopped';
-          await persist();queueMicrotask(()=>pumpJobQueue().catch(()=>{}));
+          // A finished job can be cancelled too, so it is named: a settled row is not compared on every save.
+          await persist(job,run);queueMicrotask(()=>pumpJobQueue().catch(()=>{}));
           return send(res,200,{ok:true,job});
         }
         if(jm[2]==='compensate'){

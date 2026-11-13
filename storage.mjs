@@ -43,7 +43,9 @@ export class StateStore {
     this.quiet = new WeakMap();
     this.touched = new Set();
     this.lastVerifyAt = Date.now();
-    this.stats = {saves: 0, lastMs: 0, maxMs: 0, avgMs: 0, rows: 0, serialized: 0, skipped: 0, written: 0, bytes: 0, verifies: 0};
+    this.stats = {saves: 0, lastMs: 0, maxMs: 0, avgMs: 0, rows: 0, serialized: 0, skipped: 0, written: 0, bytes: 0, verifies: 0, missed: 0, lastMissed: null};
+    // Called with {col, id} when a full comparison finds a settled row that changed without being named in save().
+    this.onMissed = null;
     this.jsonFile = path.join(dataDir, 'state.json');
     this.bakFile = path.join(dataDir, 'state.json.bak');
     this.dbFile = path.join(dataDir, 'state.db');
@@ -207,9 +209,13 @@ export class StateStore {
           const item = list[i], cacheKey = `${col}\u0000${keys[i]}`, obj = item && typeof item === 'object';
           rows++;
           const done = obj && this.settled ? this.settled(col, item) : false, q = done ? this.quiet.get(item) : null;
-          if (!verify && q && q.key === cacheKey && q.seen - q.since >= this.settleMs && !touched.has(item) && this.rowHashes.get(cacheKey) === q.hash) { skipped++; continue; }
+          const quiet = q && q.key === cacheKey && q.seen - q.since >= this.settleMs && !touched.has(item) && this.rowHashes.get(cacheKey) === q.hash;
+          if (!verify && quiet) { skipped++; continue; }
           const json = JSON.stringify(item ?? null), h = sha256(json);
           serialized++; bytes += json.length;
+          // A row that would have been skipped but changed: the code that changed it did not name it. It is written now,
+          // and counted, so the place that forgot can be found (the tests fail on it).
+          if (quiet && h !== q.hash) { const id = item.id ?? keys[i]; this.stats.missed++; this.stats.lastMissed = {col, id, at: now}; try { this.onMissed?.({col, id}); } catch {} }
           if (this.rowHashes.get(cacheKey) !== h) {
             this.sql.putRow.run(col, keys[i], h, now, json);
             changed = true; written++;
@@ -245,6 +251,10 @@ export class StateStore {
     }
   }
 
+  // Rows changed where no save follows at once (a span that ends after its trace): written by the next save even if
+  // they look settled.
+  touch(...rows) { for (const t of rows) if (t && typeof t === 'object') this.touched.add(t); }
+
   // Resolves once the change is committed to SQLite. Saves in the same tick are written once.
   // touched: rows changed by this save that may be finished, so they are written even if they look settled.
   save(state, touched) {
@@ -274,6 +284,14 @@ export class StateStore {
     });
   }
 
+  // What the timer does: a save when a row was touched or the full comparison is due, so a change to a settled row
+  // reaches SQLite even if no other save follows, then the periodic copies.
+  tick(now = Date.now()) {
+    if (this.closed || !this.state) return;
+    if (this.settled && !this.flushScheduled && (this.touched.size || now - this.lastVerifyAt >= this.verifyEvery)) { this.save(this.state).catch(() => {}); return; }
+    this.maintain(now);
+  }
+
   // The periodic copies: state.json every few minutes, a SQLite snapshot every hour.
   maintain(now = Date.now()) {
     if (this.closed || !this.state) return;
@@ -283,7 +301,7 @@ export class StateStore {
 
   startTimer() {
     if (this.timer) return;
-    this.timer = setInterval(() => this.maintain(), Math.min(60_000, Math.max(1000, this.jsonEvery / 5)));
+    this.timer = setInterval(() => this.tick(), Math.min(60_000, Math.max(1000, Math.min(this.jsonEvery / 5, this.verifyEvery / 2))));
     this.timer.unref?.();
   }
 
