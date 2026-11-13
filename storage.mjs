@@ -12,6 +12,11 @@ const COLLECTIONS = ['agents', 'workflows', 'runs', 'jobs', 'goals', 'grants', '
 const JSON_EVERY = 5 * 60_000;
 const SNAPSHOT_EVERY = 60 * 60_000;
 const SNAPSHOTS_KEPT = 3;
+// A row that is finished (a completed run, an old event) and has not changed for SETTLE_MS is not serialized again on
+// every save. A save that names it (save(state, [row])) still writes it, and every VERIFY_EVERY all rows are compared
+// again, so a change nobody named reaches the file within that time, and always on close.
+const SETTLE_MS = 10_000;
+const VERIFY_EVERY = 60_000;
 const SCHEMA = 2;
 
 const validState = s => !!s && typeof s === 'object' && Array.isArray(s.agents);
@@ -27,8 +32,18 @@ function rowKeys(list) {
 }
 
 export class StateStore {
-  constructor(dataDir, {jsonEvery = JSON_EVERY, snapshotEvery = SNAPSHOT_EVERY} = {}) {
+  // settled(collection, row): whether the row is finished. Without it every row is compared on every save, as before.
+  constructor(dataDir, {jsonEvery = JSON_EVERY, snapshotEvery = SNAPSHOT_EVERY, settled = null, settleMs = SETTLE_MS, verifyEvery = VERIFY_EVERY} = {}) {
     this.dir = dataDir;
+    this.settled = settled;
+    this.settleMs = settleMs;
+    this.verifyEvery = verifyEvery;
+    // row object -> {key, hash, since, seen}: the last hash of the row while it was finished, when that hash was first
+    // seen and when it was last serialized and found the same. A row is skipped once those two are SETTLE_MS apart.
+    this.quiet = new WeakMap();
+    this.touched = new Set();
+    this.lastVerifyAt = Date.now();
+    this.stats = {saves: 0, lastMs: 0, maxMs: 0, avgMs: 0, rows: 0, serialized: 0, skipped: 0, written: 0, bytes: 0, verifies: 0};
     this.jsonFile = path.join(dataDir, 'state.json');
     this.bakFile = path.join(dataDir, 'state.json.bak');
     this.dbFile = path.join(dataDir, 'state.db');
@@ -167,12 +182,14 @@ export class StateStore {
   }
 
   // Writes the rows that changed since the last save and says whether anything was written.
-  // full: compare against what is in the file, not the cache.
-  syncToSqlite(state, {full = false} = {}) {
+  // full: compare against what is in the file, not the cache. verify: serialize every row, settled or not.
+  syncToSqlite(state, {full = false, verify = false} = {}) {
     this.init();
     if (full) this.rowHashes.clear();
-    const now = Date.now();
-    let changed = false;
+    const now = Date.now(), started = performance.now(), touched = this.touched;
+    verify = verify || full || !this.settled || now - this.lastVerifyAt >= this.verifyEvery;
+    this.touched = new Set();
+    let changed = false, rows = 0, serialized = 0, skipped = 0, written = 0, bytes = 0;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const rootMeta = {};
@@ -187,12 +204,19 @@ export class StateStore {
         const present = Array.isArray(state[col]), list = present ? state[col] : [];
         const keys = rowKeys(list);
         for (let i = 0; i < list.length; i++) {
-          const json = JSON.stringify(list[i] ?? null), h = sha256(json), cacheKey = `${col}\u0000${keys[i]}`;
+          const item = list[i], cacheKey = `${col}\u0000${keys[i]}`, obj = item && typeof item === 'object';
+          rows++;
+          const done = obj && this.settled ? this.settled(col, item) : false, q = done ? this.quiet.get(item) : null;
+          if (!verify && q && q.key === cacheKey && q.seen - q.since >= this.settleMs && !touched.has(item) && this.rowHashes.get(cacheKey) === q.hash) { skipped++; continue; }
+          const json = JSON.stringify(item ?? null), h = sha256(json);
+          serialized++; bytes += json.length;
           if (this.rowHashes.get(cacheKey) !== h) {
             this.sql.putRow.run(col, keys[i], h, now, json);
-            changed = true;
+            changed = true; written++;
             this.rowHashes.set(cacheKey, h);
           }
+          if (done) { if (q && q.key === cacheKey && q.hash === h) q.seen = now; else this.quiet.set(item, {key: cacheKey, hash: h, since: now, seen: now}); }
+          else if (obj) this.quiet.delete(item);
         }
         const order = present ? JSON.stringify(keys) : 'null';
         if (full || this.rowHashes.get('order:' + col) !== order) {
@@ -207,19 +231,27 @@ export class StateStore {
       }
       if (full) this.sql.dropOtherCollections.run(...COLLECTIONS);
       this.db.exec('COMMIT');
+      if (verify) { this.lastVerifyAt = now; this.stats.verifies++; }
+      const ms = performance.now() - started, st = this.stats;
+      st.saves++; st.lastMs = ms; st.maxMs = Math.max(st.maxMs, ms); st.avgMs = st.saves === 1 ? ms : st.avgMs * .9 + ms * .1;
+      Object.assign(st, {rows, serialized, skipped, written, bytes});
       return changed;
     } catch (e) {
       try { this.db.exec('ROLLBACK'); } catch {}
       this.rowHashes.clear();
+      this.quiet = new WeakMap();
+      for (const t of touched) this.touched.add(t);
       throw e;
     }
   }
 
   // Resolves once the change is committed to SQLite. Saves in the same tick are written once.
-  save(state) {
+  // touched: rows changed by this save that may be finished, so they are written even if they look settled.
+  save(state, touched) {
     if (this.closed) return Promise.reject(new Error('The state store is closed.'));
     this.state = state;
     this.pendingState = state;
+    if (touched) for (const t of touched) if (t && typeof t === 'object') this.touched.add(t);
     return new Promise((resolve, reject) => {
       this.flushResolvers.push({resolve, reject});
       if (this.flushScheduled) return;
@@ -308,7 +340,7 @@ export class StateStore {
     if (this.closed) return;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.db && this.state) {
-      try { if (this.syncToSqlite(this.state)) this.jsonDirty = true; } catch {}
+      try { if (this.syncToSqlite(this.state, {verify: true})) this.jsonDirty = true; } catch {}
       if (this.jsonDirty || this.jsonWriting) {
         const text = JSON.stringify(this.state, null, 2), tmp = `${this.jsonFile}.${process.pid}.close.tmp`;
         try {

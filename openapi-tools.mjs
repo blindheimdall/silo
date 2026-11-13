@@ -214,7 +214,8 @@ export class OpenApiClient{
     // Redirects are followed only on the same host, at most three times.
     for(let hop=0;;hop++){
       try{r=await this.fetcher(target.href,{method:op.method,headers,body,redirect:'manual',signal:both});}
-      catch(e){if(signal?.aborted)throw signal.reason||e;return {content:[{type:'text',text:timer.aborted?'The API did not answer within 30 seconds.':`Could not reach the API: ${e.message}`}],isError:true};}
+      // The cause's code tells a refused connection (nothing was sent) from one that broke after sending.
+      catch(e){if(signal?.aborted)throw signal.reason||e;return {content:[{type:'text',text:timer.aborted?'The API did not answer within 30 seconds.':`Could not reach the API: ${e.message}${e.cause?.code?` (${e.cause.code})`:''}`}],isError:true};}
       if(r.status<300||r.status>=400||hop>=3)break;
       const next=r.headers.get('location');if(!next)break;const n=new URL(next,target);
       if(n.host!==url.host||n.protocol!==url.protocol)return {content:[{type:'text',text:`The API sent the request on to another host (${n.host}). SILO did not follow it.`}],isError:true};

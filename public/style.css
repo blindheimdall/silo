@@ -8,3 +8,4 @@ svg{width:16px;height:16px;flex-shrink:0;vertical-align:middle}.empty>svg{width:
 @media(prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto!important}}
 
 .px-avatar{display:block;image-rendering:pixelated;image-rendering:crisp-edges}.pixel-avatar .px-avatar{width:34px;height:50px}.tiny-avatar .px-avatar{width:15px;height:22px}.search-result .tiny-avatar .px-avatar{width:17px;height:25px}.empty .px-avatar{width:51px;height:75px;margin:0 auto 10px}
+.queue-line{display:flex;gap:8px;align-items:start;font-size:10px;line-height:1.7;color:#7f8a6e;background:#eef0e4;border:1px solid #dfe3d3;border-radius:4px;padding:9px 12px;margin:-12px 0 16px}.queue-line svg{width:12px;height:12px;flex-shrink:0;margin-top:3px}.queue-line strong{font-weight:600;color:#53644a}

@@ -310,7 +310,8 @@ export class SiloWorld3D{
     try{this.lensCleanedAt=Number(localStorage.getItem('silo-lens-cleaned'))||Date.now()-3*3600e3;}catch{this.lensCleanedAt=Date.now()-3*3600e3;}
     const s3=performance.now();this.update(this.agents,this.selected,false);this.startup.residents=performance.now()-s3;this.installControls();this.reportLevel(true);this.emitZoom();
     canvas.dataset.renderer='3d';canvas.dataset.crt=this.crt?'on':'off';canvas.parentElement.dataset.world='3d';
-    if(new URLSearchParams(location.search).has('debug'))window.siloDebug=this;
+    // With ?debug: window.siloDebug is the world, and siloProfile() measures frame times in three scenes (profile-3d.js).
+    if(new URLSearchParams(location.search).has('debug')){window.siloDebug=this;window.siloProfile=o=>import('./profile-3d.js').then(m=>m.profileScenarios(this,o));}
     this.animate=stamp=>{
       if(!this.alive)return;this.raf=requestAnimationFrame(this.animate);
       if(document.hidden){this.last=stamp;return;}
@@ -336,6 +337,7 @@ export class SiloWorld3D{
       if(this.frameAvgMs>24&&!this.lowQuality)this.lowQuality=true;
       else if(this.frameAvgMs<14&&this.lowQuality)this.lowQuality=false;
       this.timing={tick:t1-t0,draw:t2-t1,feeds:t3-t2,avg:this.frameAvgMs,lowQuality:this.lowQuality};
+      const rec=this.rec;if(rec){if(rec.prev)rec.gap.push(stamp-rec.prev);rec.prev=stamp;rec.tick.push(t1-t0);rec.draw.push(t2-t1);rec.feeds.push(t3-t2);if(this.lowQuality)rec.low++;}
       if((this.framesDrawn=(this.framesDrawn||0)+1)<=3)(this.startup.frames||=[]).push({tick:Math.round(t1-t0),draw:Math.round(t2-t1),feeds:Math.round(t3-t2)});
     };
     this.raf=requestAnimationFrame(this.animate);
@@ -1653,37 +1655,29 @@ export class SiloWorld3D{
     let slot=this.feedTargets.get(key);
     if(!slot){slot={target:new T.WebGLRenderTarget(w,h,{type:T.UnsignedByteType,depthBuffer:true,stencilBuffer:true}),pixels:new Uint8Array(w*h*4)};this.feedTargets.set(key,slot);}
     const cam=this.aimFeed(P,w/h);
-    const fog=this.scene.fog;
-    const saved={
-      clipConstant:this.clipPlane.constant,
-      outsideVisible:this.outside.visible,
-      bottomVisible:this.bottomGroup.visible,
-      dustVisible:this.dust.visible,
-      chunkVis:this.chunks.map(c=>c.visible),
-      detailVis:this.detailMeshes.map(m=>m.visible),
-      markers:[this.selectMarker,this.hoverMarker,this.selectLabel,this.hoverLabel].map(o=>o.visible),
-      councils:[...this.councilMarks.values()].map(m=>({m,ring:m.ring.visible,label:m.label.visible})),
-      fogColor:fog.color.clone(),
-      fogDensity:fog.density,
-      bgColor:this.scene.background.clone(),
-      sunInt:this.sun.intensity,
-      keyInt:this.key.intensity,
-      beaconInt:this.beaconLight.intensity,
-      alarmInt:this.alarmLight.intensity,
-      heatInts:this.heats.map(ht=>ht.intensity),
-      lamps:this.lampLights.map(l=>({pos:l.position.clone(),col:l.color.clone()})),
-      stairs:this.stairLights.map(l=>l.position.clone()),
-      people:[...this.people.values()].map(e=>({e,vis:e.sprite.visible,pos:e.sprite.position.clone(),bVis:e.bubble?e.bubble.visible:false,bPos:e.bubble?e.bubble.position.clone():null})),
-      couriers:[...this.couriers.values()].map(c=>({c,sVis:c.sprite.visible,fVis:c.folder.visible,tVis:c.tag.visible,gVis:c.ghost.visible})),
-      autoShadow:r.shadowMap.autoUpdate
-    };
+    const fog=this.scene.fog,markers=this.feedMarkers||=[this.selectMarker,this.hoverMarker,this.selectLabel,this.hoverLabel];
+    // The scene state the camera changes is kept in buffers reused from capture to capture, so a camera running many
+    // times a second with many residents makes no garbage. Only what is there now is stored: lengths are set each time.
+    const saved=this.feedSaved||={chunkVis:[],detailVis:[],markers:[],councils:[],heatInts:[],lamps:[],stairs:[],people:[],couriers:[],fogColor:new T.Color(),bgColor:new T.Color()};
+    saved.clipConstant=this.clipPlane.constant;saved.outsideVisible=this.outside.visible;saved.bottomVisible=this.bottomGroup.visible;saved.dustVisible=this.dust.visible;
+    saved.fogColor.copy(fog.color);saved.fogDensity=fog.density;saved.bgColor.copy(this.scene.background);
+    saved.sunInt=this.sun.intensity;saved.keyInt=this.key.intensity;saved.beaconInt=this.beaconLight.intensity;saved.alarmInt=this.alarmLight.intensity;saved.autoShadow=r.shadowMap.autoUpdate;
+    saved.chunkVis.length=0;for(const c of this.chunks)saved.chunkVis.push(c.visible);
+    saved.detailVis.length=0;for(const m of this.detailMeshes)saved.detailVis.push(m.visible);
+    saved.markers.length=0;for(const o of markers)saved.markers.push(o.visible);
+    saved.heatInts.length=0;for(const ht of this.heats)saved.heatInts.push(ht.intensity);
+    this.lampLights.forEach((l,i)=>{const s=saved.lamps[i]||={pos:new T.Vector3(),col:new T.Color()};s.pos.copy(l.position);s.col.copy(l.color);});
+    this.stairLights.forEach((l,i)=>{(saved.stairs[i]||=new T.Vector3()).copy(l.position);});
+    let n=0;for(const m of this.councilMarks.values()){const s=saved.councils[n++]||={};s.m=m;s.ring=m.ring.visible;s.label=m.label.visible;}saved.councilCount=n;
+    n=0;for(const e of this.people.values()){const s=saved.people[n++]||={pos:new T.Vector3(),bPos:new T.Vector3()};s.e=e;s.vis=e.sprite.visible;s.pos.copy(e.sprite.position);s.bVis=e.bubble?e.bubble.visible:false;if(e.bubble)s.bPos.copy(e.bubble.position);}saved.peopleCount=n;
+    n=0;for(const c of this.couriers.values()){const s=saved.couriers[n++]||={};s.c=c;s.sVis=c.sprite.visible;s.fVis=c.folder.visible;s.tVis=c.tag.visible;s.gVis=c.ghost.visible;}saved.courierCount=n;
     let read=null;
     try{
       this.clipPlane.constant=1e5;this.outside.visible=P.outside;
       for(const c of this.chunks)c.visible=!P.outside&&c.userData.last>=P.lo&&c.userData.first<=P.hi;
       for(const mesh of this.detailMeshes)mesh.visible=!this.lowQuality;
       this.bottomGroup.visible=!P.outside&&P.hi>=LEVELS-12;this.dust.visible=false;
-      for(const o of [this.selectMarker,this.hoverMarker,this.selectLabel,this.hoverLabel])o.visible=false;
+      for(const o of markers)o.visible=false;
       for(const m of this.councilMarks.values()){if(P.outside){m.ring.visible=false;m.label.visible=false;}}
       const deep=smooth(118,141,P.level);
       if(P.outside){fog.color.copy(this.fogOutside);fog.density=.00028;}else{fog.color.copy(this.fogInside).lerp(this.fogBottom,deep);fog.density=mix(.009,.011,deep);}
@@ -1711,8 +1705,8 @@ export class SiloWorld3D{
       this.dust.visible=saved.dustVisible;
       this.chunks.forEach((c,i)=>{c.visible=saved.chunkVis[i];});
       this.detailMeshes.forEach((m,i)=>{m.visible=saved.detailVis[i];});
-      [this.selectMarker,this.hoverMarker,this.selectLabel,this.hoverLabel].forEach((o,i)=>{o.visible=saved.markers[i];});
-      for(const {m,ring,label} of saved.councils){m.ring.visible=ring;m.label.visible=label;}
+      markers.forEach((o,i)=>{o.visible=saved.markers[i];});
+      for(let i=0;i<saved.councilCount;i++){const {m,ring,label}=saved.councils[i];m.ring.visible=ring;m.label.visible=label;}
       fog.color.copy(saved.fogColor);fog.density=saved.fogDensity;
       this.scene.background.copy(saved.bgColor);
       this.sun.intensity=saved.sunInt;this.key.intensity=saved.keyInt;
@@ -1720,8 +1714,10 @@ export class SiloWorld3D{
       this.heats.forEach((ht,i)=>{ht.intensity=saved.heatInts[i];});
       this.lampLights.forEach((l,i)=>{l.position.copy(saved.lamps[i].pos);l.color.copy(saved.lamps[i].col);});
       this.stairLights.forEach((l,i)=>{l.position.copy(saved.stairs[i]);});
-      for(const p of saved.people){p.e.sprite.visible=p.vis;p.e.sprite.position.copy(p.pos);if(p.e.bubble){p.e.bubble.visible=p.bVis;if(p.bPos)p.e.bubble.position.copy(p.bPos);}}
-      for(const c of saved.couriers){c.c.sprite.visible=c.sVis;c.c.folder.visible=c.fVis;c.c.tag.visible=c.tVis;c.c.ghost.visible=c.gVis;}
+      for(let i=0;i<saved.peopleCount;i++){const p=saved.people[i];p.e.sprite.visible=p.vis;p.e.sprite.position.copy(p.pos);if(p.e.bubble){p.e.bubble.visible=p.bVis;p.e.bubble.position.copy(p.bPos);}}
+      for(let i=0;i<saved.courierCount;i++){const c=saved.couriers[i];c.c.sprite.visible=c.sVis;c.c.folder.visible=c.fVis;c.c.tag.visible=c.tVis;c.c.ghost.visible=c.gVis;}
+      // References are let go, so removed residents are not kept alive by the buffers.
+      for(let i=0;i<saved.peopleCount;i++)saved.people[i].e=null;for(let i=0;i<saved.courierCount;i++)saved.couriers[i].c=null;for(let i=0;i<saved.councilCount;i++)saved.councils[i].m=null;
     }
     this.feedsThisFrame++;this.lastFeedPose=P;
     return async?(read||Promise.resolve(slot.pixels)):slot.pixels;
@@ -1771,6 +1767,13 @@ export class SiloWorld3D{
       ctx.fillText(bot.slice(0,32).toUpperCase(),5,102);
       this.wallTexture.needsUpdate=true;
     },()=>{this.wallPending=false;});
+  }
+  // Frame times for profiling. record() starts, record(false) stops and returns, for every drawn frame, the time since
+  // the frame before (gap) and what each part took (tick, draw, feeds), in ms.
+  record(on=true){
+    if(on){this.rec={gap:[],tick:[],draw:[],feeds:[],low:0,prev:0};return null;}
+    const r=this.rec;this.rec=null;
+    return r&&{gap:r.gap,tick:r.tick,draw:r.draw,feeds:r.feeds,lowFrames:r.low,ratio:this.renderer.getPixelRatio(),size:[Math.round(this.width||0),Math.round(this.height||0)]};
   }
   // gap: time since the frame before. The best gap seen is the screen's own rhythm (16.7 ms at 60 Hz).
   adaptSharpness(gap){

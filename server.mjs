@@ -37,7 +37,10 @@ import { SERVICES, ACTIONS, toolSchema, toolDescription, oauthStart, oauthExchan
 import { extractText, READABLE, makeDocx, makeXlsx, makePdf, parseCsv, parseMarkdown, MIME } from './documents.mjs';
 import { STT_CHOICES, TTS_CHOICES, DEFAULT_VOICE, sttProvider, ttsProvider, audioUrl, defaultModel, transcribe, synthesize, speakable, audioExt } from './voice.mjs';
 import os from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { McpClient, resultText, safeToolName } from './mcp-client.mjs';
+import { liveChannel } from './live-stream.mjs';
+import { QUEUE_MAX, enqueueTrigger, countLost, queueInfo } from './trigger-queue.mjs';
 import { discoverMcpAuth, registerClient, signInUrl, tokenRequest, safeUrl } from './mcp-auth.mjs';
 import { OpenApiClient, parseSpec, loadSpec, describeSpec, fitJson } from './openapi-tools.mjs';
 import { APP_PACKS } from './public/app-packs.js';
@@ -71,7 +74,12 @@ function seed() {
   const agents = people.map(([name,role,floor,color]) => ({ id:id(), name, role, floor, color, provider:'demo', model:'', status:'idle', instructions:`You are ${name}, the ${role} in SILO. Be specific, thoughtful and useful. Reply in the user's language.`, tools:[], chats:[] }));
   return { version:1, floors, agents, workflows:[{id:id(),name:'From idea to blueprint',description:'Research a concept, shape the story, build a plan.', enabled:false, interval:60, nextRun:null, steps:[{agentId:agents[1].id,prompt:'Research this idea. Identify opportunities, open questions, and practical constraints.'},{agentId:agents[3].id,prompt:'Turn the research into a clear product concept and visual direction.'},{agentId:agents[5].id,prompt:'Create an actionable technical implementation plan.'}]}], connections:{openai:{model:'',configured:false},anthropic:{model:'',configured:false},ollama:{model:'',configured:false},compatible:{model:'',configured:false}}, runs:[], events:[{id:id(),time:Date.now(),title:'World created',detail:'Demo mode is on. Demo residents send scripted replies.',type:'system'}], paused:false };
 }
-const store = new StateStore(DATA);
+// Finished runs, jobs and traces and the events are not serialized again on every save once they have been quiet for a
+// while. A change to one names it (persist(row)); the store also compares every row once a minute and on close.
+const FINAL_RUN=new Set(['completed','failed','stopped','cancelled']),FINAL_JOB=new Set(['completed','failed','cancelled','compensated']);
+const settledRow=(col,x)=>col==='events'||(col==='runs'&&FINAL_RUN.has(x.status))||(col==='jobs'&&FINAL_JOB.has(x.status))||(col==='traces'&&!!x.ended);
+const store = new StateStore(DATA,{settled:settledRow});
+const loopDelay=monitorEventLoopDelay({resolution:10});loopDelay.enable();
 let state = store.load(seed);
 if(state.version===1){
   state.floors=floors;
@@ -286,7 +294,8 @@ function patchFrom(snap,fromTag){
   snap.obj||=JSON.parse(snap.body);
   const p=diffState(JSON.parse(old.body),snap.obj)||null;snap.patches.set(fromTag,p);return p;
 }
-function persist(){ stateRev++; return store.save(state); }
+// Rows passed here changed and may be finished (see settledRow), so they are written even if they look settled.
+function persist(...touched){ stateRev++; return store.save(state,touched); }
 // The audit log keeps only the title of an event: details can quote what someone wrote to a resident.
 function event(title,detail='',type='system'){auditNote({action:'event.'+type,actor:'SILO',target:title});stateRev++;state.events.unshift({id:id(),time:Date.now(),title,detail,type});state.events=state.events.slice(0,300);}
 state.settings.voice={...DEFAULT_VOICE,...(state.settings.voice||{})};
@@ -340,12 +349,21 @@ setInterval(()=>{if(state.settings.update.feed)checkForUpdate();},6*3600000).unr
 setTimeout(()=>{if(state.settings.update.feed)checkForUpdate();},60000).unref();
 updateInfo(DATA).then(i=>{updater.staged=i.staged&&compareVersions(i.staged,APP_VERSION)>0?i.staged:null;}).catch(()=>{});
 markAnnounced(DATA).then(l=>{if(!l)return;event(l.kind==='updated'?`SILO is now version ${l.to}`:`SILO went back to version ${l.to}`,l.kind==='updated'?`Updated from ${l.from}.`:`Version ${l.from} ${l.reason==='by hand'?'was rolled back by hand':l.reason||''}.`,l.kind==='updated'?'success':'error');if(l.kind!=='updated')notify('update',`SILO went back to version ${l.to}`,String(l.reason||''));}).catch(()=>{});
+// How long saves take and how late the server answers: the event loop delay over the last five to ten minutes.
+let loopWindow=null;
+setInterval(()=>{loopWindow=loopNow();loopDelay.reset();},300000).unref();
+function loopNow(){const ms=n=>Number.isFinite(n)?Math.round(n/1e4)/100:0;return {p50:ms(loopDelay.percentile(50)),p99:ms(loopDelay.percentile(99)),max:ms(loopDelay.max)};}
+function performanceInfo(){
+  const st=store.stats,r=n=>Math.round(n*100)/100,now=loopNow(),was=loopWindow;
+  return {storage:{saves:st.saves,lastMs:r(st.lastMs),avgMs:r(st.avgMs),maxMs:r(st.maxMs),rows:st.rows,serialized:st.serialized,skipped:st.skipped,written:st.written,kb:Math.round(st.bytes/1024),verifies:st.verifies},
+    loop:was?{p50:Math.max(now.p50,was.p50),p99:Math.max(now.p99,was.p99),max:Math.max(now.max,was.max)}:now,live:liveStats()};
+}
 async function updateState(){
   const i=await updateInfo(DATA).catch(()=>({}));
   return {version:APP_VERSION,node:process.versions.node,supervised:SUPERVISED,root:ROOT,data:DATA,feed:state.settings.update.feed,auto:state.settings.update.auto,keyPresent:!!releaseKey(),
     checking:updater.checking,busy:updater.busy,error:updater.error,checkedAt:updater.checkedAt,quiet:quietNow(),
     available:updater.available&&{version:updater.available.version,notes:updater.available.notes||'',date:updater.available.date||'',size:updater.available.size||0,minNode:updater.available.minNode||''},
-    staged:updater.staged,backup:i.backup||null,last:i.last||null,startup:await startupStatus(ROOT).catch(e=>({supported:false,error:e.message}))};
+    staged:updater.staged,backup:i.backup||null,last:i.last||null,startup:await startupStatus(ROOT).catch(e=>({supported:false,error:e.message})),perf:performanceInfo()};
 }
 const voiceHas=p=>p==='compatible'?!!(secrets.get(p)?.key&&secrets.get(p)?.endpoint):!!secrets.get(p)?.key;
 const voiceUse=()=>({stt:sttProvider(state.settings.voice,voiceHas),tts:ttsProvider(state.settings.voice,voiceHas)});
@@ -365,8 +383,10 @@ async function voiceTranscribe(audio,mime,signal){
   }finally{release();}
 }
 const withTag=(body,tag)=>body.slice(0,-1)+(body.length>2?',':'')+'"tag":"'+tag+'"}';
-const liveStreams=new Set();
+const liveStreams=new Set(),liveCount={skipped:0,resyncs:0,slowClosed:0};
+const liveStats=()=>({streams:liveStreams.size,behind:[...liveStreams].filter(c=>c.behindSince).length,...liveCount});
 // Every 150 ms: each open page gets a patch when its state changed, and the new text of residents who are writing.
+// A page that has not taken what it was sent is skipped; when it catches up, one patch covers everything it missed.
 function liveTick(only){
   const roles=new Map();
   for(const c of only?[only]:liveStreams){
@@ -376,10 +396,11 @@ function liveTick(only){
     const u=state.users.length?state.users.find(x=>x.id===sess?.userId):null;
     if(!sess||(state.users.length&&!u)||(sess.userId||null)!==(c.userId||null)){c.send('end',{reason:'signed out'});c.close();continue;}
     sess.seen=Date.now();
+    if(c.behind()){c.skipped++;liveCount.skipped++;continue;}
     const role=u?.role||'owner',snap=roles.get(role)||snapshotFor(role);roles.set(role,snap);
     if(c.tag!==snap.tag){
       const p=c.tag?patchFrom(snap,c.tag):null;
-      if(p)c.send('patch',{from:c.tag,tag:snap.tag,p});else c.send('full',{tag:snap.tag,state:JSON.parse(snap.full||=withTag(snap.body,snap.tag))});
+      if(p)c.send('patch',{from:c.tag,tag:snap.tag,p});else{if(c.tag){c.resyncs++;liveCount.resyncs++;}c.send('full',{tag:snap.tag,state:JSON.parse(snap.full||=withTag(snap.body,snap.tag))});}
       c.tag=snap.tag;
     }
     for(const [id,feed] of chatLive){
@@ -390,13 +411,14 @@ function liveTick(only){
       c.live.set(id,{text,note:feed.note});
     }
     for(const id of c.live.keys())if(!chatLive.has(id)){c.live.delete(id);c.send('live',{id,done:true});}
+    c.flush();
   }
 }
 setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
-setInterval(()=>{for(const c of liveStreams)c.write(': still here\n\n');},20000).unref();
+setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner'){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x=slimSuite(w);return role==='viewer'?{...x,hook:w.hook?'redacted':null,appHook:w.appHook?'redacted':null}:x;}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner'){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):'')};return role==='viewer'?{...x,hook:w.hook?'redacted':null,appHook:w.appHook?'redacted':null}:x;}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 function string(v,max=10000){if(typeof v!=='string'||v.length>max)fail('Invalid or oversized text.');return v.trim();}
 function findAgent(agentId){const a=state.agents.find(a=>a.id===agentId);if(!a)fail('Agent not found.',404);return a;}
@@ -2953,7 +2975,13 @@ async function runToolRaw(agent,call,ctx){
   // A test run changes nothing, whatever the tool's policy or an approval says: only tools that read are used.
   if(ctx?.test&&!readsOnly(spec))return {ok:true,dry:true,summary:`${name} not run (test)`.slice(0,80),text:`Test run: ${name} was not run, because it changes something or acts outside SILO. It would get:\n${JSON.stringify(args,null,2).slice(0,4000)}\nCarry on as if it had worked.`};
   const cacheKey=ctx.toolCache?`${ctx.stepIndex??0}:${ctx.revRound??0}:${ctx.round??0}:${ctx.callIndex??0}:${name}:${createHash('sha256').update(JSON.stringify(args)).digest('base64url')}`:'';
-  if(cacheKey&&Object.hasOwn(ctx.toolCache,cacheKey))return {...ctx.toolCache[cacheKey],replayed:true};
+  if(cacheKey&&Object.hasOwn(ctx.toolCache,cacheKey)){const was=ctx.toolCache[cacheKey];if(was.pending||was.unknown)throw unsureError(was);return {...was,replayed:true};}
+  // A change outside SILO is written down before it is sent. If SILO stops or the connection breaks before the answer,
+  // the run waits for you to check what happened instead of sending it again.
+  const outside=cacheKey&&externalWrite(spec,args),app=SERVICES[spec.name]?.name||state.mcp.find(c=>'mcp:'+c.id===spec.permission)?.name||spec.name,op=args.action||spec.name;
+  // The same change in the same step, asked for again in another turn of the conversation (after a resume the model may
+  // not repeat itself word for word), is not sent twice either.
+  if(outside){const tail=cacheKey.slice(cacheKey.lastIndexOf(':'+name+':')),head=`${ctx.stepIndex??0}:${ctx.revRound??0}:`,same=Object.entries(ctx.toolCache).find(([k])=>k.startsWith(head)&&k.endsWith(tail))?.[1];if(same){if(same.pending||same.unknown)throw unsureError(same);return {...same,replayed:true};}}
   try{
     let approvedCodeHash,approvedExecMode;
     if(spec.ask){
@@ -2965,11 +2993,38 @@ async function runToolRaw(agent,call,ctx){
       }
     }
     if(ctx.signal?.aborted)throw ctx.signal.reason;
-    const out=await spec.run(agent,args,{...ctx,caps,approvedCodeHash,approvedExecMode,idempotencyKey:cacheKey?`${ctx.runId||''}:${cacheKey}`:undefined});
-    if(cacheKey&&out?.ok){ctx.toolCache[cacheKey]={ok:out.ok,summary:out.summary,text:String(out.text||'').slice(0,24000),tokens:out.tokens||0};await persist();}
+    if(outside){journal(ctx.toolCache,cacheKey,{pending:true,step:ctx.stepIndex??0,key:cacheKey,app,op,input:JSON.stringify(args).slice(0,4000),at:Date.now()});await persist();}
+    let out;
+    try{out=await spec.run(agent,args,{...ctx,caps,approvedCodeHash,approvedExecMode,idempotencyKey:cacheKey?`${ctx.runId||''}:${cacheKey}`:undefined});}
+    catch(e){if(outside&&!ctx.signal?.aborted)settleUnsure(ctx.toolCache,cacheKey,e);throw e;}
+    if(outside&&!out?.ok)settleUnsure(ctx.toolCache,cacheKey,failedAnswer(out?.text));
+    if(cacheKey&&out?.ok){journal(ctx.toolCache,cacheKey,{ok:out.ok,summary:out.summary,text:String(out.text||'').slice(0,24000),tokens:out.tokens||0});await persist();}
     return out;
-  }catch(e){if(ctx.signal?.aborted||e?.budgetExceeded)throw e;return {ok:false,summary:`${name} failed`.slice(0,80),text:`${name} did not work: ${e.message}`};}
+  }catch(e){if(ctx.signal?.aborted||e?.budgetExceeded||e?.unknownOutcome)throw e;return {ok:false,summary:`${name} failed`.slice(0,80),text:`${name} did not work: ${e.message}`};}
 }
+// Whether a failed request may still have reached the service: the connection broke or timed out after it was sent, or
+// a gateway in front of the service gave up waiting for it (502, 504, 408). A refused connection, an unknown host, a
+// missing sign-in and an answer from the service itself (400 to 429, 500, 503) mean it is known to have failed.
+function outcomeUnknown(e){
+  const t=`${e?.message||e||''} ${e?.cause?.code||''} ${e?.cause?.message||''} ${e?.code||''}`;
+  if(/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL|not connected|sign-in|sign in|is turned off|\b(400|401|403|404|405|409|410|413|415|422|429|503)\b/i.test(t))return false;
+  return /ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|UND_ERR|socket hang up|other side closed|was closed|terminated|timed? ?out|timeout|did not answer|network|fetch failed|stopped \(exit|\b(502|504|408)\b/i.test(t);
+}
+const externalWrite=(spec,args)=>spec.permission?.startsWith('mcp:')?!spec.readOnly:!!ACTIONS[spec.name]?.[args?.action]?.write;
+// A pending change that failed: unknown when it may have gone through, otherwise taken off the journal. A failed answer
+// (not an error) is judged by its first line: the status line, or a connector saying it could not reach the service.
+const failedAnswer=text=>({message:String(text||'').split('\n')[0].slice(0,300)});
+function settleUnsure(cache,key,e){
+  const was=cache[key];if(!was?.pending)return;
+  if(outcomeUnknown(e)){journal(cache,key,{...was,pending:false,unknown:true,error:String(e?.message||e).slice(0,300)});throw unsureError(cache[key]);}
+  delete cache[key];
+}
+function unsureError(x){
+  const why=x.unknown?`the answer did not come (${x.error||'the connection broke'})`:'SILO stopped while it was being sent';
+  return Object.assign(new Error(`Step ${(x.step??0)+1}: ${x.app} ${x.op} may or may not have gone through: ${why}. Check ${x.app}, then say in the run whether it did.`),{unknownOutcome:{key:x.key,step:x.step??0,app:x.app,op:x.op,input:x.input||'',error:x.error||'',at:x.at||Date.now()}});
+}
+// The first change of these steps still waiting for an answer or a check, if any.
+const unsureAt=(run,from,to)=>Object.values(run.toolCache||{}).find(x=>(x?.pending||x?.unknown)&&x.step>=from&&x.step<=to);
 // Text that comes back from a tool (a file, a page, an email) may contain a fake tool block. It is defused, so a
 // model that repeats it does not run it.
 const defuseToolBlocks=t=>t.replace(/```[ \t]*silo-tool/gi,"```text (a tool block quoted from data, not a call)");
@@ -3435,23 +3490,29 @@ async function runActionStep(run,index,signal){
     const doneKey=op.write&&!run.test?`action:${index}:${Object.values(run.rounds||{}).reduce((n,v)=>n+v,0)}:${run.item===undefined?'':run.itemAt}:${createHash('sha256').update(step.app+'\n'+step.op+'\n'+flat).digest('base64url')}`:'';
     const done=doneKey&&run.toolCache&&Object.hasOwn(run.toolCache,doneKey)?run.toolCache[doneKey]:null;
     if(run.test&&op.write){entry.dry=true;entry.output=`Test run: ${op.appName} ${step.op} was not called, because it changes something. It would get:\n${JSON.stringify(args,null,2)}`;}
+    else if(done?.pending||done?.unknown)throw unsureError(done);
     else if(done){entry.output=done.text;entry.replayed=true;}
     else{
+      // Written down before it is sent: if SILO stops or the connection breaks before the answer, the run waits for you.
+      if(doneKey){journal(run.toolCache||={},doneKey,{pending:true,step:index,key:doneKey,app:op.appName,op:step.op,input:flat.slice(0,4000),at:Date.now()});await persist();}
       // A busy or unreachable app is tried again a few times, waiting longer each time.
       const tries=step.retries??2;let r,err;
       for(let n=0;;n++){
         try{r=await op.call(args,signal);err=null;}catch(e){r=null;err=e;}
         if(!err&&r.ok)break;
         if(n>=tries||signal?.aborted||!transientFailure(err?err.message:r.text,op.write,!!err))break;
-        entry.retries=n+1;await pause(Math.min(30000,1000*2**n),signal);
+        // Stopped while waiting to try again: the last try was refused as busy, so nothing is pending.
+        entry.retries=n+1;try{await pause(Math.min(30000,1000*2**n),signal);}catch(e){if(doneKey)delete run.toolCache[doneKey];throw e;}
       }
       const again=entry.retries?` (tried ${entry.retries+1} times)`:'';
-      if(err){err.message+=again;throw err;}
+      // Stopped by you while it was being sent: it stays pending, so a resume asks you to check it first.
+      if(err){if(doneKey&&!signal?.aborted)settleUnsure(run.toolCache,doneKey,err);err.message+=again;throw err;}
+      if(doneKey&&!r.ok)settleUnsure(run.toolCache,doneKey,failedAnswer(r.text));
       if(!r.ok)throw new Error(`Step ${index+1}: ${op.appName} ${step.op} failed${again}: ${String(r.text||'no answer').slice(0,400)}`);
       // A long JSON answer is made smaller as JSON, so later steps can still read it; plain text is cut.
       const text=String(r.text??'');let j;
       entry.output=text.length<=100000?text:(j=jsonOf(text))!==undefined&&typeof j==='object'?fitJson(j,100000):text.slice(0,100000)+' [cut]';
-      if(doneKey){(run.toolCache||={})[doneKey]={ok:true,summary:`${op.appName} ${step.op}`,text:entry.output};await persist();}
+      if(doneKey){journal(run.toolCache||={},doneKey,{ok:true,summary:`${op.appName} ${step.op}`,text:entry.output});await persist();}
       if(op.write&&run.item===undefined)event(`${run.name} used ${op.appName}`,`Step ${index+1}: ${step.op}`,'workflow');
     }
     run.outputs[index]=entry.output;run.names[index]=op.appName;
@@ -3485,7 +3546,7 @@ async function runAgentStepRaw(run,index,part,signal){
     bumpStat(a,'ok');
     return entry;
   }catch(e){
-    const shadow=!signal?.aborted&&!e?.budgetExceeded&&resolveShadow(a);
+    const shadow=!signal?.aborted&&!e?.budgetExceeded&&!e?.unknownOutcome&&resolveShadow(a);
     if(shadow){
       busy.add(shadow.id);shadow.status='working';
       try{
@@ -3517,7 +3578,9 @@ function recordStepCheckpoint(run,stepIndex,nextAt){
     names:structuredClone(run.names||{}),
     stepsCount:(run.steps||[]).length,
     tokens:run.tokens||0,
-    toolCache:structuredClone(run.toolCache||{})
+    // The tool results are not copied: the run's journal keeps each one once, numbered, and the checkpoint only says
+    // how far the journal went. Going back to it keeps the results up to that number.
+    toolSeq:journalTop(run.toolCache)
   };
   run.checkpoints.push(cp);
   const job=run.jobId&&state.jobs.find(j=>j.id===run.jobId);
@@ -3562,7 +3625,7 @@ async function compensateRun(target){
   const job=target.jobId&&state.jobs.find(j=>j.id===target.jobId);
   if(job){job.compensations=list;if(target.compensated&&job.status==='failed')job.status='compensated';job.updatedAt=Date.now();}
   if(count)event(`Compensated ${count} external action(s)`,target.name||target.title||'Run rollback','workflow');
-  await persist();
+  await persist(target,job);
   return {compensated:count,total:list.length,compensations:list};
 }
 async function drive(run){
@@ -3577,6 +3640,7 @@ async function drive(run){
       if(state.paused)throw new Error('Silo paused between workflow steps.');
       if(run.budget&&(run.tokens||0)>=run.budget)throw new Error(`The token budget of this run is used up (${run.tokens} of ${run.budget}). Raise it in the workflow and resume.`);
       const [g,h]=groupOf(plan,run.at),index=g,step=plan[index],type=step.type||'agent';run.at=g;
+      const open=!run.test&&unsureAt(run,g,h);if(open)throw unsureError(open);
       if(type==='approval'&&run.test){run.steps.push({index,type,agentName:'Test',verdict:'approved',output:'Approved automatically in a test run.',tokens:0,time:Date.now()});run.at++;recordStepCheckpoint(run,index,run.at);await persist();continue;}
       if(type==='approval'){
         if(!conditionHolds(run,index,step.when)){run.steps.push({index,type,agentName:'You',skipped:true,output:'',tokens:0,time:Date.now()});run.at++;recordStepCheckpoint(run,index,run.at);await persist();continue;}
@@ -3678,6 +3742,13 @@ async function drive(run){
       run.status='stopped';run.error='Stopped by you.';
       if(job){job.status='cancelled';job.error='Stopped by you.';job.updatedAt=Date.now();}
       event(`Workflow stopped: ${run.name}`,`Stopped at step ${run.at+1} of ${run.total}.`,'workflow');
+    }else if(e?.unknownOutcome){
+      // Not retried and not failed: only you can find out whether it went through. The run shows what was sent.
+      const u=e.unknownOutcome;
+      run.status='check';run.check=u;run.error=e.message;
+      if(job){job.status='check';job.error=e.message;job.updatedAt=Date.now();}
+      event(`Check needed: ${run.name}`,`Step ${u.step+1}: ${u.app} ${u.op} may or may not have gone through.`,'error');
+      if(!run.test){state.alarm={time:Date.now(),title:`Check ${u.app}: ${run.name}`};notify('request',`${run.name}: check ${u.app}`,`${e.message}\n\nWhat was sent:\n${u.input}`.slice(0,900));}
     }else if(job&&(job.attempts||1)<(job.maxAttempts||1)&&!state.paused){
       const delay=Math.min(30000,(job.backoffMs||state.settings.queue?.baseBackoffMs||300)*Math.pow(2,(job.attempts||1)-1));
       job.status='retrying';job.error=e.message;job.nextAttemptAt=Date.now()+delay;job.updatedAt=Date.now();
@@ -3708,7 +3779,7 @@ function startDrive(run){
 // What is kept: about 100 runs and 150 jobs. Only finished ones are ever dropped, the oldest first: a run or job that
 // runs, waits in the queue, waits to be tried again or was cut off by a crash stays however old it is. Finished test
 // runs go first; finished runs that can still be resumed are kept up to 120.
-const JOB_LIVE=new Set(['queued','running','retrying','interrupted']),RUN_LIVE=new Set(['queued','running','retrying','interrupted']);
+const JOB_LIVE=new Set(['queued','running','retrying','interrupted','check']),RUN_LIVE=new Set(['queued','running','retrying','interrupted','check']);
 function trimJobs(max=150){
   let extra=state.jobs.length-max;if(extra<=0)return;
   const gone=new Set();
@@ -3735,6 +3806,20 @@ async function executeWorkflow(w,input,trigger='manual',opts={}){
   event(`Workflow started: ${w.name}`,(trigger==='manual'?'':`[${trigger}] `)+input.slice(0,150),'workflow');await persist();
   startDrive(run);
   return run;
+}
+// Your answer after a change outside SILO may or may not have gone through. It went through: its result is what you
+// write (or a note that you checked) and it is not sent again. It did not: it is sent again when the run goes on.
+async function checkRun(run,b,who){
+  const u=run.check;if(run.status!=='check'||!u)fail('This run is not waiting for a check.',409);
+  if(typeof b.done!=='boolean')fail('Say whether it went through: done true or false.');
+  const name=who?.name||'You',cache=run.toolCache||={};
+  if(b.done)journal(cache,u.key,{ok:true,summary:`${u.app} ${u.op} (checked)`,text:string(b.result||'',24000)||`${name} checked ${u.app}: it went through.`,confirmed:true,step:u.step});
+  else delete cache[u.key];
+  run.checked=[...(run.checked||[]),{...u,done:b.done,by:name,time:Date.now()}].slice(-20);
+  delete run.check;run.status='failed';
+  const job=run.jobId&&state.jobs.find(j=>j.id===run.jobId);if(job){job.status='failed';job.updatedAt=Date.now();}
+  event(`${u.app} checked: ${b.done?'it went through':'it did not go through'}`,`${run.name}, step ${u.step+1}. ${b.done?'It is not sent again.':'It is sent again now.'}`,'workflow');
+  try{return await resumeRun(run);}catch(e){await persist(run);throw e;}
 }
 async function resumeRun(run){
   if(run.status==='running')fail('This run is still going.',409);
@@ -3851,9 +3936,18 @@ async function pumpJobQueue(){
     }
   }finally{pumpingJobs=false;}
 }
-// The actions a run already did, after a crash or for another try. Each one is saved the moment it succeeds, so the
-// run's own list is newer than the copy in the last checkpoint: both are kept and nothing done since is done twice.
+// The journal of a run: every tool result and app action, saved once the moment it is known, numbered in order (seq).
+// After a crash or for another try the whole journal is kept, so nothing done is done twice. Checkpoints from before
+// the journal hold a full copy instead; that copy is merged in.
+const journalTop=cache=>Object.values(cache||{}).reduce((n,v)=>Math.max(n,Number(v?.seq)||0),0);
+function journal(cache,key,entry){const was=cache[key];cache[key]={...entry,seq:was?.seq??journalTop(cache)+1};return cache[key];}
 const keptToolCache=(run,cp)=>({...structuredClone(cp?.toolCache||{}),...(run.toolCache||{})});
+// Back to a checkpoint: the results journaled after it are dropped (an older checkpoint has its own copy).
+function journalAt(run,cp){
+  if(cp.toolCache)return structuredClone(cp.toolCache);
+  const keep=Number(cp.toolSeq)||0;
+  return Object.fromEntries(Object.entries(run.toolCache||{}).filter(([,v])=>!(v?.seq>keep)));
+}
 async function rewindJob(job,opts={}){
   if(job.status==='running')fail('Stop the job before rewinding it.',409);
   const run=state.runs.find(r=>r.id===job.runId);if(!run)fail('Run not found for this job.',404);
@@ -3869,7 +3963,7 @@ async function rewindJob(job,opts={}){
   run.rounds=structuredClone(cp.rounds||{});
   run.names=structuredClone(cp.names||{});
   run.steps=(run.steps||[]).slice(0,cp.stepsCount);
-  run.toolCache=structuredClone(cp.toolCache||{});
+  run.toolCache=journalAt(run,cp);
   const cpIdx=cps.indexOf(cp);
   run.checkpoints=cps.slice(0,cpIdx+1);
   job.checkpoints=run.checkpoints.map(({toolCache,...rest})=>rest);
@@ -4472,13 +4566,20 @@ function workflowPowered(w){
   const first=state.agents.find(a=>a.id===w.steps.find(s=>s.agentId)?.agentId);
   return !(first&&state.settings.power?.[first.floor]===0);
 }
+// Events that could not start a run wait in the workflow's queue (trigger-queue.mjs). A full queue drops the oldest,
+// and the log says so; the workflow card shows how many wait, why, and how many were lost.
 function enqueueWorkflowTrigger(w,trigger,input){
-  if(w.missedPolicy==='skip')return false;
-  w.pendingQueue||=[];
-  if(w.missedPolicy!=='queue'&&w.pendingQueue.some(q=>q.trigger===trigger&&q.input===input))return true;
-  w.pendingQueue.push({id:id(),trigger,input,time:Date.now()});
-  if(w.pendingQueue.length>15)w.pendingQueue=w.pendingQueue.slice(-15);
-  return true;
+  const r=enqueueTrigger(w,trigger,input,{id});stateRev++;
+  if(r.dropped.length)event(`Trigger queue full: ${w.name}`,`${QUEUE_MAX} events already wait, so the oldest ${r.dropped.length===1?'one was':r.dropped.length+' were'} dropped. ${queueWhy(w)}`.trim(),'error');
+  return r.queued;
+}
+// Why the events of a workflow are waiting right now, or '' when they should start on the next check.
+function queueWhy(w){
+  if(state.paused)return 'SILO is paused.';
+  if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))return 'A run of this workflow is still going; one runs at a time.';
+  if(!workflowPowered(w))return 'The sector of its first resident has no power (Generator 01).';
+  const f=w.pendingQueue?.[0];if(f?.failures)return `The last start failed (${f.failures} of 5): ${f.lastError||'unknown error'}`;
+  return '';
 }
 async function drainWorkflowQueues(){
   if(state.paused)return;
@@ -4491,8 +4592,8 @@ async function drainWorkflowQueues(){
     const next=w.pendingQueue.shift();
     try{await executeWorkflow(w,next.input,next.trigger);}
     catch(e){
-      next.failures=(next.failures||0)+1;
-      if(next.failures<5)w.pendingQueue.unshift(next);
+      next.failures=(next.failures||0)+1;next.lastError=String(e.message).slice(0,200);
+      if(next.failures<5)w.pendingQueue.unshift(next);else countLost(w,'gaveUp',e.message);
       event(next.failures<5?'Queued trigger kept for another try':'Queued trigger dropped after 5 failed starts',`${w.name}: ${e.message}`,'error');
       await persist();
     }
@@ -4876,13 +4977,9 @@ const server=http.createServer(async(req,res)=>{
         const mine=[...liveStreams].filter(c=>sess.token?c.token===sess.token:!c.token&&c.cookie===cookies.silo_session);
         if(mine.length>=4)mine[0].close();
         if(liveStreams.size>=60)fail('Too many live connections.',503);
-        const enc=encodingFor(req),z=enc==='br'?zlib.createBrotliCompress({params:{[zlib.constants.BROTLI_PARAM_QUALITY]:4}}):enc==='gzip'?zlib.createGzip({level:5}):null;
-        res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store','X-Accel-Buffering':'no',...(z&&{'Content-Encoding':enc,'Vary':'Accept-Encoding'})});
-        if(z)z.pipe(res);
-        const c={cookie:sess.token?null:cookies.silo_session,token:sess.token||null,local:!viaTunnel&&loopback(clientIp),userId:sess.userId,tag:null,live:new Map(),
-          write(text){if(c.closed)return;if(z){z.write(text);z.flush(enc==='br'?zlib.constants.BROTLI_OPERATION_FLUSH:zlib.constants.Z_SYNC_FLUSH);}else res.write(text);},
-          send(name,data){c.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);},
-          close(){if(c.closed)return;c.closed=true;liveStreams.delete(c);try{z?z.end():res.end();}catch{}}};
+        const enc=encodingFor(req);
+        res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store','X-Accel-Buffering':'no',...(enc&&{'Content-Encoding':enc,'Vary':'Accept-Encoding'})});
+        const c=Object.assign(liveChannel(res,enc,{onClose:x=>{liveStreams.delete(x);if(x.behindSince)liveCount.slowClosed++;}}),{cookie:sess.token?null:cookies.silo_session,token:sess.token||null,local:!viaTunnel&&loopback(clientIp),userId:sess.userId,tag:null,live:new Map()});
         req.on('close',()=>c.close());res.on('error',()=>c.close());
         liveStreams.add(c);c.write('retry: 3000\n\n');liveTick(c);return;
       }
@@ -5445,7 +5542,7 @@ const server=http.createServer(async(req,res)=>{
       // One run, for programs that wait for it without reading the whole state.
       const rg=route.match(/^\/api\/runs\/([^/]+)$/);
       if(rg&&req.method==='GET'){const run=state.runs.find(r=>r.id===rg[1]);if(!run)fail('Run not found.',404);return send(res,200,run.eachDone?{...run,eachDone:undefined}:run);}
-      const rm=route.match(/^\/api\/runs\/([^/]+)\/(stop|resume|approve|live|replay|compensate)$/);
+      const rm=route.match(/^\/api\/runs\/([^/]+)\/(stop|resume|approve|live|replay|compensate|check)$/);
       if(rm){
         const run=state.runs.find(r=>r.id===rm[1]);if(!run)fail('Run not found.',404);
         // The text a resident is writing right now. Kept out of the state so the page's poll stays small.
@@ -5453,6 +5550,7 @@ const server=http.createServer(async(req,res)=>{
         if(req.method!=='POST')fail('Method not allowed.',405);
         if(rm[2]==='stop'){const c=controllers.get(run.id);if(run.status!=='running'||!c)fail('This run is not running.',409);c.abort(new Error('Stopped by you.'));return send(res,200,{ok:true});}
         if(rm[2]==='resume')return send(res,202,await resumeRun(run));
+        if(rm[2]==='check')return send(res,202,await checkRun(run,b,me));
         if(rm[2]==='replay')return send(res,202,await replayRun(run,b.from));
         if(rm[2]==='compensate'){if(run.status==='running')fail('Stop the run before compensating it.',409);return send(res,200,await compensateRun(run));}
         decideRun(run,b.approve===true,string(b.note||'',5000));return send(res,200,{ok:true});
