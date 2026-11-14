@@ -5,8 +5,7 @@
 <h1 align="center">SILO</h1>
 
 <p align="center">
-  <a href="https://github.com/sponsors/blindheimdall">Sponsor SILO on GitHub</a> &middot;
-  <a href="https://paypal.me/blindheimdall">Support via PayPal</a>
+  <a href="https://github.com/sponsors/blindheimdall">Sponsor SILO on GitHub</a>
 </p>
 
 <p align="center"><strong>Independent silos. A shared chain of work.</strong></p>
