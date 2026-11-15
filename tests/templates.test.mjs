@@ -5,7 +5,7 @@ import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {TEMPLATES,materialize,matchResident,needName,hasNeed} from '../public/flow-templates.js';
+import {TEMPLATES,materialize,procedureTables,matchResident,needName,hasNeed} from '../public/flow-templates.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 
 test('residents named in a procedure are matched by name, then role, then sector',()=>{
@@ -35,8 +35,11 @@ test('procedures are shared without secrets, checked on import and kept in the O
   const agents=(await request('/state')).data.agents;
 
   await t.test('every procedure in the book becomes a valid workflow, with its shape and tests',async()=>{
+    // A procedure with tables gets them first, the way adopting it in the Order makes them.
+    for(const tpl of TEMPLATES)for(const tb of procedureTables(tpl))if(!(await request('/state')).data.tables.some(x=>x.name===tb.name))assert.equal((await request('/tables',{name:tb.name,columns:tb.columns})).status,201,tpl.key+' table');
+    const tables=(await request('/state')).data.tables;
     for(const tpl of TEMPLATES){
-      const w=materialize(tpl,agents),{tests,judgeId,...body}=w;
+      const w=materialize(tpl,agents,tables),{tests,judgeId,...body}=w;
       const r=await request('/workflows',body);assert.equal(r.status,201,tpl.key+': '+JSON.stringify(r.data));
       if(tpl.shape)assert.deepEqual(r.data.shape.fields.map(f=>f.name),tpl.shape.fields.map(f=>f.name));
       if(tests)assert.equal((await request('/workflows/'+r.data.id+'/tests',{tests})).status,200,tpl.key+' tests');

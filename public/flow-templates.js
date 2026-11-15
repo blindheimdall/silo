@@ -147,6 +147,71 @@ export const TEMPLATES=[
       {pick:[2,/analyst|editor|writer/i],prompt:'These are the answers to "{{brief}}" in a Slack channel: {{step 3}}. Sum them up in five lines at most: what came up most, what only one person said, and one thing to do next.'},
       {type:'action',app:'svc:slack',op:'post',fields:{channel:'Paste the channel id here',text:'{{step 4}}'}}
     ]
+  },
+  // Procedures that keep their rows in tables. A table step names its table; the ones missing are made when it is adopted.
+  {
+    key:'leads',name:'Contact form into a table',description:'A public form keeps every message in the Leads table, a resident drafts a reply, and after your OK the reply is kept with the lead.',
+    brief:'',
+    form:{title:'Contact us',intro:'Leave a message and we will write back.',fields:[{name:'name',label:'Your name',type:'text',required:true},{name:'email',label:'Email',type:'email',required:true},{name:'message',label:'Message',type:'textarea',required:true}]},
+    tables:[{name:'Leads',columns:[{name:'email',type:'text',required:true,unique:true},{name:'name',type:'text'},{name:'message',type:'text'},{name:'status',type:'text'},{name:'reply',type:'text'}]}],
+    steps:[
+      {type:'action',table:'Leads',op:'upsert_row',fields:{match_on:'email',email:'{{brief.email}}',name:'{{brief.name}}',message:'{{brief.message}}',status:'new'}},
+      {pick:[2,/liaison|writer|editor|clerk/i],prompt:'Draft a reply to this message from {{brief.name}}: {{brief.message}}. Friendly and plain, at most 120 words, no promises about prices or dates. Only the reply, no subject line.'},
+      {type:'approval',prompt:'Read the reply before it is kept with the lead.'},
+      {type:'action',table:'Leads',op:'update_row',fields:{row_id:'{{step 1.id}}',reply:'{{step 2}}',status:'reply ready'}}
+    ]
+  },
+  {
+    key:'feedback',name:'Sorted feedback',description:'A public form takes feedback, a resident sorts it by topic and mood, and it is kept in the Feedback table, ready to filter.',
+    brief:'',
+    form:{title:'Tell us what you think',intro:'Good or bad, we read all of it.',fields:[{name:'message',label:'Your feedback',type:'textarea',required:true},{name:'email',label:'Email, if you want an answer',type:'email',required:false}]},
+    tables:[{name:'Feedback',columns:[{name:'message',type:'text',required:true},{name:'topic',type:'text'},{name:'mood',type:'text'},{name:'email',type:'text'}]}],
+    steps:[
+      {pick:[1,/analyst|research|data/i],prompt:'Sort this feedback: {{brief.message}}. Answer with JSON only, like {"topic": "product", "mood": "unhappy"}. The topic is one of product, service, price, other. The mood is one of happy, neutral, unhappy.'},
+      {type:'code',code:"// Anything the resident did not say right is kept as other and neutral, so the row is always added.\nlet a = {};\ntry { a = json(steps[1]) || {}; } catch {}\nconst pick = (v, list, none) => list.includes(String(v).toLowerCase()) ? String(v).toLowerCase() : none;\nreturn { topic: pick(a.topic, ['product', 'service', 'price', 'other'], 'other'), mood: pick(a.mood, ['happy', 'neutral', 'unhappy'], 'neutral') };"},
+      {type:'action',table:'Feedback',op:'add_row',fields:{message:'{{brief.message}}',topic:'{{step 2.topic}}',mood:'{{step 2.mood}}',email:'{{brief.email}}'}}
+    ]
+  },
+  {
+    key:'signups',name:'Event signups',description:'A public form for an event. A second answer from the same email changes the signup instead of adding one, and every run says how many signed up. No model, no tokens.',
+    brief:'',
+    form:{title:'Sign up',intro:'One signup per email. Sign up again to change the number of seats.',fields:[{name:'name',label:'Your name',type:'text',required:true},{name:'email',label:'Email',type:'email',required:true},{name:'seats',label:'Seats',type:'number',required:true}]},
+    tables:[{name:'Signups',columns:[{name:'email',type:'text',required:true,unique:true},{name:'name',type:'text'},{name:'seats',type:'number'}]}],
+    steps:[
+      {type:'action',table:'Signups',op:'upsert_row',fields:{match_on:'email',email:'{{brief.email}}',name:'{{brief.name}}',seats:'{{brief.seats}}'}},
+      {type:'action',table:'Signups',op:'count_rows',fields:{}},
+      {type:'code',code:"const r = json(steps[1]), n = json(steps[2]).count;\nreturn (r._added ? 'New signup: ' : 'Changed signup: ') + r.name + ', ' + r.seats + ' seats. ' + n + ' signed up so far.';"}
+    ]
+  },
+  {
+    key:'stock',name:'Low stock',description:'Every weekday at 07:30 the Stock table is read, a few lines of code find what is at or under its minimum, and only then a resident writes the order list.',
+    brief:'Stock check.',mode:'daily',at:'07:30',days:[1,2,3,4,5],
+    tables:[{name:'Stock',columns:[{name:'item',type:'text',required:true,unique:true},{name:'quantity',type:'number'},{name:'minimum',type:'number'}]}],
+    steps:[
+      {type:'action',table:'Stock',op:'find_rows',fields:{order_by:'quantity',limit:'500'}},
+      {type:'code',code:"const low = json(steps[1]).filter(r => Number(r.quantity) <= Number(r.minimum));\nreturn low.length ? low.map(r => r.item + ': ' + r.quantity + ' left, minimum ' + r.minimum).join('\\n') : 'Nothing is low.';"},
+      {pick:[4,/supply|logistics|planner|operations/i],when:{step:2,op:'missing',text:'Nothing is low.'},prompt:'These items are at or under their minimum:\n{{step 2}}\nWrite a short order list: each item and how many to order to get back to twice its minimum, the most urgent first.'}
+    ]
+  },
+  {
+    key:'leads-week',name:'Leads of the week',description:'Every Monday at 09:00 the leads of the last seven days are summed up and posted to a Slack channel, after your OK.',
+    brief:'Leads of the week.',mode:'daily',at:'09:00',days:[1],
+    tables:[{name:'Leads',columns:[{name:'email',type:'text',required:true,unique:true},{name:'name',type:'text'},{name:'message',type:'text'},{name:'status',type:'text'},{name:'reply',type:'text'}]}],
+    steps:[
+      {type:'action',table:'Leads',op:'find_rows',fields:{order_by:'-created',limit:'500'}},
+      {type:'code',code:"const since = Date.now() - 7 * 864e5, rows = json(steps[1]).filter(r => r.created >= since);\nreturn rows.length ? rows.map(r => r.name + ' <' + r.email + '>, ' + r.status + ': ' + String(r.message || '').slice(0, 200)).join('\\n') : 'No new leads this week.';"},
+      {pick:[2,/analyst|editor|writer/i],prompt:'These are the leads of the last seven days, one per line:\n{{step 2}}\nSum them up in at most eight lines: how many, what most of them asked for, and which ones still wait for a reply.'},
+      {type:'approval',prompt:'Read the summary before it goes to Slack.'},
+      {type:'action',app:'svc:slack',op:'post',fields:{channel:'Paste the channel id here',text:'{{step 3}}'}}
+    ]
+  },
+  {
+    key:'failures',name:'Failure log',description:'Keeps every failed run in the Failures table: which workflow, which step and why. Choose it under "When a run fails, start" in your other workflows. No model, no tokens.',
+    brief:'',
+    tables:[{name:'Failures',columns:[{name:'workflow',type:'text'},{name:'step',type:'number'},{name:'error',type:'text'},{name:'run',type:'text'}]}],
+    steps:[
+      {type:'action',table:'Failures',op:'add_row',fields:{workflow:'{{brief.workflow}}',step:'{{brief.step}}',error:'{{brief.error}}',run:'{{brief.runId}}'}}
+    ]
   }
 ];
 
@@ -163,8 +228,14 @@ export function matchResident(r,agents,used=new Set()){
 }
 // Fills a template with real residents: the first one in the sector whose role matches, else anyone in the sector.
 // Procedures from a file name a resident instead, matched by matchResident.
-export function materialize(t,agents){
-  const used=new Set();
+// The tables a procedure keeps its rows in, by name, with their columns when the procedure says them.
+export function procedureTables(t){
+  const names=new Map();
+  for(const s of t.steps||[])if(s.type==='action'&&s.table){const n=String(s.table);if(!names.has(n.toLowerCase()))names.set(n.toLowerCase(),{name:n,columns:t.tables?.find(x=>x.name.toLowerCase()===n.toLowerCase())?.columns||null});}
+  return [...names.values()];
+}
+export function materialize(t,agents,tables=[]){
+  const used=new Set(),tableId=n=>tables.find(x=>x.name.toLowerCase()===String(n).toLowerCase())?.id;
   const pick=([sector,role])=>{
     const pool=agents.filter(a=>a.floor===sector).sort((a,b)=>(a.level||0)-(b.level||0));
     // Earlier words in the pattern win: /lead|engineer/ takes a lead engineer before any other engineer.
@@ -177,7 +248,9 @@ export function materialize(t,agents){
     ...(t.shared&&{enabled:false,watch:null,mode:t.start?.mode||'interval',interval:t.start?.interval||60,at:t.start?.at||'09:00',days:t.start?.days||[1,2,3,4,5]}),
     ...(t.shape&&{shape:t.shape}),
     ...(t.tests?.length&&{tests:t.tests}),
+    ...(t.form&&{form:{...t.form,fields:t.form.fields.map(f=>({...f}))}}),
     ...(t.judge&&{judgeId:matchResident(t.judge,agents)?.id}),
-    steps:t.steps.map(s=>{const {pick:p,resident:r,needs,...rest}=s;const a=r&&s.type!=='approval'?matchResident(r,agents,used):null;if(a)used.add(a.id);return {type:'agent',...rest,...(p&&{agentId:pick(p)}),...(a&&{agentId:a.id})};})
+    // A table step finds its table here by name; one that is still missing keeps an empty table id.
+    steps:t.steps.map(s=>{const {pick:p,resident:r,needs,table,...rest}=s;const a=r&&s.type!=='approval'?matchResident(r,agents,used):null;if(a)used.add(a.id);const tid=table&&s.type==='action'?tableId(table):null;return {type:'agent',...rest,...(p&&{agentId:pick(p)}),...(a&&{agentId:a.id}),...(table&&s.type==='action'&&{app:tid?'table:'+tid:String(rest.app||'').startsWith('table:')&&tables.some(x=>'table:'+x.id===rest.app)?rest.app:'table:'}),...(s.fields&&{fields:{...s.fields}})};})
   };
 }

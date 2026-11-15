@@ -366,6 +366,12 @@ dialog:has(.order-book){width:min(1060px,calc(100vw - 32px))}
 .order-page h3{margin:4px 0 6px;color:var(--ph-hi);font:400 20px var(--term);letter-spacing:3px;text-transform:uppercase}
 .order-purpose{margin:0 0 10px;color:var(--ph);font:12px/1.8 var(--term)}
 .order-rule{border-top:1px solid var(--ph-low);border-bottom:1px solid var(--ph-low);padding:6px 0;margin-bottom:12px;color:var(--ph-mid);font:10px/1.7 var(--term);letter-spacing:.5px}
+.order-ready{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:4px;font:10px/1.6 var(--term);color:var(--ph-mid)}
+.order-ready b{display:inline-block;min-width:52px;margin-right:6px;font-size:8px;letter-spacing:1px}
+.order-ready .ok b{color:var(--ph-hi)}.order-ready .made b{color:var(--amb-hi)}.order-ready .todo b{color:var(--red)}
+.order-find{display:flex;flex-direction:column;gap:6px}.order-find .check-label{font-size:10px}.order-find small{color:var(--ph-dim);font:9px var(--term)}
+.order-dot{flex:none;width:6px;height:6px;border-radius:50%;transform:translateY(-1px);background:var(--ph-low)}.order-dot.ok{background:var(--ph-hi);box-shadow:0 0 4px var(--ph-hi)}
+.order-entry[hidden],.order-chapter[hidden]{display:none}
 .order-steps{list-style:none;margin:0;padding:0;display:grid;gap:12px}
 .order-steps li{display:grid;grid-template-columns:34px 1fr;gap:10px}
 .order-steps li>b{color:var(--amb);font:400 16px var(--term);border-right:1px solid var(--ph-low);padding-top:1px}
