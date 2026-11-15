@@ -10,6 +10,10 @@ ENV NODE_ENV=production \
     SILO_WORK_DIR=/workspace \
     SILO_CONTAINER=1
 
+# Git, for environments through a Git repository (System, Environments and Git).
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

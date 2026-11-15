@@ -60,8 +60,8 @@ export const ROLES={owner:'Owner',operator:'Operator',viewer:'Viewer'};
 const OWNER_ONLY=[/^\/api\/connections/,/^\/api\/vault/,/^\/api\/mcp/,/^\/api\/channels/,/^\/api\/spending$/,/^\/api\/settings$/,/^\/api\/users/,/^\/api\/apps\/open$/,/^\/api\/oauth/,/^\/api\/grants/,/^\/api\/phone/,/^\/api\/desktop/,/^\/api\/browser/,/^\/api\/remote/,/^\/api\/services/,/^\/api\/system\//,/^\/api\/radio\/(peers|key|caps|held|lookup)/,/^\/api\/expose$/,/^\/api\/a2a\//,/^\/api\/python-tools/];
 // The MCP server and the A2A agent check each method against the role and the token themselves.
 const ANYONE=[/^\/api\/serve\/(mcp|a2a)$/,/^\/api\/logout$/,/^\/api\/password$/,/^\/api\/tokens(\/[a-f0-9]{24})?$/];
-// Only owners may even look at these: the audit log, telemetry, single sign-on and the system.
-const OWNER_READ=[/^\/api\/audit/,/^\/api\/otel/,/^\/api\/sso/,/^\/api\/system\//];
+// Only owners may even look at these: the audit log, telemetry, single sign-on, the system and Git environments.
+const OWNER_READ=[/^\/api\/audit/,/^\/api\/sync/,/^\/api\/otel/,/^\/api\/sso/,/^\/api\/system\//];
 export function roleAllows(role,method,route){
   if(role==='owner')return true;
   if(ANYONE.some(r=>r.test(route)))return true;

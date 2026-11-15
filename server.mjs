@@ -56,6 +56,8 @@ import { runCode as runCodeStepScript, CODE_MAX } from './code-step.mjs';
 import { Tables, COLUMN_TYPES, FILTER_OPS, RESERVED as TABLE_RESERVED, CSV_MAX } from './data-tables.mjs';
 import { TALK_KINDS, PUBLIC_TALK, Conversations, Limits, Seen, cleanText, slackVerify, slackEvent, slackSend, whatsappHandshake, whatsappVerify, whatsappMessages, whatsappSend, teamsVerify, teamsMessage, teamsToken, teamsSend, forgetTeamsTokens, serviceUrlAllowed, widgetScript, widgetTryPage, WIDGET_COLOR } from './talk-channels.mjs';
 import { Inbox } from './talk-inbox.mjs';
+import { GitSync, ENVIRONMENTS, SYNC_FORMAT, checkRemote, checkBranch, slug as syncSlug } from './git-sync.mjs';
+import { matchResident } from './public/flow-templates.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // An installed SILO keeps its data and workspace outside the app folder; launch.json says where.
@@ -505,7 +507,7 @@ setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
 setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,sync:{environment:state.settings.sync.environment,protect:state.settings.sync.protect},radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 function string(v,max=10000){if(typeof v!=='string'||v.length>max)fail('Invalid or oversized text.');return v.trim();}
 function findAgent(agentId){const a=state.agents.find(a=>a.id===agentId);if(!a)fail('Agent not found.',404);return a;}
@@ -889,6 +891,221 @@ function validateTemplate(t){
   const watch=t.watch?checkFolder(String(t.watch)):null;
   const tests=t.tests===undefined?[]:validateTests(t.tests);
   return {silo:'procedure',format:1,name:w.name,description:w.description,brief:w.brief,...(start&&{start}),...(watch&&{watch}),steps,...(w.shape&&{shape:w.shape}),...(tests.length&&{tests:tests.map(({name,input,checks,reference})=>({name,input,checks,...(reference&&{reference})}))}),...(t.judge&&{judge:person(t.judge)}),...(w.budget&&{budget:w.budget}),...(typeof t.made==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(t.made)&&{made:t.made})};
+}
+
+// Environments through Git (git-sync.mjs): a development SILO pushes its workflows and table layouts, and a testing
+// or production SILO pulls them after reading what would change. A workflow is written with what it does and when,
+// with residents, connectors, tables and other workflows named instead of by their ids here. Never secrets, addresses,
+// runs, rows, or the triggers that need an account of this SILO (mail and app events), which stay as they are here.
+const syncGit=new GitSync(path.join(DATA,'sync'));
+state.settings.sync={remote:'',branch:'main',environment:'',protect:false,...(state.settings.sync||{})};
+const SYNC_KEEP=['description','brief','mode','interval','at','days','missedPolicy','catchUp','catchUpHours','budget'];
+const syncIdOf=w=>w.syncId||(w.syncId=randomBytes(8).toString('hex'));
+const syncCols=cols=>JSON.stringify((cols||[]).map(({was,...c})=>c));
+function syncWorkflow(w){
+  const who=id=>{const a=state.agents.find(a=>a.id===id);return a?{name:a.name,role:a.role,floor:a.floor}:null;};
+  const ref=id=>{const x=state.workflows.find(x=>x.id===id);return x?{syncId:syncIdOf(x),name:x.name}:{syncId:'',name:''};};
+  const steps=w.steps.map(st=>{
+    const {agentId,workflowId,...rest}=st;
+    if(connectorName(st))Object.assign(rest,{app:'mcp:',connector:connectorName(st)});
+    if(String(st.app||'').startsWith('table:'))Object.assign(rest,{app:'table:',table:tableRef(st)});
+    return {...rest,...(agentId&&who(agentId)&&{resident:who(agentId)}),...(st.type==='workflow'&&{workflow:ref(workflowId)})};
+  });
+  return {
+    silo:'workflow',format:SYNC_FORMAT,syncId:syncIdOf(w),name:w.name,
+    ...Object.fromEntries(SYNC_KEEP.map(k=>[k,w[k]??null])),
+    ...(w.watch&&{watch:w.watch}),steps,
+    ...(w.shape&&{shape:w.shape}),
+    ...(w.form&&{form:w.form}),
+    ...(w.tests?.length&&{tests:w.tests.map(({name,input,checks,reference})=>({name,input,checks,...(reference&&{reference})}))}),
+    ...(w.judgeId&&who(w.judgeId)&&{judge:who(w.judgeId)}),
+    ...(w.onFailure&&{onFailure:ref(w.onFailure)}),
+    hook:!!w.hook
+  };
+}
+// What a protected SILO compares: a change that leaves this the same (on or off, mail and app triggers, the local
+// address) is its own to make.
+const syncSame=(a,b)=>{const x=({hook,...r})=>JSON.stringify(r);return x(syncWorkflow(a))===x(syncWorkflow(b));};
+function syncGuard(what){
+  const s=state.settings.sync;
+  if(s.protect)fail(`This SILO is protected${s.environment?` (${ENVIRONMENTS[s.environment]})`:''}: ${what} in development, push it to Git, and pull it here. Turning workflows on or off is allowed.`,409);
+}
+// A workflow file from the repository, read back into a workflow of this SILO. `find` gives the id here of a
+// workflow by its sync id; `coming` names the tables the same pull makes.
+function syncBody(f,local,{find,coming=new Set()}){
+  const problems=[],notes=[];let waits=false;
+  if(!state.agents.length)problems.push('Add a resident first.');
+  const resident=r=>{
+    const name=String(r?.name||'').trim(),a=state.agents.find(a=>a.name.toLowerCase()===name.toLowerCase())||matchResident(r,state.agents);
+    if(a&&a.name.toLowerCase()!==name.toLowerCase())notes.push(`${name||'A resident'} is done by ${a.name} here.`);
+    return a?.id||'';
+  };
+  const steps=(Array.isArray(f.steps)?f.steps:[]).map((s,i)=>{
+    if(!s||typeof s!=='object')return s;
+    const {resident:r,connector,table,workflow:wf,...st}=s;
+    if(r&&typeof r==='object')st.agentId=resident(r);
+    if(st.type==='action'&&st.app==='mcp:'){
+      const name=String(connector||'').trim(),c=name&&state.mcp.find(c=>c.name.trim().toLowerCase()===name.toLowerCase());
+      if(!c)problems.push(`Step ${i+1} uses the connector "${name.slice(0,100)}". Add a connector with that name in IT / Uplink.`);
+      st.app='mcp:'+(c?.id||'');
+    }
+    if(st.type==='action'&&st.app==='table:'){
+      const name=String(table||'').trim();let t=null;try{t=name&&tables.table(name);}catch{}
+      if(!t&&!coming.has(name.toLowerCase()))problems.push(`Step ${i+1} uses the table "${name.slice(0,60)}", which is neither here nor in the repository.`);
+      else if(!t)waits=true;
+      st.app='table:'+(t?.id||'');
+    }
+    if(st.type==='workflow'){
+      const to=find(wf?.syncId);
+      if(!to)problems.push(`Step ${i+1} runs "${String(wf?.name||'a workflow').slice(0,100)}", which is neither here nor in the repository.`);
+      st.workflowId=to||'';
+    }
+    return st;
+  });
+  const keep=Object.fromEntries(SYNC_KEEP.filter(k=>f[k]!==undefined&&f[k]!==null).map(k=>[k,f[k]]));
+  const body={name:f.name,...keep,watch:f.watch||null,steps,shape:f.shape??null,form:f.form??null,
+    judgeId:f.judge&&typeof f.judge==='object'?resident(f.judge)||null:null,
+    onFailure:f.onFailure?.syncId?find(f.onFailure.syncId)||null:null,
+    hook:local?.hook?true:f.hook===true,enabled:local?.enabled===true,mail:local?.mail||null,app:local?.app||null};
+  return {body,problems,notes:[...new Set(notes)],waits};
+}
+function syncParse(files){
+  const workflows=[],tableFiles=[],ids=new Set();
+  for(const [rel,text] of files){
+    let f;try{f=JSON.parse(text);}catch{workflows.push({file:rel,name:rel,status:'problem',problems:['This file is not JSON.']});continue;}
+    if(rel.startsWith('tables/')){
+      if(f?.silo!=='table'||typeof f.name!=='string'||!Array.isArray(f.columns))continue;
+      tableFiles.push({file:rel,name:f.name.trim().slice(0,60),columns:f.columns});continue;
+    }
+    const bad=m=>workflows.push({file:rel,name:String(f?.name||rel).slice(0,100),status:'problem',problems:[m]});
+    if(f?.silo!=='workflow'){bad('This is not a SILO workflow file.');continue;}
+    if(f.format!==SYNC_FORMAT){bad('This file was written by a newer SILO. Update SILO to pull it.');continue;}
+    if(!/^[a-f0-9]{16}$/.test(String(f.syncId))){bad('The file has no sync id.');continue;}
+    if(ids.has(f.syncId)){bad('Another file has the same sync id.');continue;}
+    ids.add(f.syncId);workflows.push({file:rel,f});
+  }
+  return {workflows,tableFiles};
+}
+// What a pull would do: each workflow new, changed or the same, with what stops it; tables new, the same or
+// different; and the workflows only this SILO has.
+function syncPlan(files){
+  const {workflows,tableFiles}=syncParse(files),here=new Map(state.workflows.filter(w=>w.syncId).map(w=>[w.syncId,w]));
+  const repo=new Set(workflows.filter(x=>x.f).map(x=>x.f.syncId));
+  const coming=new Set(tableFiles.map(t=>t.name.toLowerCase()));
+  const plan=workflows.map(x=>{
+    if(!x.f)return x;
+    const local=here.get(x.f.syncId),later=new Set();
+    const find=sid=>here.get(sid)?.id||(repo.has(sid)?(later.add(sid),'later:'+sid):'');
+    const {body,problems,notes,waits}=syncBody(x.f,local,{find,coming});
+    let status=local?'changed':'new';
+    // A step that runs a workflow, or uses a table, coming in the same pull is checked when it is pulled.
+    if(!problems.length&&!later.size&&!waits)
+      try{const next=validateWorkflow(body,local||{});next.tests=x.f.tests?validateTests(x.f.tests):[];if(local&&syncSame(local,{...local,...next}))status='same';}catch(e){problems.push(e.message);}
+    // A workflow made here with the same name: pulling adds a second one, so it is not ticked at first.
+    const twin=!local&&state.workflows.some(w=>w.name.toLowerCase()===String(x.f.name||'').toLowerCase());
+    if(twin)notes.push('A workflow with this name was made here. Pulling adds a second one.');
+    return {file:x.file,syncId:x.f.syncId,name:String(x.f.name||'').slice(0,100),status:problems.length?'problem':status,localId:local?.id||null,enabled:local?.enabled===true,twin,problems,notes};
+  });
+  const tablesPlan=tableFiles.map(t=>{let here=null;try{here=tables.table(t.name);}catch{}return {name:t.name,status:!here?'new':syncCols(here.columns)===syncCols(t.columns)?'same':'different'};});
+  const onlyHere=state.workflows.filter(w=>!w.syncId||!repo.has(w.syncId)).map(w=>({id:w.id,name:w.name}));
+  return {workflows:plan,tables:tablesPlan,onlyHere,tableFiles};
+}
+const syncView=()=>({...state.settings.sync,environments:ENVIRONMENTS});
+async function saveSync(b,me){
+  const s=state.settings.sync,next={...s};
+  if(b.environment!==undefined){if(!Object.hasOwn(ENVIRONMENTS,String(b.environment)))fail('Pick development, testing, production or none.');next.environment=String(b.environment);}
+  if(b.protect!==undefined)next.protect=b.protect===true;
+  if(b.remote!==undefined)next.remote=String(b.remote||'').trim()?checkRemote(b.remote):'';
+  if(b.branch!==undefined)next.branch=checkBranch(b.branch);
+  state.settings.sync=next;
+  auditNote({action:'sync.settings',actor:me?.name||'owner',target:`${next.environment||'none'}${next.protect?', protected':''}`});
+  await persist();return syncView();
+}
+const syncReady=()=>{const s=state.settings.sync;if(!s.remote)fail('Set the Git repository first.',409);return s;};
+async function syncPush(b,me){
+  const s=syncReady();
+  const pick=Array.isArray(b.ids)?new Set(b.ids.map(String)):null,list=pick?state.workflows.filter(w=>pick.has(w.id)):state.workflows;
+  if(pick&&(!pick.size||list.length!==pick.size))fail('Pick the workflows to push.',pick.size?404:400);
+  const message=string(String(b.message||''),2000)||`Workflows from SILO${s.environment?` (${ENVIRONMENTS[s.environment]})`:''}`;
+  const r=await syncGit.run(async()=>{
+    const {empty}=await syncGit.prepare(s),there=empty?new Map():syncGit.read();
+    const bySync=new Map(),tableAt=new Map();
+    for(const [rel,text] of there){let f;try{f=JSON.parse(text);}catch{continue;}if(rel.startsWith('workflows/')&&f?.syncId)bySync.set(f.syncId,rel);if(rel.startsWith('tables/')&&typeof f?.name==='string')tableAt.set(f.name.toLowerCase(),rel);}
+    const files=new Map(),remove=new Set();
+    files.set('silo.json',JSON.stringify({silo:'repository',format:SYNC_FORMAT,about:'Workflows and table layouts from SILO, pulled in System, Environments and Git. Table rows, secrets and runs are never here.'},null,2)+'\n');
+    for(const w of list){
+      const f=syncWorkflow(w),rel=`workflows/${syncSlug(w.name)}-${f.syncId.slice(0,8)}.json`,old=bySync.get(f.syncId);
+      if(old&&old!==rel)remove.add(old);files.set(rel,JSON.stringify(f,null,2)+'\n');
+    }
+    if(!pick)for(const [sid,rel] of bySync)if(!list.some(w=>w.syncId===sid))remove.add(rel);
+    const used=new Set(list.flatMap(w=>w.steps.map(tableRef).filter(Boolean).map(n=>n.toLowerCase()))),wrote=new Set();
+    for(const t of tables.list()){
+      const low=t.name.toLowerCase();if(pick&&!used.has(low))continue;
+      const rel=tableAt.get(low)||`tables/${syncSlug(t.name)}-${createHash('sha256').update(low).digest('hex').slice(0,6)}.json`;
+      wrote.add(rel);files.set(rel,JSON.stringify({silo:'table',format:SYNC_FORMAT,name:t.name,columns:t.columns},null,2)+'\n');
+    }
+    if(!pick)for(const rel of tableAt.values())if(!wrote.has(rel))remove.add(rel);
+    return syncGit.write({files,remove:[...remove],message,author:me?.name,branch:s.branch});
+  });
+  s.last={...s.last,push:{at:Date.now(),by:me?.name||'owner',commit:r.commit||s.last?.push?.commit||'',workflows:list.length,changed:r.changed}};
+  if(r.changed)event('Pushed to Git',`${list.length} workflow${list.length===1?'':'s'} to ${s.branch}, commit ${r.commit.slice(0,8)}.`,'workflow');
+  auditNote({action:'sync.push',actor:me?.name||'owner',target:r.changed?r.commit:'nothing changed'});
+  await persist();return {...r,workflows:list.length};
+}
+async function syncPreview(){
+  const s=syncReady();
+  return syncGit.run(async()=>{
+    const {head,empty}=await syncGit.prepare(s);
+    const {tableFiles,...plan}=empty?{workflows:[],tables:[],onlyHere:state.workflows.map(w=>({id:w.id,name:w.name}))}:syncPlan(syncGit.read());
+    return {head,empty,branch:s.branch,...plan};
+  });
+}
+// Pulls the workflows named by their sync ids, from the commit the preview showed. A workflow here is changed in
+// place and keeps its id, whether it is on, its addresses and its runs; one new here arrives turned off. Tables they
+// need are made; a table that is here with other columns is left as it is.
+async function syncPull(b,me){
+  const s=syncReady(),want=new Set((Array.isArray(b.ids)?b.ids:[]).map(String));
+  if(!want.size)fail('Pick the workflows to pull.');
+  return syncGit.run(async()=>{
+    const {head,empty}=await syncGit.prepare(s);
+    if(empty||(b.head&&b.head!==head))fail('The repository changed since you looked. Look again.',409);
+    const {workflows,tableFiles}=syncParse(syncGit.read()),pick=workflows.filter(x=>x.f&&want.has(x.f.syncId));
+    if(pick.length!==want.size)fail('Some of those workflows are not in the repository any more. Look again.',409);
+    // The tables the pulled workflows need, by name.
+    const madeTables=[],need=new Set(pick.flatMap(x=>(x.f.steps||[]).filter(st=>st?.app==='table:').map(st=>String(st.table||'').trim().toLowerCase())));
+    for(const t of tableFiles){
+      if(!need.has(t.name.toLowerCase()))continue;let here=null;try{here=tables.table(t.name);}catch{}
+      if(!here){tables.create({name:t.name,columns:t.columns});madeTables.push(t.name);}
+    }
+    const here=()=>new Map(state.workflows.filter(w=>w.syncId).map(w=>[w.syncId,w])),done=[],failed=[],later=[];
+    let left=[...pick];
+    // A workflow that runs another one is pulled after it, so the other one is here when it is checked.
+    while(left.length){
+      const now=here(),ready=left.filter(x=>(x.f.steps||[]).every(st=>st?.type!=='workflow'||now.has(st.workflow?.syncId)||!left.some(y=>y.f.syncId===st.workflow?.syncId)));
+      if(!ready.length){for(const x of left)failed.push({name:x.f.name,error:'It runs a workflow that could not be pulled.'});break;}
+      for(const x of ready){
+        const map=here(),local=map.get(x.f.syncId);
+        try{
+          const {body,problems}=syncBody(x.f,local,{find:sid=>map.get(sid)?.id||''});
+          if(problems.length)fail(problems[0]);
+          const next=validateWorkflow(body,local||{});guardAppSteps(me,next,local);
+          next.tests=x.f.tests?validateTests(x.f.tests):[];
+          if(x.f.onFailure?.syncId&&!body.onFailure)later.push(x.f);
+          if(local){if(state.runs.some(r=>r.workflowId===local.id&&r.status==='running'))fail('It is running. Wait for it to finish.');keepVersion(local,next);Object.assign(local,next);await primeWatch(local);done.push({id:local.id,name:local.name,status:'changed'});}
+          else{const w={...next,id:id(),syncId:x.f.syncId,enabled:false,nextRun:null};await primeWatch(w);state.workflows.push(w);done.push({id:w.id,name:w.name,status:'new'});}
+        }catch(e){failed.push({name:String(x.f.name||'').slice(0,100),error:e.message});}
+      }
+      left=left.filter(x=>!ready.includes(x));
+    }
+    // What to start on a failure may be a workflow pulled after this one.
+    const map=here();
+    for(const f of later){const w=map.get(f.syncId),to=map.get(f.onFailure.syncId);if(w&&to&&to.id!==w.id)w.onFailure=to.id;}
+    s.last={...s.last,pull:{at:Date.now(),by:me?.name||'owner',commit:head,workflows:done.length}};
+    if(done.length||madeTables.length)event('Pulled from Git',`${done.length} workflow${done.length===1?'':'s'}${madeTables.length?`, ${madeTables.length} new table${madeTables.length===1?'':'s'}`:''} from ${s.branch}, commit ${head.slice(0,8)}.`,'workflow');
+    auditNote({action:'sync.pull',actor:me?.name||'owner',target:`${head.slice(0,12)}: ${done.length} pulled, ${failed.length} not`});
+    await persist();
+    return {head,pulled:done,failed,tables:madeTables};
+  });
 }
 
 // The workflow builder: a resident with a real model turns a description into a workflow. The draft is checked with
@@ -4871,6 +5088,7 @@ function afterChange(kind,obj,{changed,held}){
   if(kind==='agent'&&changed.length&&!held)for(const w of state.workflows)if((w.gate==='test'||w.gate==='hold')&&w.tests?.length&&w.steps.some(s=>s.agentId===obj.id))start('workflow',w,{trigger:'change',cause:{agentId:obj.id,name:obj.name}});
 }
 async function applyCandidate(kind,obj,by,me=null){
+  if(kind==='workflow')syncGuard('apply a change');
   const c=obj.candidate;if(!c)fail('There is no held change.',404);
   if(by!=='tests'&&c.status==='testing'&&evaluating.has(kind+':'+obj.id))fail('The held change is still being tested.',409);
   if(kind==='workflow'){
@@ -4914,6 +5132,7 @@ async function suiteRoute(kind,obj,action,req,b,me){
   }
   if(req.method!=='POST')fail('Method not allowed.',405);
   if(action==='tests'){
+    if(kind==='workflow')syncGuard('change its tests');
     const tests=validateTests(b.tests,kind);
     if(b.judgeId!==undefined){const j=b.judgeId?findAgent(b.judgeId).id:null;if(j&&j===obj.id)fail('A resident cannot judge its own answers.');obj.judgeId=j;}
     if(b.gate!==undefined){if(!GATES.includes(b.gate))fail('Choose off, test or hold for changes.');obj.gate=b.gate;}
@@ -6370,11 +6589,17 @@ const server=http.createServer(async(req,res)=>{
         const w=state.workflows.find(w=>w.id===wx[1]);if(!w)fail('Workflow not found.',404);
         if(wx[2]!=='restore'){const [code,body]=await suiteRoute('workflow',w,wx[2],req,b,me);return send(res,code,body);}
         if(req.method!=='POST')fail('Method not allowed.',405);
+        syncGuard('restore a version');
         const v=(w.versions||[]).find(v=>v.version===Number(b.version));if(!v)fail('That version is not kept any more.',404);
         if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))fail('Wait for the workflow to finish.',409);
         const next=validateWorkflow({...w,...v,hook:w.hook?true:false,watch:w.watch},w);guardAppSteps(me,next,w);
         keepVersion(w,next);Object.assign(w,next);event(`Workflow restored: ${w.name}`,`Version ${v.version} is now version ${w.version}.`,'workflow');await persist();return send(res,200,w);
       }
+      if(route==='/api/sync'&&req.method==='GET')return send(res,200,syncView());
+      if(route==='/api/sync'&&req.method==='POST')return send(res,200,await saveSync(b,me));
+      if(route==='/api/sync/push'&&req.method==='POST')return send(res,200,await syncPush(b,me));
+      if(route==='/api/sync/pull'&&req.method==='GET')return send(res,200,await syncPreview());
+      if(route==='/api/sync/pull'&&req.method==='POST')return send(res,200,await syncPull(b,me));
       const tw=route.match(/^\/api\/workflows\/([^/]+)\/template$/);
       if(tw&&req.method==='GET'){const w=state.workflows.find(w=>w.id===tw[1]);if(!w)fail('Workflow not found.',404);return send(res,200,templateFromWorkflow(w));}
       if(route==='/api/templates/check'&&req.method==='POST')return send(res,200,validateTemplate(b.template));
@@ -6396,7 +6621,7 @@ const server=http.createServer(async(req,res)=>{
         catch(e){if(ctl.signal.aborted&&!e.status)fail(String(ctl.signal.reason?.message||'Stopped.'),504);throw e;}
         finally{clearTimeout(timer);res.off('close',gone);}
       }
-      if(route==='/api/workflows'&&req.method==='POST'){const w={...validateWorkflow(b),id:id()};guardAppSteps(me,w);if(applyMailSecret(w,b))await persistSecrets();await primeWatch(w);state.workflows.push(w);await persist();return send(res,201,w);}
+      if(route==='/api/workflows'&&req.method==='POST'){syncGuard('make a workflow');const w={...validateWorkflow(b),id:id()};guardAppSteps(me,w);if(applyMailSecret(w,b))await persistSecrets();await primeWatch(w);state.workflows.push(w);await persist();return send(res,201,w);}
       const wh=route.match(/^\/api\/workflows\/([^/]+)\/apphook(\/github)?$/);
       if(wh){
         const w=state.workflows.find(w=>w.id===wh[1]);if(!w)fail('Workflow not found.',404);if(!w.app?.instant)fail('Instant events are off for this workflow.',409);
@@ -6422,7 +6647,7 @@ const server=http.createServer(async(req,res)=>{
         return send(res,202,run);
       }
       const wm=route.match(/^\/api\/workflows\/([^/]+)(\/run)?$/);
-      if(wm){const w=state.workflows.find(w=>w.id===wm[1]);if(!w)fail('Workflow not found.',404);if(wm[2]&&req.method==='POST')return send(res,202,await executeWorkflow(w,string(b.input||'Develop a useful new product idea.',15000)));if(!wm[2]&&req.method==='PUT'){const next=validateWorkflow(b,w);guardAppSteps(me,next,w);const ch=holdChange('workflow',w,next,me);if(applyMailSecret(next,b,w))await persistSecrets();keepVersion(w,next);Object.assign(w,next);if(ch.held)w.candidate=ch.held;await primeWatch(w);await tidyGithubHook(w);await persist();afterChange('workflow',w,ch);return send(res,200,slimSuite(w));}if(!wm[2]&&req.method==='DELETE'){if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))fail('Wait for the workflow to finish.',409);state.workflows=state.workflows.filter(x=>x.id!==w.id);await dropGithubHook(w);const gone=[secrets.delete('mail:'+w.id),secrets.delete('apphook:'+w.id)];if(gone.some(Boolean))await persistSecrets();await persist();return send(res,200,{ok:true});}}
+      if(wm){const w=state.workflows.find(w=>w.id===wm[1]);if(!w)fail('Workflow not found.',404);if(wm[2]&&req.method==='POST')return send(res,202,await executeWorkflow(w,string(b.input||'Develop a useful new product idea.',15000)));if(!wm[2]&&req.method==='PUT'){const next=validateWorkflow(b,w);if(state.settings.sync.protect&&!syncSame(w,next))syncGuard('change a workflow');guardAppSteps(me,next,w);const ch=holdChange('workflow',w,next,me);if(applyMailSecret(next,b,w))await persistSecrets();keepVersion(w,next);Object.assign(w,next);if(ch.held)w.candidate=ch.held;await primeWatch(w);await tidyGithubHook(w);await persist();afterChange('workflow',w,ch);return send(res,200,slimSuite(w));}if(!wm[2]&&req.method==='DELETE'){syncGuard('delete a workflow');if(state.runs.some(r=>r.workflowId===w.id&&r.status==='running'))fail('Wait for the workflow to finish.',409);state.workflows=state.workflows.filter(x=>x.id!==w.id);await dropGithubHook(w);const gone=[secrets.delete('mail:'+w.id),secrets.delete('apphook:'+w.id)];if(gone.some(Boolean))await persistSecrets();await persist();return send(res,200,{ok:true});}}
       // One run, for programs that wait for it without reading the whole state.
       const rg=route.match(/^\/api\/runs\/([^/]+)$/);
       if(rg&&req.method==='GET'){const run=state.runs.find(r=>r.id===rg[1]);if(!run)fail('Run not found.',404);return send(res,200,run.eachDone?{...run,eachDone:undefined}:run);}

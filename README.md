@@ -104,6 +104,8 @@ docker compose logs silo   # the setup address for the first account
 
 See "Running without anyone signed in" in [docs/handbook.md](docs/handbook.md).
 
+For development, testing and production, run one SILO for each and move workflows between them through a Git repository: push from development, read what a pull would change, and pull into a protected production SILO (System, Environments and Git). See "Development, testing and production" in the handbook.
+
 ## Developer resources
 
 - [Handbook and operational setup](docs/handbook.md)

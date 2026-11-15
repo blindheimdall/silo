@@ -891,3 +891,6 @@ dialog:has(.inbox){width:min(1100px,calc(100vw - 32px))}
 .inbox-reply textarea{resize:vertical;min-height:60px}
 .inbox-reply-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}.inbox-reply-foot small{color:var(--ph-dim);font:9px/1.5 var(--term)}
 @media(max-width:800px){.inbox{grid-template-columns:minmax(0,1fr);height:auto}.inbox-side{border-right:0;border-bottom:3px double var(--ph-low)}.inbox-items{max-height:260px}.inbox-msgs{max-height:50vh}.inbox-msg{max-width:92%}.inbox-reply-foot{flex-wrap:wrap}}
+/* The environment this SILO is, next to the connection state in the HUD. */
+.env-badge{margin-left:10px;padding:1px 6px;border:1px solid currentColor;font-size:8px;letter-spacing:1px;color:var(--ph-hi)}
+.env-badge.env-testing{color:var(--amb-hi)}.env-badge.env-production{color:var(--red);text-shadow:none}
