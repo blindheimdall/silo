@@ -58,7 +58,9 @@ export const TRIGGERS={
         const ids=(list.messages||[]).map(m=>m.id);got.push(...ids);
         page=list.nextPageToken;if(!seen||!page||ids.some(id=>known.has(id)))break;
       }
-      const ids=got.reverse(),f=fresh(ids,seen);
+      // Only what came after the newest message seen before is new: older mail first met now (a later page, or mail
+      // moved back into the inbox) is not, or the second check would hand on the inbox's history.
+      const cut=seen?got.findIndex(id=>known.has(id)):-1,ids=(cut<0?got:got.slice(0,cut)).reverse(),f=fresh(ids,seen);
       // At most 10 a check, the oldest first; the others come at the next check.
       const take=f.add.slice(0,10),items=[];
       for(const id of take){
@@ -73,7 +75,8 @@ export const TRIGGERS={
       const id=sheetId(cfg.sheet),range=cfg.tab?`'${String(cfg.tab).replace(/'/g,"''")}'!A1:Z5000`:'A1:Z5000';
       const d=await get('google',ctx,`${B('sheets')}/spreadsheets/${enc(id)}/values/${enc(range)}?majorDimension=ROWS`);
       const rows=d.values||[],head=rows[0]||[],count=rows.length;
-      const item=(r,n,key)=>({id:key?'key:'+key:`row${n}:${createHash('sha256').update(JSON.stringify(r)).digest('base64url').slice(0,12)}`,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')});
+      // Without an id column the id also holds the time of the check, so a row deleted and added again the same is new.
+      const item=(r,n,key)=>({id:key?'key:'+key:`row${n}:${createHash('sha256').update(JSON.stringify(r)).digest('base64url').slice(0,12)}@${Date.now().toString(36)}`,title:`Row ${n}: ${one(r.filter(Boolean).join(', '),100)}`,text:`Sheet row ${n}\n`+r.map((v,k)=>`${head[k]||'Column '+(k+1)}: ${v}`).join('\n')});
       // With an id column a row is known by its id, wherever it is: rows inserted, moved or deleted anywhere are handled,
       // and a row whose id cell is still empty waits until it is filled.
       if(cfg.idColumn){
@@ -82,7 +85,10 @@ export const TRIGGERS={
         const keyed=rows.slice(1).map((r,i)=>({r,n:i+2,key:String(r[col]??'').trim()})).filter(x=>x.key);
         if(!seen?.keys)return {seen:{keys:keepLast(keyed.map(x=>x.key),5000)},items:[]};
         const known=new Set(seen.keys),add=keyed.filter(x=>!known.has(x.key)).slice(0,20);
-        return {seen:{keys:keepLast([...seen.keys,...add.map(x=>x.key)],5000)},items:add.map(x=>item(x.r,x.n,x.key))};
+        // What is remembered is the ids in the sheet now that were seen or are handed on, so ids of deleted rows go and the
+        // list never pushes out a row still there (which would then start the workflow again).
+        const handed=new Set(add.map(x=>x.key));
+        return {seen:{keys:keepLast(keyed.map(x=>x.key).filter(k=>known.has(k)||handed.has(k)),5000)},items:add.map(x=>item(x.r,x.n,x.key))};
       }
       if(!seen)return {seen:{rows:count},items:[]};
       // Without one, only rows added at the end are new: deleted rows move the count back, and at most 20 a check go out,
@@ -124,7 +130,8 @@ export const TRIGGERS={
         next=seen&&!(d.value||[]).some(m=>known.has(m.id))?d['@odata.nextLink']:'';
         if(next&&!String(next).startsWith(B('graph')+'/'))next='';
       }
-      const list=got.reverse(),f=fresh(list.map(m=>m.id),seen),take=new Set(f.add.slice(0,10));
+      // As for Gmail: only what came after the newest message seen before is new.
+      const cut=seen?got.findIndex(m=>known.has(m.id)):-1,list=(cut<0?got:got.slice(0,cut)).reverse(),f=fresh(list.map(m=>m.id),seen),take=new Set(f.add.slice(0,10));
       const items=list.filter(m=>take.has(m.id)).filter(m=>(!cfg.from||String(m.from?.emailAddress?.address||'').toLowerCase().includes(cfg.from.toLowerCase()))&&(!cfg.subject||String(m.subject||'').toLowerCase().includes(cfg.subject.toLowerCase())))
         .map(m=>({id:m.id,title:one(m.subject||'(no subject)',120),text:`From: ${m.from?.emailAddress?.address||''}\nTo: ${(m.toRecipients||[]).map(r=>r.emailAddress?.address).join(', ')}\nDate: ${m.receivedDateTime}\nSubject: ${m.subject}\n\n${clip(m.body?.contentType==='html'?htmlText(m.body.content):m.body?.content||'')}`}));
       return {seen:{ids:seenAfter(seen,f,[...take])},items};
@@ -175,7 +182,8 @@ export const TRIGGERS={
   'notion.database':{service:'notion',label:'New or changed page in a Notion database',fields:[{key:'database',label:'Link of the database',required:true,placeholder:'https://www.notion.so/...'}],
     async check(ctx,cfg,seen){
       const id=notionId(cfg.database);
-      if(!seen)return {seen:{since:new Date().toISOString(),at:[]},items:[]};
+      // Notion keeps edit times to the minute, so the first mark is the start of this minute: an edit later in it is not lost.
+      if(!seen)return {seen:{since:new Date(Math.floor(Date.now()/60000)*60000).toISOString(),at:[]},items:[]};
       // The oldest edits first, page after page (up to 5 of 100), at most 20 a check. Notion keeps edit times to the
       // minute, so the mark is on or after the last edit handed on, and the pages already handed on at that time are
       // remembered (at): none is lost and none comes twice.
@@ -206,7 +214,8 @@ export const TRIGGERS={
       const text=htmlText(await fetchText(cfg.url,ctx)).replace(/[ \t]+/g,' ').slice(0,200000);
       const hash=createHash('sha256').update(text).digest('hex').slice(0,24),hit=!cfg.contains||text.toLowerCase().includes(cfg.contains.toLowerCase());
       if(!seen||seen.hash===hash)return {seen:{hash},items:[]};
-      return {seen:{hash},items:hit?[{id:hash,title:one(`Changed: ${cfg.url}`,120),text:`The page ${cfg.url} changed.\n\nIt says now:\n${clip(text,8000)}`}]:[]};
+      // The id holds the time too: a page that comes back to how it was before (in stock, out, in again) is a new change.
+      return {seen:{hash},items:hit?[{id:`${hash}@${Date.now().toString(36)}`,title:one(`Changed: ${cfg.url}`,120),text:`The page ${cfg.url} changed.\n\nIt says now:\n${clip(text,8000)}`}]:[]};
     }}
 };
 

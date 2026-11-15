@@ -101,7 +101,7 @@ async function boot(port,dataDir,env={}){
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Test server did not start: '+errors)),15000);child.stdout.on('data',b=>{if(b.toString().includes('SILO is ready')){clearTimeout(timer);resolve();}});});
   const s=await fetch(origin+'/api/session');const {token}=await s.json(),cookie=s.headers.get('set-cookie').split(';')[0];
   const request=async(route,body,method=body===undefined?'GET':'POST')=>{const r=await fetch(origin+'/api'+route,{method,headers:{cookie,origin,'Content-Type':'application/json','x-silo-token':token},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json().catch(()=>({}))};};
-  return {request,state:async()=>(await request('/state')).data,stop};
+  return {request,state:async()=>(await request('/state')).data,stop,headers:{cookie,origin,'x-silo-token':token}};
 }
 
 test('app events saved before a restart still start, once each',async t=>{
@@ -434,5 +434,125 @@ test('Slack, GitHub, Notion and Outlook Calendar read every page of a burst, and
     fake.events=Array.from({length:23},(_,i)=>({id:'e'+i,subject:'Meeting '+i,start:{dateTime:start,timeZone:'UTC'},end:{dateTime:start}}));
     const got=await drain(soon,{minutes:15},{ids:[]},2);
     assert.deepEqual(got.map(x=>x.length),[23,0]);
+  });
+});
+
+test('a burst waits in the app inbox, a pause interrupts, saved passwords stay with their server, and requests are read whole',async t=>{
+  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'silo-consistency-'));let silo;
+  const feed={items:[]};feed.server=http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'application/rss+xml'});res.end(`<rss><channel>${[...feed.items].reverse().map(i=>`<item><title>${i}</title><guid>${i}</guid><description>About ${i}</description></item>`).join('')}</channel></rss>`);});
+  t.after(async()=>{await silo?.stop();feed.server.closeAllConnections();feed.server.close();await fs.rm(temp,{recursive:true,force:true,maxRetries:5,retryDelay:300});});
+  const base=await listen(feed.server);
+  silo=await boot(14451,temp,{SILO_APP_TRIGGER_INTERVAL:'300'});const {request,state}=silo,origin='http://127.0.0.1:14451';
+  await request('/connections',{provider:'compatible',key:'fixture-key-consistency',model:'fixture',endpoint:'https://example.com/v1/chat/completions'});
+  const plain=(await request('/agents',{name:'Plain',role:'Fixture',floor:2,provider:'compatible',model:'fixture',instructions:'Fixture.'})).data;
+
+  await t.test('events that arrive while the workflow runs wait in its inbox, not in the queue of 15',async()=>{
+    const w=(await request('/workflows',{name:'Feed burst',steps:[{type:'approval',prompt:'Look'},{agentId:plain.id,prompt:'Hi'}],app:{kind:'web.feed',url:base+'/feed.xml'}})).data;
+    await until(async()=>(await state()).workflows.find(x=>x.id===w.id)?.appChecked,15000,'the first check');
+    for(let i=0;i<22;i++)feed.items.push('news'+i);
+    const first=await until(async()=>(await state()).runs.find(r=>r.workflowId===w.id&&r.waiting),15000,'the first run');
+    const now=await until(async()=>{const x=(await state()).workflows.find(x=>x.id===w.id);return x.appInbox?.length===21&&x;},15000,'the rest in the inbox');
+    assert.equal(now.queue.waiting,0,'nothing in the queue');assert.deepEqual(now.lost,[],'nothing dropped');
+    assert.equal((await state()).runs.filter(r=>r.workflowId===w.id).length,1);
+    assert.equal((await request('/runs/'+first.id+'/approve',{approve:true})).status,200);
+    await until(async()=>(await state()).runs.filter(r=>r.workflowId===w.id).length===2,15000,'the next one from the inbox');
+    await request('/workflows/'+w.id,{},'DELETE');
+  });
+
+  await t.test('a pause between steps interrupts the run instead of failing it, and it resumes',async()=>{
+    const w=(await request('/workflows',{name:'Paused between',steps:[{type:'approval',prompt:'Look'},{agentId:plain.id,prompt:'Hi'}]})).data;
+    const id=(await request('/workflows/'+w.id+'/run',{input:'go'})).data.id;
+    await until(async()=>(await state()).runs.find(r=>r.id===id)?.waiting,15000,'the approval');
+    await request('/pause',{paused:true});
+    await request('/runs/'+id+'/approve',{approve:true});
+    const r=await until(async()=>{const x=(await state()).runs.find(r=>r.id===id);return x.status!=='running'&&x;},15000,'the pause');
+    assert.equal(r.status,'interrupted',r.error);
+    assert.ok(!(await state()).events.some(e=>e.title===`Workflow failed: ${w.name}`));
+    await request('/pause',{paused:false});
+    assert.equal((await request('/runs/'+id+'/resume',{})).status,202);
+    await until(async()=>(await state()).runs.find(r=>r.id===id)?.status==='completed',15000,'the resumed run');
+  });
+
+  await t.test('a lost event clicked while it cannot start stays in the list',async()=>{
+    const w=(await request('/workflows',{name:'Lost while paused',steps:[{agentId:plain.id,prompt:'Hi'}]})).data;
+    await silo.stop();
+    const store=new StateStore(path.join(temp,'data')),s=store.load(()=>({}));
+    s.workflows.find(x=>x.id===w.id).lostEvents=[{id:'p1',trigger:'webhook',input:'Keep',time:Date.now(),lostAt:Date.now(),reason:'dropped',detail:''}];
+    s.paused=true;await store.save(s);store.close();
+    silo=await boot(14451,temp,{SILO_APP_TRIGGER_INTERVAL:'300'});Object.assign(silo,{});
+    const r=await silo.request('/workflows/'+w.id+'/lost/p1/run',{});
+    assert.equal(r.status,409);
+    assert.deepEqual((await silo.state()).workflows.find(x=>x.id===w.id).lost.map(l=>l.id),['p1']);
+    await silo.request('/pause',{paused:false});
+  });
+
+  await t.test('a saved mail password is used only for its own server and account',async()=>{
+    const {request}=silo;
+    const made=await request('/workflows',{name:'Inbox',steps:[{agentId:plain.id,prompt:'Hi'}],mail:{host:'imap.example.test',user:'reader',pass:'test-mail-pass'}});
+    assert.equal(made.status,201,JSON.stringify(made.data));
+    const elsewhere=await request('/mail/test',{workflowId:made.data.id,mail:{host:'imap.elsewhere.test',user:'reader'}});
+    assert.equal(elsewhere.status,400);assert.match(elsewhere.data.error,/password/);
+    const moved=await request('/workflows/'+made.data.id,{...made.data,mail:{host:'imap.elsewhere.test',user:'reader'}},'PUT');
+    assert.equal(moved.status,400);assert.match(moved.data.error,/give its password again/);
+    assert.equal((await request('/workflows/'+made.data.id,{...made.data,mail:{host:'imap.example.test',user:'reader'}},'PUT')).status,200,'the same server keeps it');
+  });
+
+  await t.test('requests are read whole, bad values and addresses are refused, and a flood of sessions signs nobody out',async()=>{
+    const {request,headers}=silo;
+    // A JSON body sent in two pieces that split a two-byte letter.
+    const body=Buffer.from(JSON.stringify({name:'notes/ro.md',content:'mâine și țară'}));const cut=body.indexOf(Buffer.from('ș'))+1;
+    const status=await new Promise((ok,no)=>{const q=http.request(origin+'/api/file',{method:'POST',headers:{...headers,'Content-Type':'application/json','Content-Length':body.length}},r=>{r.resume();r.on('end',()=>ok(r.statusCode));});q.on('error',no);q.write(body.subarray(0,cut));setTimeout(()=>q.end(body.subarray(cut)),50);});
+    assert.ok(status<300,String(status));
+    assert.equal((await request('/file?name=notes/ro.md')).data.content,'mâine și țară');
+    assert.equal((await fetch(origin+'/%E0%A4%A')).status,400);
+    assert.equal((await request('/grants',{subjectId:plain.id,permissions:['read_files'],ttlSeconds:'1h'})).status,400);
+    const job=(await request('/jobs',{workflowId:(await silo.state()).workflows[0].id,compensations:[{kind:'file_restore',file:'notes/ro.md',existed:false}]})).data;
+    assert.deepEqual(job.compensations,[],'what can be undone is only what SILO wrote');
+    const back=await fetch(origin+'/api/oauth/callback?state=nothing&code=x');
+    assert.equal(back.status,200);assert.match(await back.text(),/Not signed in/);
+    for(let i=0;i<520;i++)await fetch(origin+'/api/session');
+    assert.equal((await request('/state')).status,200,'still signed in');
+  });
+});
+
+test('old mail met for the first time is not new, a sheet forgets deleted ids, and a page that comes back is a change',async t=>{
+  const s={gmail:[],sheet:[],page:'A'};
+  s.server=http.createServer((req,res)=>{
+    const u=new URL(req.url,'http://x'),json=d=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(d));};
+    if(u.pathname==='/gmail/users/me/messages'){
+      const at=Number(u.searchParams.get('pageToken')||0),size=Number(u.searchParams.get('maxResults')),all=[...s.gmail].reverse();
+      return json({messages:all.slice(at,at+size).map(id=>({id})),...(at+size<all.length&&{nextPageToken:String(at+size)})});
+    }
+    const m=u.pathname.match(/^\/gmail\/users\/me\/messages\/(.+)$/);if(m)return json({id:m[1],payload:{headers:[]},snippet:m[1]});
+    if(u.pathname.startsWith('/sheets/'))return json({values:s.sheet});
+    if(u.pathname==='/page'){res.writeHead(200,{'Content-Type':'text/html'});return res.end(`<p>Status: ${s.page}</p>`);}
+    res.writeHead(404);res.end('{}');
+  });
+  const base=await listen(s.server);t.after(()=>{s.server.closeAllConnections();s.server.close();});
+  process.env.SILO_TEST_CONNECTOR_BASE=base;
+  const {TRIGGERS}=await import('../app-triggers.mjs');const ctx={token:async()=>'fixture-token'};
+
+  await t.test('Gmail: an inbox of 200 gives nothing on the second check, then only what came after',async()=>{
+    const gmail=TRIGGERS['google.mail'];s.gmail=Array.from({length:200},(_,i)=>'old'+i);
+    let seen=(await gmail.check(ctx,{},null)).seen;
+    let r=await gmail.check(ctx,{},seen);assert.deepEqual(r.items,[],'the history is not handed on');seen=r.seen;
+    s.gmail.push('new1','new2');
+    r=await gmail.check(ctx,{},seen);assert.deepEqual(r.items.map(x=>x.id),['new1','new2']);
+  });
+
+  await t.test('Sheets: ids of deleted rows are forgotten, so the list never pushes out a row still there',async()=>{
+    const sheet=TRIGGERS['google.sheet_row'],cfg={sheet:'a'.repeat(30),idColumn:'Order'};
+    s.sheet=[['Order','Item'],['1','a'],['2','b']];
+    let seen=(await sheet.check(ctx,cfg,null)).seen;
+    s.sheet=[['Order','Item'],['2','b'],['3','c']];
+    const r=await sheet.check(ctx,cfg,seen);
+    assert.deepEqual(r.items.map(x=>x.id),['key:3']);assert.deepEqual(r.seen.keys,['2','3']);
+  });
+
+  await t.test('a web page that goes back to how it was is a new change each time',async()=>{
+    const page=TRIGGERS['web.page'],cfg={url:base+'/page'};
+    let seen=(await page.check(ctx,cfg,null)).seen;const ids=[];
+    for(const v of ['B','A','B','A']){s.page=v;const r=await page.check(ctx,cfg,seen);seen=r.seen;ids.push(...r.items.map(x=>x.id));await wait(5);}
+    assert.equal(ids.length,4);assert.equal(new Set(ids).size,4,'each change has its own id');
   });
 });

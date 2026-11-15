@@ -1281,11 +1281,14 @@ const runSign=r=>`${r.status}:${r.at??''}:${r.finished||''}:${r.steps?.length||0
 // fetched run adds what the page does not get: the outputs, the whole plan and brief.
 const withLive=(full,r)=>({...full,...r,steps:full.steps,plan:full.plan,input:full.input,output:full.output,slim:false});
 function cachedRun(r){if(!r?.slim)return r;const had=wholeRuns.get(r.id);return had?.sign===runSign(r)?withLive(had.run,r):null;}
+// One fetch at a time for a run in a given state: updates that come while it is on the way wait for the same answer.
+const fetchingRuns=new Map();
 async function wholeRun(r){
   if(!r?.slim)return r;const hit=cachedRun(r);if(hit)return hit;
-  const run=await api('/runs/'+r.id);wholeRuns.set(r.id,{sign:runSign(r),run});
-  if(wholeRuns.size>20)wholeRuns.delete(wholeRuns.keys().next().value);
-  return withLive(run,r);
+  const sign=runSign(r),key=r.id+'|'+sign;
+  let p=fetchingRuns.get(key);
+  if(!p){p=api('/runs/'+r.id).then(run=>{wholeRuns.set(r.id,{sign,run});if(wholeRuns.size>20)wholeRuns.delete(wholeRuns.keys().next().value);return run;}).finally(()=>fetchingRuns.delete(key));fetchingRuns.set(key,p);}
+  return withLive(await p,r);
 }
 function fillTrace(r){wholeRun(r).then(()=>{if(openRunId===r.id&&modalKind==='trace')updateTrace(state.runs.find(x=>x.id===r.id)||r);}).catch(e=>toast(e.message,true));}
 function updateTrace(r){
@@ -1553,7 +1556,7 @@ function openStream(){
   if(stream||!window.EventSource||(accounts&&!me))return;
   const es=stream=new EventSource('/api/stream');
   const drop=()=>{streamUp=false;streamState=null;};
-  es.addEventListener('full',e=>{const m=JSON.parse(e.data);streamState=m.state;streamState.tag=m.tag;streamUp=true;streamFails=0;stateArrived();});
+  es.addEventListener('full',e=>{const m=JSON.parse(e.data);liveText.clear();streamState=m.state;streamState.tag=m.tag;streamUp=true;streamFails=0;stateArrived();});
   es.addEventListener('patch',e=>{
     const m=JSON.parse(e.data);
     // A patch that does not fit what this page has: start the channel again, which sends everything once.
@@ -1585,7 +1588,7 @@ const actions={
   'new-goal':()=>openGoalEditor(),
   'stop-goal':async el=>{el.disabled=true;try{await post('/goals/'+el.dataset.id+'/stop',{});await refresh();if(view==='workflows')render();toast('Goal stopped.');}catch(e){toast(e.message,true);el.disabled=false;}},
   'verify-goal':async el=>{el.disabled=true;try{const r=await post('/goals/'+el.dataset.id+'/verify',{});await refresh();if(view==='workflows')render();toast(r.verification.passed?`Verified: ${r.verification.passedCount}/${r.verification.totalCount} criteria passed.`:`Verification: ${r.verification.passedCount}/${r.verification.totalCount} passed.`);}catch(e){toast(e.message,true);}finally{el.disabled=false;}},
-  'compensate-run':async el=>{el.disabled=true;try{const r=await post('/runs/'+el.dataset.id+'/compensate',{});await refresh();const run=state.runs.find(x=>x.id===el.dataset.id);if(run&&modalKind==='trace')updateTrace(run);toast(`Compensated ${r.compensated} external action(s).`);}catch(e){toast(e.message,true);el.disabled=false;}},
+  'compensate-run':async el=>{el.disabled=true;try{const r=await post('/runs/'+el.dataset.id+'/compensate',{});wholeRuns.delete(el.dataset.id);await refresh();const run=state.runs.find(x=>x.id===el.dataset.id);if(run&&modalKind==='trace')updateTrace(run);toast(`Compensated ${r.compensated} external action(s).`);}catch(e){toast(e.message,true);el.disabled=false;}},
   'new-workflow':()=>openWorkflowEditor(),'edit-workflow':el=>openWorkflowEditor(state.workflows.find(w=>w.id===el.dataset.id)),'delete-workflow':el=>confirmRemoval('workflow',state.workflows.find(w=>w.id===el.dataset.id)),'run-workflow':el=>runWorkflow(state.workflows.find(w=>w.id===el.dataset.id)),'more-agents':()=>{agentLimit+=PAGE;$('#agent-grid').innerHTML=agentGrid();},
   'lost-run':async el=>{el.disabled=true;try{await post(`/workflows/${el.dataset.id}/lost/${el.dataset.lost}/run`,{});await refresh();render();toast('Started again.');}catch(e){toast(e.message,true);el.disabled=false;}},
   'lost-dismiss':async el=>{el.disabled=true;try{await post(`/workflows/${el.dataset.id}/lost/${el.dataset.lost}/dismiss`,{});await refresh();render();}catch(e){toast(e.message,true);el.disabled=false;}},
