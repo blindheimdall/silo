@@ -35,7 +35,9 @@ async function open({host,port}){
   const secure=Number(port)===993;
   if(!secure&&!isLocal(host))throw new Error('Use the IMAP port with TLS, 993.');
   const sock=secure?tls.connect({host,port,servername:host}):net.connect({host,port});
-  await new Promise((resolve,reject)=>{sock.once(secure?'secureConnect':'connect',resolve);sock.once('error',reject);setTimeout(()=>reject(new Error('Cannot reach the mail server.')),12000);});
+  // A server that never answers is let go: its socket is closed, not left open.
+  try{await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(new Error('Cannot reach the mail server.')),12000);sock.once(secure?'secureConnect':'connect',()=>{clearTimeout(t);resolve();});sock.once('error',e=>{clearTimeout(t);reject(e);});});}
+  catch(e){sock.destroy();throw e;}
   return sock;
 }
 

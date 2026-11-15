@@ -16,8 +16,11 @@ export function safeUrl(value,label='address'){
   return u;
 }
 
+// Read up to MAX bytes: a larger answer is cut off on the wire, not read whole first.
 async function readJson(r){
-  const text=await r.text();if(text.length>MAX)throw new Error('The answer was too large.');
+  const parts=[];let n=0;
+  for await(const chunk of r.body||[]){n+=chunk.length;if(n>MAX){r.body.cancel?.().catch?.(()=>{});throw new Error('The answer was too large.');}parts.push(Buffer.from(chunk));}
+  const text=Buffer.concat(parts).toString('utf8');
   try{return JSON.parse(text);}catch{throw new Error('The answer was not JSON.');}
 }
 
@@ -61,7 +64,13 @@ export async function discoverMcpAuth(mcpUrl,{fetcher=globalThis.fetch,headers={
   if(prm){
     issuer=Array.isArray(prm.authorization_servers)?prm.authorization_servers[0]:'';
     if(!issuer)throw new Error('The connector does not name a sign-in server.');
-    if(typeof prm.resource==='string'&&prm.resource){safeUrl(prm.resource,'resource');resource=prm.resource;}
+    // The resource must be this connector (RFC 9728, 3.3): a server naming another service's address would otherwise
+    // get the token meant for that service.
+    if(typeof prm.resource==='string'&&prm.resource){
+      const r=safeUrl(prm.resource,'resource'),path=r.pathname.replace(/\/$/,'');
+      if(r.origin!==server.origin||!(server.pathname===path||server.pathname.startsWith(path+'/')||!path))throw new Error('The connector names another address as the one to sign in for, so SILO will not use it.');
+      resource=prm.resource;
+    }
     if(Array.isArray(prm.scopes_supported))scopes=prm.scopes_supported.filter(s=>typeof s==='string').slice(0,30);
   }else{
     // Older servers (spec of March 2025) keep the sign-in server at the same origin.
@@ -78,6 +87,9 @@ export async function discoverMcpAuth(mcpUrl,{fetcher=globalThis.fetch,headers={
     if(prm)throw new Error('The sign-in server does not publish its addresses.');
     as={authorization_endpoint:issuer+'/authorize',token_endpoint:issuer+'/token',registration_endpoint:issuer+'/register'};
   }
+  // The sign-in server's own name must be the one it was asked as (RFC 8414, 3.3).
+  const trim=s=>String(s||'').replace(/\/$/,'');
+  if(prm&&as.issuer&&trim(as.issuer)!==trim(issuer))throw new Error('The sign-in server gives another name than the one the connector named, so SILO will not use it.');
   const methods=as.code_challenge_methods_supported;
   if(Array.isArray(methods)&&!methods.includes('S256'))throw new Error('The sign-in server does not support PKCE with S256, so SILO will not use it.');
   const meta={

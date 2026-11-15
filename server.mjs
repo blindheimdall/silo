@@ -1380,7 +1380,14 @@ async function exchangeOAuthCode({state:oauthState,code,targetId:explicitTarget}
   await persist();
   return {ok:true,targetId,expiresAt,scope:data.scope||(cfg.scopes||[]).join(' '),hasRefreshToken:!!(data.refresh_token||cfg.refreshToken)};
 }
-async function refreshOAuthToken(targetId){
+// One renewal at a time for each sign-in: a second one would send the same refresh token again, and a provider that
+// rotates them would then refuse it and sign the connector out.
+const oauthRenewing=new Map();
+function refreshOAuthToken(targetId){
+  if(!oauthRenewing.has(targetId))oauthRenewing.set(targetId,renewOAuthToken(targetId).finally(()=>oauthRenewing.delete(targetId)));
+  return oauthRenewing.get(targetId);
+}
+async function renewOAuthToken(targetId){
   const cfg=secrets.get(oauthSecretKey(targetId));
   if(!cfg||!cfg.tokenUrl||!cfg.clientId||!cfg.refreshToken)fail('No OAuth refresh token configured for this target.',400);
   const params=new URLSearchParams({
@@ -1405,7 +1412,7 @@ async function refreshOAuthToken(targetId){
     expiresAt,
     updatedAt:Date.now()
   });
-  if(targetId.startsWith('mcp:'))dropMcp(targetId.slice(4));
+  if(targetId.startsWith('mcp:'))retireMcp(targetId.slice(4));
   await persistSecrets();
   return {ok:true,targetId,expiresAt};
 }
@@ -1552,6 +1559,11 @@ function mcpClient(c){
   const client=c.transport==='openapi'?new OpenApiClient(mcpConfig(c)):new McpClient(mcpConfig(c),{timeout:Number(process.env.SILO_MCP_TIMEOUT)||60000});mcpClients.set(c.id,{client,used:Date.now()});return client;
 }
 function dropMcp(cid){mcpClients.get(cid)?.client.close();mcpClients.delete(cid);}
+// After a new token: new calls get a new client with it, and the calls still going on the old one finish there first.
+function retireMcp(cid){
+  const e=mcpClients.get(cid);mcpClients.delete(cid);if(!e)return;
+  const until=Date.now()+5*60000,done=()=>{if(e.client.pending?.size&&Date.now()<until)setTimeout(done,1000).unref?.();else e.client.close();};done();
+}
 setInterval(()=>{for(const [cid,e] of mcpClients)if(Date.now()-e.used>10*60000)dropMcp(cid);},60000).unref();
 const objectSchema=sch=>sch&&typeof sch==='object'&&!Array.isArray(sch)?{...sch,type:'object',properties:sch.properties||{}}:{type:'object',properties:{}};
 const mcpToolHash=t=>createHash('sha256').update(JSON.stringify({name:t.name,description:String(t.description||'').slice(0,800),schema:objectSchema(t.inputSchema||t.schema),readOnly:t.annotations?.readOnlyHint===true||t.readOnly===true})).digest('hex').slice(0,16);

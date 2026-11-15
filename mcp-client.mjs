@@ -6,6 +6,13 @@ import { spawn } from 'node:child_process';
 
 export const PROTOCOL_VERSION='2025-06-18';
 const CLIENT={name:'silo',title:'SILO 18',version:'0.1.0'};
+// The most a connector may send as one answer.
+const MAX_ANSWER=8*1024*1024;
+async function readCapped(r,max){
+  const parts=[];let n=0;
+  for await(const chunk of r.body||[]){n+=chunk.length;if(n>max){r.body.cancel?.().catch?.(()=>{});throw new Error('The connector sent an answer that is too large.');}parts.push(chunk);}
+  return Buffer.concat(parts.map(p=>Buffer.from(p))).toString('utf8');
+}
 
 export class McpClient{
   constructor(config,{timeout=60000}={}){this.config=config;this.timeout=timeout;this.pending=new Map();this.next=1;this.ready=null;this.closed=false;this.log='';}
@@ -20,6 +27,9 @@ export class McpClient{
     const win=process.platform==='win32',quote=a=>/^[\w@%+=:,./\\-]+$/.test(a)?a:'"'+String(a).replace(/"/g,'\\"')+'"';
     const child=win?spawn([command,...args].map(quote).join(' '),{shell:true,cwd,env:{...process.env,...env},windowsHide:true}):spawn(command,args,{cwd,env:{...process.env,...env}});
     this.child=child;let buffer='';
+    // A program that dies while SILO writes to it ends this connector, never SILO itself.
+    const gone=e=>{if(this.closed)return;this.closed=true;this.failAll(new Error(`The connector program is gone (${e.message}).`));};
+    child.stdin.on('error',gone);child.stdout.on('error',gone);child.stderr.on('error',()=>{});
     child.stdout.setEncoding('utf8');
     child.stdout.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i).trim();buffer=buffer.slice(i+1);if(line)this.receive(line);}});
     child.stderr.setEncoding('utf8');child.stderr.on('data',d=>{this.log=(this.log+d).slice(-2000);});
@@ -47,8 +57,10 @@ export class McpClient{
     }
     // A request from the server. Answer the few that are common, refuse the rest politely.
     if(m.id!==undefined&&m.method){
+      // The answer is best effort: a server that is gone or refuses it does not stop SILO.
+      if(this.closed)return;
       const result=m.method==='ping'?{}:m.method==='roots/list'?{roots:[]}:null;
-      this.write(result?{jsonrpc:'2.0',id:m.id,result}:{jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'Not supported by SILO.'}});
+      Promise.resolve().then(()=>this.write(result?{jsonrpc:'2.0',id:m.id,result}:{jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'Not supported by SILO.'}})).catch(()=>{});
     }
   }
   // Ends every open request: each one's HTTP request is aborted too.
@@ -62,13 +74,19 @@ export class McpClient{
     const r=await fetch(this.config.url,{method:'POST',headers,body:JSON.stringify(msg),signal,redirect:'error'});
     const sid=r.headers.get('mcp-session-id');if(sid)this.session=sid;
     if(r.status===202||r.status===204)return;
-    if(!r.ok){const t=(await r.text()).slice(0,300);throw Object.assign(new Error(`The connector answered ${r.status}. ${t}`.trim()),{status:r.status});}
+    if(!r.ok){
+      const t=(await readCapped(r,4000).catch(()=>'')).slice(0,300);
+      // A 404 for a session means the server forgot it (it restarted): the next call starts a new one.
+      if(r.status===404&&this.session){this.session=null;this.closed=true;}
+      throw Object.assign(new Error(`The connector answered ${r.status}. ${t}`.trim()),{status:r.status});
+    }
     const type=r.headers.get('content-type')||'';
     if(type.includes('text/event-stream')){
       const decoder=new TextDecoder();let buffer='',data='';
       for await(const chunk of r.body){
         if(signal?.aborted)throw signal.reason||new Error('Stopped.');
         buffer+=decoder.decode(chunk,{stream:true});let i;
+        if(buffer.length+data.length>MAX_ANSWER)throw new Error('The connector sent an answer that is too large.');
         while((i=buffer.indexOf('\n'))>=0){
           const line=buffer.slice(0,i).replace(/\r$/,'');buffer=buffer.slice(i+1);
           if(line.startsWith('data:'))data+=(data?'\n':'')+line.slice(5).trimStart();
@@ -76,7 +94,7 @@ export class McpClient{
         }
       }
       if(data)this.receive(data);
-    }else{const text=await r.text();if(text.trim())this.receive(text);}
+    }else{const text=await readCapped(r,MAX_ANSWER);if(text.trim())this.receive(text);}
   }
   // One request. Its own AbortController carries the HTTP request, so a timeout, a stop from outside and closing the
   // connector all end it the same way: the request on the wire is aborted, the server is told it was cancelled (unless
@@ -117,7 +135,8 @@ export class McpClient{
   async callTool(name,args,signal){if(signal?.aborted)throw signal.reason||new Error('Stopped.');await this.connect();if(signal?.aborted)throw signal.reason||new Error('Stopped.');return this.request('tools/call',{name,arguments:args||{}},signal);}
   close(){
     this.closed=true;this.failAll(new Error('The connector was closed.'));
-    if(this.child&&this.child.exitCode===null){try{this.child.stdin.end();}catch{}const c=this.child;setTimeout(()=>{if(c.exitCode===null)c.kill();},500).unref?.();}
+    // On Windows the program runs under a shell, so the whole tree is ended, or the server itself would be left behind.
+    if(this.child&&this.child.exitCode===null){try{this.child.stdin.end();}catch{}const c=this.child;setTimeout(()=>{if(c.exitCode!==null)return;if(process.platform==='win32'&&c.pid)spawn('taskkill',['/T','/F','/PID',String(c.pid)],{windowsHide:true,stdio:'ignore'}).on('error',()=>c.kill());else c.kill();},500).unref?.();}
     if(this.config.transport==='http'&&this.session){fetch(this.config.url,{method:'DELETE',headers:{'Mcp-Session-Id':this.session,...(this.config.headers||{})},signal:AbortSignal.timeout(5000)}).catch(()=>{});}
   }
 }

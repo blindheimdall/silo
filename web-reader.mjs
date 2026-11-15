@@ -52,6 +52,9 @@ function get(url,{allowLocal,timeout}){
       res.on('error',reject);
     });
     req.on('timeout',()=>req.destroy(Object.assign(new Error('The page took too long to answer.'),{code:'ETIMEDOUT'})));
+    // timeout above is for silence; a page that sends a byte now and then is still stopped after twice that in all.
+    const all=setTimeout(()=>req.destroy(Object.assign(new Error('The page took too long to answer.'),{code:'ETIMEDOUT'})),timeout*2);all.unref?.();
+    req.on('close',()=>clearTimeout(all));
     req.on('error',reject);req.end();
   });
 }

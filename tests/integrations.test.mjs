@@ -194,3 +194,36 @@ test('a connector signs in, renews its token and signs out',async t=>{
   const prog=await request('/mcp',{name:'Program',transport:'stdio',command:'node',args:'tests/mcp-fixture.mjs',enabled:false});
   assert.equal((await request('/mcp/'+prog.data.id+'/signin',{})).status,400);
 });
+
+test('a 303 after a POST is read with GET and the body is not sent again',async()=>{
+  const spec={openapi:'3.0.0',info:{title:'t',version:'1'},servers:[{url:'https://api.example.com'}],paths:{'/items':{post:{operationId:'createItem',requestBody:{content:{'application/json':{schema:{type:'object',properties:{name:{type:'string'}}}}}},responses:{200:{description:'ok'}}}}}};
+  const seen=[];
+  const fetcher=async(url,o={})=>{
+    if(url.endsWith('/openapi.json'))return new Response(JSON.stringify(spec),{headers:{'Content-Type':'application/json'}});
+    seen.push([o.method||'GET',new URL(url).pathname,o.body??null,o.headers?.['Content-Type']??null]);
+    if(new URL(url).pathname==='/items')return new Response('moved',{status:303,headers:{location:'/items/1'}});
+    return new Response(JSON.stringify({id:1}),{headers:{'Content-Type':'application/json'}});
+  };
+  const api=new OpenApiClient({spec:'https://api.example.com/openapi.json'},{fetcher});
+  const r=await api.callTool('createItem',{body:{name:'x'}});
+  assert.ok(!r.isError,r.content[0].text);
+  assert.equal(seen.length,2);assert.equal(seen[0][0],'POST');
+  assert.deepEqual(seen[1],['GET','/items/1',null,null]);
+});
+
+test('sign-in metadata naming another resource or another issuer is refused',async()=>{
+  const json=o=>new Response(JSON.stringify(o),{headers:{'Content-Type':'application/json'}});
+  const asMeta={authorization_endpoint:'https://auth.example.com/authorize',token_endpoint:'https://auth.example.com/token',code_challenge_methods_supported:['S256']};
+  const make=(prm,as)=>async url=>{
+    const u=new URL(url);
+    if(u.pathname==='/mcp')return new Response('',{status:401,headers:{'www-authenticate':'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"'}});
+    if(u.pathname.includes('oauth-protected-resource'))return json(prm);
+    if(u.host==='auth.example.com'&&u.pathname.startsWith('/.well-known/'))return json(as);
+    return new Response('',{status:404});
+  };
+  const good=await discoverMcpAuth('https://mcp.example.com/mcp',{fetcher:make({resource:'https://mcp.example.com/mcp',authorization_servers:['https://auth.example.com']},{...asMeta,issuer:'https://auth.example.com/'})});
+  assert.equal(good.resource,'https://mcp.example.com/mcp');
+  await assert.rejects(discoverMcpAuth('https://mcp.example.com/mcp',{fetcher:make({resource:'https://other.example.com/mcp',authorization_servers:['https://auth.example.com']},asMeta)}),/another address/);
+  await assert.rejects(discoverMcpAuth('https://mcp.example.com/mcp',{fetcher:make({resource:'https://mcp.example.com/other',authorization_servers:['https://auth.example.com']},asMeta)}),/another address/);
+  await assert.rejects(discoverMcpAuth('https://mcp.example.com/mcp',{fetcher:make({resource:'https://mcp.example.com/mcp',authorization_servers:['https://auth.example.com']},{...asMeta,issuer:'https://evil.example.com'})}),/another name/);
+});

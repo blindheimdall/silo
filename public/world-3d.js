@@ -301,7 +301,7 @@ export class SiloWorld3D{
     this.raycaster=new T.Raycaster();this.pointer=new T.Vector2();this.pointers=new Map();this.sprites=[];this.terminalSigns=[];this.occluders=[];this.floorMeshes=[];this.detailMeshes=[];
     this.dummy=new T.Object3D();this.banks=new Map();this.glowBanks=new Map();this.atlasTextures=new Map();this.atlasQueue=[];this.atlasWaiting=new Map();this.atlasWorkers=new Set();this.labelCache=new Map();
     this.chunks=Array.from({length:CHUNKS},(_,i)=>{const group=new T.Group();group.userData={first:i*CHUNK+1,last:Math.min(LEVELS,(i+1)*CHUNK)};this.scene.add(group);return group;});
-    this.onContextLost=e=>e.preventDefault();canvas.addEventListener('webglcontextlost',this.onContextLost);this.onContextBack=()=>{this.shadowKey='';};canvas.addEventListener('webglcontextrestored',this.onContextBack);
+    this.onContextLost=e=>e.preventDefault();canvas.addEventListener('webglcontextlost',this.onContextLost);this.onContextBack=()=>{this.shadowKey='';this.asyncRead=undefined;};canvas.addEventListener('webglcontextrestored',this.onContextBack);
     const s0=performance.now();this.build();const s1=performance.now();this.setupPost();const s2=performance.now();this.precompile();
     this.startup={build:s1-s0,post:s2-s1,shaders:performance.now()-s2};
     this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(canvas);this.resize();

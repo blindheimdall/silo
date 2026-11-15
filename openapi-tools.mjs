@@ -210,15 +210,18 @@ export class OpenApiClient{
       if(op.form){headers['Content-Type']='application/x-www-form-urlencoded';body=formBody(typeof args[op.body]==='string'?JSON.parse(args[op.body]):args[op.body]);}
       else{headers['Content-Type']=headers['Content-Type']||'application/json';body=JSON.stringify(args[op.body]);}}
     const timer=AbortSignal.timeout(this.timeout),both=signal?AbortSignal.any([signal,timer]):timer;
-    let target=url,r;
-    // Redirects are followed only on the same host, at most three times.
+    let target=url,r,method=op.method;
+    // Redirects are followed only on the same host, at most three times. A 303, or a 301 or 302 after a change, means the
+    // API did it and points to the result: that is read with GET, never sent again. 307 and 308 send it on as it was.
     for(let hop=0;;hop++){
-      try{r=await this.fetcher(target.href,{method:op.method,headers,body,redirect:'manual',signal:both});}
+      try{r=await this.fetcher(target.href,{method,headers,body,redirect:'manual',signal:both});}
       // The cause's code tells a refused connection (nothing was sent) from one that broke after sending.
       catch(e){if(signal?.aborted)throw signal.reason||e;return {content:[{type:'text',text:timer.aborted?'The API did not answer within 30 seconds.':`Could not reach the API: ${e.message}${e.cause?.code?` (${e.cause.code})`:''}`}],isError:true};}
       if(r.status<300||r.status>=400||hop>=3)break;
       const next=r.headers.get('location');if(!next)break;const n=new URL(next,target);
       if(n.host!==url.host||n.protocol!==url.protocol)return {content:[{type:'text',text:`The API sent the request on to another host (${n.host}). SILO did not follow it.`}],isError:true};
+      r.body?.cancel?.().catch?.(()=>{});
+      if(r.status===303||((r.status===301||r.status===302)&&!['GET','HEAD'].includes(String(method).toUpperCase()))){method='GET';body=undefined;delete headers['Content-Type'];}
       target=n;
     }
     // JSON is read further and then made smaller as JSON, so a long list still parses; other text is cut at 100 KB.

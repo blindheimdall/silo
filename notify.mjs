@@ -70,9 +70,11 @@ export async function smtpSend(o,subject,text,{timeout=20000}={}){
   const host=noBreak(o.host),port=Number(o.port)||587,secure=port===465;
   if(!host)throw new Error('Give the mail server address.');
   const from=address(o.from),to=emailList(o.to);if(!to.length)throw new Error('Give at least one address to send to.');
+  // The time limit covers connecting too: a server that takes the connection but never finishes TLS is let go.
   const connect=()=>new Promise((resolve,reject)=>{
     const s=secure?tls.connect({host,port,servername:host}):net.connect({host,port});
-    s.once(secure?'secureConnect':'connect',()=>{s.off('error',reject);resolve(s);});s.once('error',reject);
+    const t=setTimeout(()=>{s.destroy();reject(new Error('The mail server took too long.'));},timeout);
+    s.once(secure?'secureConnect':'connect',()=>{clearTimeout(t);s.off('error',reject);resolve(s);});s.once('error',e=>{clearTimeout(t);reject(e);});
   });
   let sock=await connect();const wire=new Wire(sock),timer=setTimeout(()=>{wire.err=new Error('The mail server took too long.');sock.destroy();wire.wake();},timeout);
   try{
@@ -81,6 +83,9 @@ export async function smtpSend(o,subject,text,{timeout=20000}={}){
     if(!secure){
       if(/^250[- ]STARTTLS/mi.test(hello)){
         await wire.say('STARTTLS',[220]);
+        // Nothing may come before TLS starts: answers sent ahead in plain text would be read as the answers to what is
+        // asked over TLS.
+        if(wire.queue.length||wire.buf)throw new Error('The mail server sent more than it should before encryption, so nothing was sent.');
         sock.removeAllListeners('data');sock.removeAllListeners('error');sock.removeAllListeners('close');
         sock=await new Promise((resolve,reject)=>{const t=tls.connect({socket:sock,servername:host},()=>resolve(t));t.once('error',reject);});
         wire.attach(sock);hello=await wire.say('EHLO silo18.local',[250]);

@@ -45,7 +45,8 @@ export class FeedWall{
   get main(){return this._main;}
   set main(i){if(i!==this._main){this._main=i;if(this.mainCtx)this.latest.set(this.mainCtx,++this.seq);}}
   attach(root){
-    this.root=root;const c=root.querySelector('#feed-main');this.mainCanvas=c;this.mainCtx=c.getContext('2d');
+    // A new wall starts with no reads of its own: the old canvases are let go, and a read for them no longer holds up new ones.
+    this.latest=new Map();this.pending=null;this.root=root;const c=root.querySelector('#feed-main');this.mainCanvas=c;this.mainCtx=c.getContext('2d');
     this.thumbs=[...root.querySelectorAll('canvas[data-feed]')].map(canvas=>({canvas,ctx:canvas.getContext('2d'),index:Number(canvas.dataset.feed)}));
     for(const t of [{ctx:this.mainCtx,w:MAIN[0],h:MAIN[1]},...this.thumbs.map(t=>({ctx:t.ctx,w:THUMB[0],h:THUMB[1]}))]){t.ctx.fillStyle='#010401';t.ctx.fillRect(0,0,t.w,t.h);feedOverlay(t.ctx,t.w,t.h,{label:'NO SIGNAL',rec:false,small:t.w<200});}
     this.world.afterDraw=this.hook;
