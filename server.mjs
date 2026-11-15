@@ -52,6 +52,7 @@ import { agentCard, messageText, TaskStore, view, fetchCard, sendTask, A2aError,
 import { Kernels, notebookName, emptyNotebook, cellFrom, markdownCell, cellText } from './notebook.mjs';
 import { toolsFor, openaiInput, anthropicMessages, chatMessages, CallCollector, noToolSupport } from './provider-format.mjs';
 import { runCode as runCodeStepScript, CODE_MAX } from './code-step.mjs';
+import { TALK_KINDS, PUBLIC_TALK, Conversations, Limits, Seen, cleanText, slackVerify, slackEvent, slackSend, whatsappHandshake, whatsappVerify, whatsappMessages, whatsappSend, teamsVerify, teamsMessage, teamsToken, teamsSend, forgetTeamsTokens, serviceUrlAllowed, widgetScript, widgetTryPage, WIDGET_COLOR } from './talk-channels.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // An installed SILO keeps its data and workspace outside the app folder; launch.json says where.
@@ -360,6 +361,9 @@ async function startSaved(run,undo,{since,also=[]}={}){
 // The audit log keeps only the title of an event: details can quote what someone wrote to a resident.
 function event(title,detail='',type='system'){auditNote({action:'event.'+type,actor:'SILO',target:title});stateRev++;state.events.unshift({id:id(),time:Date.now(),title,detail,type});state.events=state.events.slice(0,300);}
 state.settings.voice={...DEFAULT_VOICE,...(state.settings.voice||{})};
+// Talk channels: which resident answers where. Keys and secrets are in the vault, not here.
+const TALK_DEFAULT={widget:{enabled:false,agentId:'',key:'',origins:[],title:'Chat with us',greeting:'',color:'#2f5d50',daily:300},slack:{enabled:false,agentId:'',tools:false,daily:500},whatsapp:{enabled:false,agentId:'',phoneId:'',daily:300},teams:{enabled:false,agentId:'',appId:'',tenant:'',tools:false,daily:500}};
+state.settings.talk=Object.fromEntries(Object.entries(TALK_DEFAULT).map(([k,v])=>[k,{...v,...(state.settings.talk?.[k]||{})}]));
 // Updates: a signed release from a feed you set (an https address or a folder). Off until you set one.
 state.settings.update={feed:'',auto:false,...(state.settings.update||{})};
 const releaseKey=()=>{try{return readFileSync(path.join(ROOT,'release-key.pub'),'utf8');}catch{return '';}};
@@ -2717,14 +2721,90 @@ function serveTargets(){
 }
 // A resident answers someone outside as a new conversation: its chat in SILO is neither used nor changed. Earlier turns
 // of the same outside conversation come in history.
-async function consult(agent,text,{source,history=[],signal,timeout=600000}={}){
+async function consult(agent,text,{source,history=[],signal,timeout=600000,noTools=false}={}){
   if(state.paused)fail('Silo is paused.',409);
   const tr=tracer.start({kind:'chat',name:`${source} / ${agent.name}`,refId:agent.id,agentId:agent.id});
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(new Error(`The answer took longer than ${Math.round(timeout/60000)} minutes.`)),timeout);
   const stop=()=>ctl.abort(signal.reason||new Error('Stopped by the caller.'));signal?.addEventListener('abort',stop,{once:true});
   event(`${agent.name} was asked by ${source}`,text.slice(0,150),'agent');
-  try{const r=await tracer.within(tr,()=>answer(agent,[...history,{role:'user',content:text}],ctl.signal,{},source));return {text:r.text||'',traceId:tr.id};}
+  try{const r=await tracer.within(tr,()=>answer(agent,[...history,{role:'user',content:text}],ctl.signal,{},source,0,[],noTools?{noTools:true}:{}));return {text:r.text||'',traceId:tr.id};}
   finally{clearTimeout(timer);signal?.removeEventListener('abort',stop);}
+}
+// Talk channels: people outside SILO write, the channel's resident answers with the last turns of that conversation.
+// Public channels (the website, WhatsApp) never give it tools; Slack and Teams do only when you turn that on, and then
+// changes wait for your OK as always. A failure is logged for you at most once a minute; the person gets a short note.
+const talkMemory=new Conversations(),talkLimits=new Limits(),talkSeen=new Seen(),talkUse={};
+const TALK_SAYS={off:'This chat is not available right now.',paused:'The assistant is paused right now. Try again later.',full:'Too many questions today. Try again tomorrow.',failed:'Sorry, I cannot answer right now. Try again in a moment.'};
+const TALK_PREFIX={widget:'widget:',slack:'slack:',whatsapp:'wa:',teams:'teams:'};
+async function talkAnswer(kind,key,text,who){
+  const cfg=state.settings.talk[kind],agent=cfg.enabled&&state.agents.find(a=>a.id===cfg.agentId);
+  if(!agent)return TALK_SAYS.off;
+  if(state.paused)return TALK_SAYS.paused;
+  if(!talkLimits.hit('day:'+kind,cfg.daily,86400000))return TALK_SAYS.full;
+  return talkMemory.turn(key,async()=>{
+    try{
+      const r=await consult(agent,text,{source:`${TALK_KINDS[kind]} (${who})`,history:talkMemory.history(key),timeout:kind==='widget'?90000:300000,noTools:PUBLIC_TALK.has(kind)||!cfg.tools});
+      const reply=String(r.text||'').trim()||'...';
+      talkMemory.add(key,text,reply);talkUse[kind]=(talkUse[kind]||0)+1;
+      return reply;
+    }catch(e){
+      if(talkLimits.hit('err:'+kind,1,60000))event(`${TALK_KINDS[kind]}: ${agent.name} could not answer`,String(e.message).slice(0,300),'error');
+      return TALK_SAYS.failed;
+    }
+  });
+}
+// The answer goes out after the service got its quick OK. A failure to send is logged at most once a minute.
+function talkReply(kind,fn){fn().catch(e=>{if(talkLimits.hit('send:'+kind,1,60000))event(`${TALK_KINDS[kind]}: the answer could not be sent`,String(e.message).slice(0,300),'error');});}
+const talkSecret=kind=>secrets.get('talk:'+kind)||{};
+function talkView(){
+  const t=state.settings.talk,pub=tunnel.host()?`https://${tunnel.host()}`:'',sec=talkSecret;
+  return {public:pub,local:`http://127.0.0.1:${PORT}`,slackConnected:!!secrets.get('svc:slack')?.token,conversations:talkMemory.size,used:{...talkUse},
+    widget:{...t.widget,script:t.widget.key?`<script src="${pub||`http://127.0.0.1:${PORT}`}/widget/${t.widget.key}.js" async></script>`:'',tryUrl:t.widget.key?`/widget/${t.widget.key}/try`:''},
+    slack:{...t.slack,hasSecret:!!sec('slack').signingSecret,url:pub&&pub+'/talk/slack'},
+    whatsapp:{...t.whatsapp,hasToken:!!sec('whatsapp').token,hasSecret:!!sec('whatsapp').appSecret,verifyToken:sec('whatsapp').verifyToken||'',url:pub&&pub+'/talk/whatsapp'},
+    teams:{...t.teams,hasPassword:!!sec('teams').password,url:pub&&pub+'/talk/teams'}};
+}
+async function saveTalk(kind,b){
+  const cur=state.settings.talk[kind],next={...cur},sec={...talkSecret(kind)},text=(v,n)=>String(v??'').trim().slice(0,n);
+  if(b.agentId!==undefined)next.agentId=b.agentId?findAgent(String(b.agentId)).id:'';
+  if(b.daily!==undefined){const n=Math.round(Number(b.daily));if(!Number.isFinite(n)||n<1||n>10000)fail('The daily limit is 1 to 10000 messages.');next.daily=n;}
+  if(b.tools!==undefined&&!PUBLIC_TALK.has(kind))next.tools=b.tools===true;
+  if(kind==='widget'){
+    if(b.title!==undefined)next.title=text(b.title,60)||'Chat with us';
+    if(b.greeting!==undefined)next.greeting=text(b.greeting,300);
+    if(b.color!==undefined){if(!WIDGET_COLOR.test(String(b.color)))fail('Pick a color like #2f5d50.');next.color=String(b.color);}
+    if(b.origins!==undefined){
+      const list=(Array.isArray(b.origins)?b.origins:String(b.origins).split(/[\s,]+/)).map(o=>String(o).trim()).filter(Boolean);
+      if(list.length>20)fail('A chat can be on at most 20 sites.');
+      next.origins=[...new Set(list.map(o=>{let u;try{u=new URL(o);}catch{fail(`${o.slice(0,60)} is not a site address. Write it like https://example.com.`);}if(!/^https?:$/.test(u.protocol))fail('A site address starts with https://.');return u.origin;}))];
+    }
+    if(b.newKey===true||!next.key)next.key=randomBytes(16).toString('hex');
+  }
+  if(kind==='slack'&&typeof b.signingSecret==='string'&&b.signingSecret.trim()){const s=text(b.signingSecret,200);if(!/^[0-9a-f]{20,64}$/i.test(s))fail('The signing secret is the hex code under Basic Information, App Credentials.');sec.signingSecret=s;}
+  if(kind==='whatsapp'){
+    if(b.phoneId!==undefined){const p=text(b.phoneId,30);if(p&&!/^\d{5,30}$/.test(p))fail('The phone number ID is the number Meta shows under API Setup, digits only.');next.phoneId=p;}
+    if(typeof b.token==='string'&&b.token.trim())sec.token=text(b.token,1000);
+    if(typeof b.appSecret==='string'&&b.appSecret.trim())sec.appSecret=text(b.appSecret,200);
+    if(!sec.verifyToken||b.newVerifyToken===true)sec.verifyToken=randomBytes(16).toString('hex');
+  }
+  if(kind==='teams'){
+    if(b.appId!==undefined){const a=text(b.appId,60);if(a&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(a))fail('The Microsoft App ID looks like 00000000-0000-0000-0000-000000000000.');if(a!==next.appId)forgetTeamsTokens();next.appId=a;}
+    if(b.tenant!==undefined){const t=text(b.tenant,100);if(t&&!/^[\w.-]+$/.test(t))fail('Give the tenant ID or domain, or leave it empty for a multitenant bot.');next.tenant=t;}
+    if(typeof b.password==='string'&&b.password.trim()){sec.password=text(b.password,300);forgetTeamsTokens();}
+  }
+  if(b.enabled!==undefined)next.enabled=b.enabled===true;
+  if(next.enabled){
+    if(!next.agentId)fail('Pick the resident who answers.');
+    const need={widget:[],slack:[[!!secrets.get('svc:slack')?.token,'Connect Slack in Apps first: its bot token sends the answers.'],[!!sec.signingSecret,'Paste the signing secret of your Slack app.']],whatsapp:[[!!next.phoneId,'Give the phone number ID.'],[!!sec.token,'Paste the access token.'],[!!sec.appSecret,'Paste the app secret.']],teams:[[!!next.appId,'Give the Microsoft App ID.'],[!!sec.password,'Paste the client secret of the bot.']]}[kind];
+    for(const [ok,msg] of need)if(!ok)fail(msg);
+  }
+  // Another resident, or the channel turned off: the conversations start over.
+  if(cur.agentId!==next.agentId||cur.enabled&&!next.enabled)talkMemory.forget(TALK_PREFIX[kind]);
+  if(kind!=='widget')secrets.set('talk:'+kind,sec);
+  state.settings.talk[kind]=next;
+  await persistSecrets();
+  if(cur.enabled!==next.enabled||cur.agentId!==next.agentId)event(`${TALK_KINDS[kind]} ${next.enabled?'is on':'is off'}`,next.enabled?`Answered by ${findAgent(next.agentId).name}.`:'','connection');
+  await persist();
 }
 const RUN_ACTIVE=new Set(['running','queued']);
 function runView(run){
@@ -5015,6 +5095,76 @@ const server=http.createServer(async(req,res)=>{
         await persist();return page(`Done: ${label}.`,what);
       }catch(e){return page(e.message,what);}
     }
+    // Talk channels. Each answers only while it is on, and checks that a message really comes from where it says.
+    const wg=url.pathname.match(/^\/widget\/([a-f0-9]{32})(\.js|\/chat|\/try)$/);
+    if(wg){
+      const cfg=state.settings.talk.widget,on=cfg.enabled&&!!cfg.key&&cfg.key.length===32&&timingSafeEqual(Buffer.from(cfg.key),Buffer.from(wg[1]));
+      const own=`${viaTunnel?'https':'http'}://${host}`;
+      if(wg[2]==='.js'){
+        res.writeHead(on?200:404,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':on?'public, max-age=300':'no-store','Cross-Origin-Resource-Policy':'cross-origin','X-Content-Type-Options':'nosniff'});
+        return res.end(on?widgetScript({key:cfg.key,title:cfg.title,greeting:cfg.greeting,color:cfg.color,base:own}):'/* This chat is off. */');
+      }
+      if(wg[2]==='/try'){
+        if(!on)fail('Not found.',404);
+        res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'",'Referrer-Policy':'no-referrer'});
+        return res.end(widgetTryPage(cfg));
+      }
+      // The chat answers only pages of the sites you list (and SILO's own page to try it). Other sites cannot use it from
+      // a browser; the limits keep a script that fakes the site from running up the bill.
+      const origin=String(req.headers.origin||''),allowed=on&&!!origin&&(origin===own||cfg.origins.includes(origin));
+      const cors=allowed?{'Access-Control-Allow-Origin':origin,'Vary':'Origin'}:{'Vary':'Origin'};
+      if(req.method==='OPTIONS'){res.writeHead(allowed?204:403,{...cors,...(allowed&&{'Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'Content-Type','Access-Control-Max-Age':'600'})});return res.end();}
+      if(req.method!=='POST')return send(res,405,{error:'Send a POST request.'},cors);
+      if(!on)return send(res,404,{error:TALK_SAYS.off},cors);
+      if(!allowed)return send(res,403,{error:'This site may not use this chat.'},cors);
+      let b;try{b=JSON.parse(await readText(req,8000));}catch(e){return send(res,e.status===413?413:400,{error:'The message could not be read.'},cors);}
+      const visitor=String(b?.visitor||''),text=cleanText(b?.text,1000);
+      if(!/^[A-Za-z0-9_-]{16,64}$/.test(visitor)||!text)return send(res,400,{error:'Write a message first.'},cors);
+      if(!talkLimits.hit('ip:'+clientIp,20,60000)||!talkLimits.hit('visitor:'+visitor,8,60000))return send(res,429,{error:'Too many messages. Wait a minute, then write again.'},cors);
+      return send(res,200,{reply:await talkAnswer('widget','widget:'+visitor,text,'visitor '+visitor.slice(0,6))},cors);
+    }
+    if(url.pathname==='/talk/slack'){
+      if(req.method!=='POST')fail('Send a POST request.',405);
+      const raw=await readText(req,1000000);
+      if(!slackVerify(talkSecret('slack').signingSecret,req.headers,raw))fail('Wrong signature.',401);
+      let body;try{body=JSON.parse(raw);}catch{fail('Invalid JSON.');}
+      const m=slackEvent(body);
+      if(m?.challenge!==undefined){res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});return res.end(m.challenge);}
+      // Slack wants its OK within 3 seconds: the answer follows. A retry of the same event is not answered twice.
+      send(res,200,{ok:true});
+      const cfg=state.settings.talk.slack,token=secrets.get('svc:slack')?.token;
+      if(!m||!cfg.enabled||!token||!talkSeen.first('slack:'+m.id)||!talkLimits.hit('slack:'+m.user,6,60000))return;
+      talkReply('slack',async()=>slackSend(token,{channel:m.channel,thread:m.thread,text:await talkAnswer('slack',m.key,m.text,'user '+m.user)}));
+      return;
+    }
+    if(url.pathname==='/talk/whatsapp'){
+      const cfg=state.settings.talk.whatsapp,sec=talkSecret('whatsapp');
+      if(req.method==='GET'){const h=whatsappHandshake(url.searchParams,sec.verifyToken);if(!h)fail('Not found.',404);res.writeHead(h.status,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});return res.end(h.text);}
+      if(req.method!=='POST')fail('Method not allowed.',405);
+      const raw=await readText(req,1000000);
+      if(!whatsappVerify(sec.appSecret,req.headers,raw))fail('Wrong signature.',401);
+      let body;try{body=JSON.parse(raw);}catch{fail('Invalid JSON.');}
+      send(res,200,{ok:true});
+      if(!cfg.enabled||!sec.token||!cfg.phoneId)return;
+      for(const m of whatsappMessages(body,cfg.phoneId)){
+        if(!talkSeen.first('wa:'+m.id)||!talkLimits.hit('wa:'+m.from,6,60000))continue;
+        // The log names the person by their WhatsApp name, or by the last digits of the number.
+        const who=m.name||'number ending '+m.from.slice(-4);
+        talkReply('whatsapp',async()=>whatsappSend(cfg.phoneId,sec.token,m.from,m.text?await talkAnswer('whatsapp','wa:'+m.from,m.text,who):'I can read text messages only. Please write your question.'));
+      }
+      return;
+    }
+    if(url.pathname==='/talk/teams'){
+      if(req.method!=='POST')fail('Send a POST request.',405);
+      const cfg=state.settings.talk.teams,sec=talkSecret('teams');
+      const raw=await readText(req,1000000);let a;try{a=JSON.parse(raw);}catch{fail('Invalid JSON.');}
+      try{await teamsVerify(req.headers.authorization,a,cfg.appId);}catch(e){fail(e.message,401);}
+      send(res,200,{});
+      const m=teamsMessage(a);
+      if(!m||!cfg.enabled||!sec.password||!serviceUrlAllowed(m.serviceUrl)||!talkSeen.first('teams:'+m.id)||!talkLimits.hit('teams:'+String(a.from?.id||m.conversation),6,60000))return;
+      talkReply('teams',async()=>{const text=await talkAnswer('teams',m.key,m.text,m.user||'someone');await teamsSend(m,text,await teamsToken(cfg.appId,sec.password,cfg.tenant));});
+      return;
+    }
     // Public forms: a page anyone with the address can fill in, also from the internet through the tunnel. The answers
     // become the brief, as JSON. A hidden field catches simple bots, and each address may send a few a minute.
     const fm=url.pathname.match(/^\/form\/([a-f0-9]{32})$/);
@@ -5823,6 +5973,9 @@ const server=http.createServer(async(req,res)=>{
       }
       const trm=route.match(/^\/api\/traces\/([0-9a-f-]{36})$/);
       if(trm&&req.method==='GET'){const t=state.traces.find(t=>t.id===trm[1]);if(!t)fail('This trace is not kept any more.',404);return send(res,200,{...t,totals:t.totals||totals(t.spans)});}
+      if(route==='/api/talk'&&req.method==='GET'){if(me&&me.role!=='owner')fail('Only an owner can set up talk channels.',403);return send(res,200,talkView());}
+      const tk=route.match(/^\/api\/talk\/(widget|slack|whatsapp|teams)$/);
+      if(tk&&req.method==='POST'){if(me&&me.role!=='owner')fail('Only an owner can set up talk channels.',403);await saveTalk(tk[1],b);return send(res,200,talkView());}
       if(route==='/api/phone'&&req.method==='GET')return send(res,200,{enabled:state.phone.enabled,approvals:state.phone.approvals!==false,events:state.phone.events,chats:state.phone.chats.map(c=>({id:String(c.id),name:c.name,user:c.user,paired:c.paired,seen:c.seen})),botName:state.phone.botName||'',hasToken:!!secrets.get('phone')?.token,running:!!phoneBot?.running,error:state.phone.error||'',errorAt:state.phone.errorAt||0,pairing:phonePair&&phonePair.expires>Date.now()?{expires:phonePair.expires}:null});
       if(route==='/api/phone'&&req.method==='POST'){
         if(typeof b.token==='string'&&b.token.trim()){

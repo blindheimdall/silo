@@ -819,3 +819,6 @@ dialog:not([open])::backdrop{opacity:0}
 .form-line{display:grid;gap:8px}
 .form-field{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .form-field .ff-name{flex:0 1 150px;min-width:110px}.form-field .ff-label{flex:1 1 180px;min-width:140px}
+/* Talk channels. */
+.talk-copy{display:flex;gap:8px;align-items:flex-start}.talk-copy code{flex:1;min-width:0;overflow-wrap:anywhere;padding:8px;border:1px solid var(--line,#2a3a2a);font:11px/1.5 var(--term)}
+.talk-color{width:64px;height:34px;padding:2px}
