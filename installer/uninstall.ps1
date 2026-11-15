@@ -19,6 +19,15 @@ if (-not (Test-Path (Join-Path $App 'supervisor.mjs')) -or -not (Test-Path (Join
 $launch = Get-Content (Join-Path $App 'launch.json') -Raw | ConvertFrom-Json
 $DataDir = Full $launch.dataDir
 
+# A task that starts this SILO with the computer goes first; removing it needs an administrator.
+$task = Get-ScheduledTask -TaskName 'SILO' -ErrorAction SilentlyContinue | Where-Object { $_.Actions | Where-Object { $_.WorkingDirectory -and ((Full $_.WorkingDirectory) -eq $App) } } | Select-Object -First 1
+if ($task) {
+  $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  if (-not $admin) { throw "SILO starts with the computer from this folder. Remove that first, in PowerShell opened as administrator: powershell -ExecutionPolicy Bypass -File `"$App\installer\service.ps1`" -Uninstall" }
+  if ([string]$task.State -eq 'Running') { Stop-ScheduledTask -TaskName $task.TaskName }
+  Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
+  Say 'SILO no longer starts with the computer.'
+}
 # Stop it. The supervisor goes first, so the server saves and closes on its own.
 $pidFile = Join-Path $DataDir 'silo.pid.json'
 if (Test-Path $pidFile) {

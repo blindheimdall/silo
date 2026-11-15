@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes, timingSafeEqual, createHash, createHmac } from 'node:crypto';
+import { isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { SECTORS, sectorForLevel } from './public/world-geometry.js';
@@ -26,7 +27,7 @@ import { DesktopWorker, desktopSupported, blockedReason, sendKeysFor, windowText
 import { existsSync, readFileSync, appendFileSync, createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { compareVersions, fetchManifest, downloadRelease, stageUpdate, applyUpdate, rollback, updateInfo, markAnnounced, feedUrl } from './update.mjs';
-import { startupStatus, setStartup } from './startup.mjs';
+import { startupStatus, setStartup, serviceStatus } from './startup.mjs';
 import { AuditLog, auditCsv, auditJsonl } from './audit.mjs';
 import { diffState } from './public/live-patch.js';
 import { OtelExporter, checkEndpoint, parseHeaders } from './otel.mjs';
@@ -284,7 +285,16 @@ function tokenSession(t,local){
   return {userId:u?.id||null,seen:Date.now(),token:t};
 }
 const NETWORK=state.settings.network===true&&state.users.some(u=>u.role==='owner');
+const CONTAINER=process.env.SILO_CONTAINER==='1';
 const loopback=a=>/^(127\.|::1$|::ffff:127\.)/.test(String(a||''));
+// SILO_HOST: the address to listen on, like 0.0.0.0 in a container, where the computer's own browser comes in from
+// outside. Then any host name is taken, and until the first account exists only a page opened with the setup code
+// printed at start may use SILO from outside; after that everyone signs in.
+const HOST_ENV=String(process.env.SILO_HOST||'').trim();
+if(HOST_ENV&&HOST_ENV!=='localhost'&&!isIP(HOST_ENV)){console.error(`SILO_HOST must be an IP address, like 0.0.0.0, not "${HOST_ENV.slice(0,60)}".`);process.exit(1);}
+const LISTEN=HOST_ENV||(NETWORK?'0.0.0.0':'127.0.0.1'),WIDE=NETWORK||!/^(127\.|localhost$|::1$)/.test(LISTEN);
+const SETUP_CODE=WIDE&&!state.users.length?randomBytes(16).toString('hex'):'';
+const setupOk=c=>!!SETUP_CODE&&typeof c==='string'&&c.length===32&&timingSafeEqual(Buffer.from(c),Buffer.from(SETUP_CODE));
 // Remote access through a Cloudflare Tunnel (tunnel.mjs). SILO stays on 127.0.0.1 and it always needs an account.
 state.settings.remote||={enabled:false,mode:'quick',hostname:'',path:''};
 const BIN=path.join(DATA,'bin');let remoteDownloading=false;
@@ -418,6 +428,7 @@ async function installUpdate(){
 let autoTimer=null;
 async function autoInstall(){
   clearTimeout(autoTimer);autoTimer=null;
+  if(CONTAINER)return;
   try{if(!updater.staged)await downloadUpdate();if(quietNow())return await installUpdate();}catch(e){updater.error=e.message;stateRev++;}
   if(state.settings.update.auto&&updater.staged){autoTimer=setTimeout(autoInstall,10*60000);autoTimer.unref();}
 }
@@ -436,10 +447,10 @@ function performanceInfo(){
 }
 async function updateState(){
   const i=await updateInfo(DATA).catch(()=>({}));
-  return {version:APP_VERSION,node:process.versions.node,supervised:SUPERVISED,root:ROOT,data:DATA,feed:state.settings.update.feed,auto:state.settings.update.auto,keyPresent:!!releaseKey(),
+  return {version:APP_VERSION,node:process.versions.node,supervised:SUPERVISED,container:CONTAINER,root:ROOT,data:DATA,feed:state.settings.update.feed,auto:state.settings.update.auto,keyPresent:!!releaseKey(),
     checking:updater.checking,busy:updater.busy,error:updater.error,checkedAt:updater.checkedAt,quiet:quietNow(),
     available:updater.available&&{version:updater.available.version,notes:updater.available.notes||'',date:updater.available.date||'',size:updater.available.size||0,minNode:updater.available.minNode||''},
-    staged:updater.staged,backup:i.backup||null,last:i.last||null,startup:await startupStatus(ROOT).catch(e=>({supported:false,error:e.message})),perf:performanceInfo()};
+    staged:updater.staged,backup:i.backup||null,last:i.last||null,startup:await startupStatus(ROOT).catch(e=>({supported:false,error:e.message})),service:await serviceStatus(ROOT).catch(e=>({supported:false,error:e.message})),perf:performanceInfo()};
 }
 const voiceHas=p=>p==='compatible'?!!(secrets.get(p)?.key&&secrets.get(p)?.endpoint):!!secrets.get(p)?.key;
 const voiceUse=()=>({stt:sttProvider(state.settings.voice,voiceHas),tts:ttsProvider(state.settings.voice,voiceHas)});
@@ -625,6 +636,9 @@ function checkFileScope(agent,relName,op,ctx={}){
 const TEXT_FILE=/\.(txt|md|json|csv|js|ts|html|css|yaml|yml)$/i;
 function checkFolder(name){name=string(name||'',120).replace(/^\/+|\/+$/g,'');if(!name||/[\\:*?"<>|\x00-\x1f]/.test(name)||name.split('/').some(s=>!s||s.startsWith('.')||/[. ]$/.test(s)||/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(s)))fail('Use a simple workspace folder name, like inbox.');return name;}
 // The next time a schedule fires: every N minutes, or every chosen weekday at a fixed time.
+// How many scheduled times passed between a workflow's due time and now, at most 1000.
+function missedTimes(w,now=Date.now()){let n=0;for(let t=w.nextRun;t!=null&&t<=now&&n<1000;t=nextRunFor(w,t))n++;return n;}
+const LATE_AFTER=120000;
 function nextRunFor(w,from=Date.now()){
   if(w.mode!=='daily')return from+w.interval*60000;
   const [h,m]=w.at.split(':').map(Number);
@@ -745,7 +759,12 @@ function validateWorkflow(b,existing={}){
   const enabled=b.enabled===true;
   if(enabled&&mode==='daily'&&!days.length)fail('Pick at least one day for the schedule.');
   const missedPolicy=['queue','coalesce','skip'].includes(b.missedPolicy)?b.missedPolicy:(existing.missedPolicy||'coalesce');
-  const w={...existing,name,description:string(b.description||'',300),brief:string(b.brief||'',15000),steps,enabled,interval,mode,at,days,missedPolicy,pendingQueue:Array.isArray(existing.pendingQueue)?existing.pendingQueue:[]};
+  // A scheduled time that passed while SILO was off, asleep or paused: run once when it is back (only if it is at most
+  // catchUpHours late, when that is set), or skip it.
+  const catchUp=b.catchUp===undefined?(existing.catchUp||'once'):b.catchUp==='skip'?'skip':'once';
+  const catchUpHours=b.catchUpHours===undefined?(existing.catchUpHours||0):Math.round(Number(b.catchUpHours));
+  if(!Number.isInteger(catchUpHours)||catchUpHours<0||catchUpHours>168)fail('Run a missed time only if it is 1 to 168 hours late, or 0 for however late.');
+  const w={...existing,name,description:string(b.description||'',300),brief:string(b.brief||'',15000),steps,enabled,interval,mode,at,days,missedPolicy,catchUp,catchUpHours,pendingQueue:Array.isArray(existing.pendingQueue)?existing.pendingQueue:[]};
   const same=existing.enabled===true&&existing.interval===interval&&(existing.mode||'interval')===mode&&existing.at===at&&String(existing.days)===String(days)&&existing.nextRun>Date.now();
   w.nextRun=enabled?(same?existing.nextRun:nextRunFor(w)):null;
   // A local address other programs on this computer can call to start the workflow.
@@ -5283,10 +5302,20 @@ const server=http.createServer(async(req,res)=>{
     const clientIp=viaTunnel?String(req.headers['cf-connecting-ip']||'internet').slice(0,64):req.socket.remoteAddress;
     const secure=viaTunnel?'; Secure':'';
     if(viaTunnel){if(!tunnel.host()||remoteHost(host)!==tunnel.host())fail('Invalid host.',403);if(!state.users.length)fail('Remote access needs an account.',403);}
-    else if(!NETWORK){if(host!==`127.0.0.1:${PORT}`&&host!==`localhost:${PORT}`)fail('Invalid host.',403);}
-    else{if(!/^[\w.-]+(:\d+)?$|^\[[0-9a-f:.]+\](:\d+)?$/i.test(host||''))fail('Invalid host.',403);if(!state.users.length&&!loopback(req.socket.remoteAddress))fail('Network access needs an account.',403);}
+    else if(!WIDE){if(host!==`127.0.0.1:${PORT}`&&host!==`localhost:${PORT}`)fail('Invalid host.',403);}
+    else{
+      if(!/^[\w.-]+(:\d+)?$|^\[[0-9a-f:.]+\](:\d+)?$/i.test(host||''))fail('Invalid host.',403);
+      if(!state.users.length&&!loopback(req.socket.remoteAddress)){
+        // The setup code comes once in the address, and then in a cookie that is gone when the first account exists.
+        const given=new URL(req.url,'http://x').searchParams.get('setup')||'',kept=/(?:^|;\s*)silo_setup=([a-f0-9]{32})(?:;|$)/.exec(req.headers.cookie||'')?.[1]||'';
+        if(!setupOk(given||kept))fail(SETUP_CODE?'Network access needs an account. Open the setup address SILO printed when it started.':'Network access needs an account.',403);
+        if(given){res.writeHead(302,{Location:'/','Set-Cookie':`silo_setup=${given}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});return res.end();}
+      }
+    }
     const url=new URL(req.url,`http://${host}`);
     const cookies=Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim().split('=')));
+    // For a container's health check or a monitor: says only that SILO answers.
+    if(url.pathname==='/api/health'&&req.method==='GET')return send(res,200,{ok:true});
     if(url.pathname==='/api/session'&&req.method==='GET'){
       if(req.headers['sec-fetch-site']==='cross-site')fail('Cross-site request denied.',403);
       // A page that already has a live session keeps it, so a reload does not sign you out.
@@ -6608,6 +6637,8 @@ const server=http.createServer(async(req,res)=>{
         await persist();if(state.settings.update.auto&&updater.available&&SUPERVISED)autoInstall();return send(res,200,await updateState());
       }
       if(route==='/api/system/update/check'&&req.method==='POST'){if(!state.settings.update.feed)fail('Set the update feed first.',409);await checkForUpdate();if(updater.error)fail(updater.error,502);return send(res,200,await updateState());}
+      // In a container the app is part of the image: a new image updates it, not SILO itself.
+      if(CONTAINER&&['/api/system/update/download','/api/system/update/install','/api/system/update/rollback'].includes(route)&&req.method==='POST')fail('SILO runs in a container: update it with a new image (docker compose build, then docker compose up -d). Your data stays in its volume.',409);
       if(route==='/api/system/update/download'&&req.method==='POST'){await downloadUpdate();return send(res,200,await updateState());}
       if(route==='/api/system/update/install'&&req.method==='POST'){const r=await installUpdate();return send(res,200,{...r,state:await updateState()});}
       if(route==='/api/system/update/rollback'&&req.method==='POST'){
@@ -6680,6 +6711,20 @@ const scheduler=setInterval(async()=>{
   if(state.paused)return;
   for(const w of state.workflows){
     if(w.enabled&&w.nextRun<=Date.now()){
+      // Late by more than two minutes: SILO was off, asleep or paused at that time. However many times passed, the
+      // workflow runs once or not at all, as it says.
+      const now=Date.now(),late=now-w.nextRun;
+      if(late>LATE_AFTER){
+        const n=missedTimes(w,now),when=new Date(w.nextRun).toLocaleString(),times=n===1?'its time':`${n} of its times`;
+        const tooLate=w.catchUpHours>0&&late>w.catchUpHours*3600000;
+        if(w.catchUp==='skip'||tooLate){
+          w.nextRun=nextRunFor(w,now);
+          event(`Missed: ${w.name}`,`SILO was off, asleep or paused at ${times}, from ${when}. ${tooLate?`It is more than ${w.catchUpHours} hour${w.catchUpHours===1?'':'s'} late, so it was skipped.`:'Skipped, as the workflow says.'} Next: ${w.nextRun?new Date(w.nextRun).toLocaleString():'none'}.`,'workflow');
+          await persist().catch(()=>{});
+          continue;
+        }
+        event(`Missed: ${w.name}`,`SILO was off, asleep or paused at ${times}, from ${when}. It runs once now.`,'workflow');
+      }
       const input=w.brief||('Scheduled run: '+(w.description||w.name));
       const isRunning=state.runs.some(r=>r.workflowId===w.id&&r.status==='running');
       const first=state.agents.find(a=>a.id===w.steps.find(s=>s.agentId)?.agentId);
@@ -6725,8 +6770,9 @@ phoneStart();
 const mailer=setInterval(()=>{checkMailTriggers().catch(e=>event('Email trigger failed',e.message,'error'));},MAIL_EVERY);
 const appWatcher=setInterval(()=>{checkAppTriggers().catch(e=>event('App trigger failed',e.message,'error'));},APP_EVERY);
 mailer.unref();appWatcher.unref();
-await persist();server.listen(PORT,NETWORK?'0.0.0.0':'127.0.0.1',()=>{
+await persist();server.listen(PORT,LISTEN,()=>{
   console.log(`SILO is ready at http://127.0.0.1:${PORT}`);
+  if(SETUP_CODE)console.log(`No account yet. From another computer or the host of this container, open SILO once with the setup code, for example http://localhost:${PORT}/?setup=${SETUP_CODE}, and make the owner account. The code works until then, and a new one is made at each start.`);
   // Jobs cut off by a stop go on from their last checkpoint, unless the queue settings say to wait for you.
   if(state.settings.queue?.autoRecover!==false)recoverInterruptedJobs().catch(e=>event('Crash recovery failed',e.message,'error'));
   for(const run of state.runs.filter(r=>r.resumeWait)){delete run.resumeWait;resumeRun(run).catch(e=>{run.error=`The server restarted during a Wait step and the run could not go on: ${e.message}`;event(`Workflow not resumed: ${run.name}`,e.message,'error');});}

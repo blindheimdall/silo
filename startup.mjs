@@ -37,3 +37,23 @@ export async function setStartup(on, root) {
   await makeShortcut(link, { target: process.execPath, args: '"supervisor.mjs"', cwd: root, minimized: true, description: 'Starts SILO when you sign in to Windows.', icon: fs.existsSync(path.join(root, 'public', 'silo.ico')) ? path.join(root, 'public', 'silo.ico') : '' });
   return startupStatus(root);
 }
+
+// Start with the computer, before anyone signs in: a scheduled task that installer/service.ps1 registers from a
+// PowerShell window opened as administrator. SILO only reads its state here and shows the command.
+export const serviceScript = root => path.join(root, 'installer', 'service.ps1');
+export const serviceCommand = root => `powershell -NoProfile -ExecutionPolicy Bypass -File "${serviceScript(root)}" -Install -Start`;
+let serviceSeen = { at: 0, value: null };
+export async function serviceStatus(root, { now = Date.now() } = {}) {
+  const running = process.env.SILO_SERVICE === '1';
+  if (!startupSupported()) return { supported: false, installed: false, running };
+  // Reading the task takes a PowerShell start, so the answer is kept a minute.
+  if (serviceSeen.value && now - serviceSeen.at < 60000) return { ...serviceSeen.value, running };
+  let s = { installed: false };
+  if (fs.existsSync(serviceScript(root))) {
+    try { s = JSON.parse(await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', serviceScript(root), '-Status'], { windowsHide: true, timeout: 20000 }, (e, out) => e ? reject(e) : resolve(String(out).trim())))); }
+    catch (e) { s = { installed: false, error: String(e.message).split('\n')[0].slice(0, 200) }; }
+  }
+  const value = { supported: true, installed: !!s.installed, state: s.state || '', user: s.user || '', here: !!s.installed && path.resolve(s.dir || '') === path.resolve(root), command: serviceCommand(root), remove: serviceCommand(root).replace(' -Install -Start', ' -Uninstall'), ...(s.error && { error: s.error }) };
+  serviceSeen = { at: now, value };
+  return { ...value, running };
+}

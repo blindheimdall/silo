@@ -1,6 +1,7 @@
 // Keeps SILO running. Starts the server, starts it again after a crash (waiting longer each time) or after an
 // update, and puts the old version back when an updated SILO cannot start twice in a row.
-// Start: node supervisor.mjs [--open]. --open opens SILO in the browser once it is ready.
+// Start: node supervisor.mjs [--open] [--service]. --open opens SILO in the browser once it is ready; --service says it
+// runs as the task that starts with the computer (installer/service.ps1).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,7 +12,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // An installed SILO keeps its data and workspace elsewhere; launch.json says where.
 let launch = {};
 try { launch = JSON.parse(fs.readFileSync(path.join(ROOT, 'launch.json'), 'utf8')); } catch {}
-const env = { ...process.env, SILO_SUPERVISED: '1' };
+const env = { ...process.env, SILO_SUPERVISED: '1', ...(process.argv.includes('--service') && { SILO_SERVICE: '1' }) };
 if (!env.SILO_DATA_DIR && launch.dataDir) env.SILO_DATA_DIR = launch.dataDir;
 if (!env.SILO_WORK_DIR && launch.workDir) env.SILO_WORK_DIR = launch.workDir;
 if (!env.PORT && launch.port) env.PORT = String(launch.port);

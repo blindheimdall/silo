@@ -1,0 +1,16 @@
+.git
+node_modules
+data
+workspace
+tests
+dist
+launch.json
+*.log
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.db*
+*.sqlite*

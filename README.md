@@ -95,6 +95,15 @@ Each integration requires the appropriate credentials, permissions and service s
 
 On Windows, use `Start-Silo.cmd` to launch or `Install-SILO.cmd` for a per-user installation. Three.js is bundled. Browsers without WebGL 2 can use the 2D view.
 
+To keep SILO running with nobody signed in, register it to start with the computer (`installer\service.ps1 -Install`, as administrator), or run it in a container:
+
+```sh
+docker compose up -d
+docker compose logs silo   # the setup address for the first account
+```
+
+See "Running without anyone signed in" in [docs/handbook.md](docs/handbook.md).
+
 ## Developer resources
 
 - [Handbook and operational setup](docs/handbook.md)

@@ -1,0 +1,25 @@
+# SILO as a container that starts with the machine and comes back after a crash.
+#   docker compose up -d          start it
+#   docker compose logs silo      the setup address on the first start, then what SILO does
+#   docker compose down           stop it; the volumes keep everything
+services:
+  silo:
+    build: .
+    image: silo:local
+    init: true
+    restart: unless-stopped
+    # Only this machine reaches it. To reach it from your network, make accounts first, then publish "3000:3000".
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - silo-data:/data
+      - silo-workspace:/workspace
+    environment:
+      # A passphrase for the saved keys. Without one, a key file is kept in the data volume next to them.
+      SILO_SECRET: ${SILO_SECRET:-}
+      TZ: ${TZ:-UTC}
+    stop_grace_period: 20s
+
+volumes:
+  silo-data:
+  silo-workspace:
