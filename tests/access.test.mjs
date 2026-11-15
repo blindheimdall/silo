@@ -76,6 +76,12 @@ test('keys survive a restart and accounts guard the silo',async t=>{
   assert.equal(kept.status,200,JSON.stringify(kept.data));
   assert.equal((await o.request('/workflows/'+wf.id,{...kept.data,steps:[kept.data.steps[0]]},'PUT')).status,200,'an operator may remove an app step');
   assert.equal((await o.request('/workflows/'+wf.id+'/restore',{version:1})).status,403,'nor bring it back from an older version');
+  // Code steps run on the server: the same rule, and the form address of a workflow is hidden from viewers.
+  const sum={type:'code',code:'return 1+1'};
+  const codeMade=await o.request('/workflows',{name:'Sum',steps:[sum]});assert.equal(codeMade.status,403);assert.match(codeMade.data.error,/Step 1 is a code step..*only an owner can add or change it/);
+  const formed=await a.request('/workflows',{name:'Form',steps:[sum],form:{fields:[{name:'q',label:'Question'}]}});assert.equal(formed.status,201,JSON.stringify(formed.data));
+  const seenByViewer=(await v.request('/state')).data.workflows.find(x=>x.id===formed.data.id);assert.equal(seenByViewer.formToken,'redacted');
+  assert.equal((await o.request('/workflows/'+formed.data.id,{...formed.data,steps:[{type:'code',code:'return 3'}]},'PUT')).status,403);
   const ana=st.users.find(u=>u.name==='Ana');
   assert.equal((await a.request('/users/'+ana.id,{role:'viewer'})).status,400,'keep one owner');
   assert.equal((await a.request('/settings',{network:true})).status,200);

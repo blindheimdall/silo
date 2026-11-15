@@ -36,7 +36,7 @@ test('apps connect with one click when SILO has its own app', async t => {
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${fake.address().port}`;
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'silo-oneclick-'));
-  const port = 14447, api = `http://127.0.0.1:${port}`;
+  const port = 14461, api = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['--import', './tests/provider-mock.mjs', 'server.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), SILO_DATA_DIR: path.join(temp, 'data'), SILO_WORK_DIR: path.join(temp, 'workspace'), SILO_TEST_CONNECTOR_BASE: base, OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', COMPATIBLE_API_KEY: '', SILO_SECRET: '',
     SILO_GOOGLE_CLIENT_ID: 'g-silo-app.apps.googleusercontent.com', SILO_GOOGLE_CLIENT_SECRET: 'GOCSPX-silo-desktop', SILO_MICROSOFT_CLIENT_ID: 'ms-silo-app', SILO_GITHUB_CLIENT_ID: 'gh-silo-app' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let errors = ''; child.stderr.on('data', b => { errors += b; });

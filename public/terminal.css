@@ -805,3 +805,17 @@ dialog:not([open])::backdrop{opacity:0}
 .user-row small{color:var(--ph-dim);font-size:9px;letter-spacing:1px}
 @media (max-width:640px){.rm-svg{display:none}.radio-map-list{display:block}}
 @media(prefers-reduced-motion:reduce){.rm-link.on{animation:none}.rm-pulse{display:none}}
+/* Code steps and steps that run another workflow. */
+.flow-step-editor .step-code,.flow-step-editor .step-flow{display:none}
+.flow-step-editor[data-type=code] .step-code,.flow-step-editor[data-type=workflow] .step-flow{display:grid;gap:6px;margin-top:10px}
+.flow-step-editor[data-type=code] .step-loop{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.flow-step-editor[data-type=code] .step-agent,.flow-step-editor[data-type=code] .step-prompt,.flow-step-editor[data-type=code]>.var-chips,.flow-step-editor[data-type=code] .opt-par,.flow-step-editor[data-type=workflow] .step-agent,.flow-step-editor[data-type=workflow] .opt-par{display:none}
+.flow-step-editor[data-type=code]{border-color:#3f5a86}.flow-step-editor[data-type=workflow]{border-color:#6e4f86}
+.flow-step-editor[data-type=code] .chip[data-var="{{item}}"]{display:inline-flex}.flow-step-editor[data-type=workflow] .chip[data-var="{{item}}"]{display:none}
+.step-code-text{min-height:130px;font:12px/1.5 var(--term);tab-size:2;white-space:pre}
+.step-code small code{font:inherit;color:var(--ph)}
+/* Public forms in the trigger box. */
+.trigger-box:not(:has([name=formOn]:checked)) .form-line{display:none}
+.form-line{display:grid;gap:8px}
+.form-field{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.form-field .ff-name{flex:0 1 150px;min-width:110px}.form-field .ff-label{flex:1 1 180px;min-width:140px}
