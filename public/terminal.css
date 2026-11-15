@@ -822,3 +822,30 @@ dialog:not([open])::backdrop{opacity:0}
 /* Talk channels. */
 .talk-copy{display:flex;gap:8px;align-items:flex-start}.talk-copy code{flex:1;min-width:0;overflow-wrap:anywhere;padding:8px;border:1px solid var(--line,#2a3a2a);font:11px/1.5 var(--term)}
 .talk-color{width:64px;height:34px;padding:2px}
+/* Tables in the Archive. */
+.section-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:28px}
+.section-head .section-title{flex:1 1 220px;margin:0}
+.table-card p.table-cols{display:flex;flex-wrap:wrap;gap:6px}
+.table-cols span{display:inline-flex;flex-direction:column;padding:3px 7px;border:1px solid var(--ph-low);font:10px/1.4 var(--term);color:var(--ph-mid);max-width:100%;overflow-wrap:anywhere}
+.table-cols small{color:var(--ph-dim);font-size:9px}
+dialog:has(.table-modal){width:min(1060px,calc(100vw - 32px))}
+.table-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.table-tools input[type=search]{flex:1 1 200px;min-width:0}
+.table-grid{overflow:auto;max-height:min(60vh,560px);border:1px solid var(--ph-low)}
+.data-table{width:100%;border-collapse:collapse;font:11px/1.5 var(--term);color:var(--ph-mid)}
+.data-table th{position:sticky;top:0;z-index:1;background:#061008;text-align:left;border-bottom:1px solid var(--ph-low);padding:0;white-space:nowrap}
+.tbl-sort{all:unset;box-sizing:border-box;display:block;width:100%;padding:7px 9px;color:var(--ph-dim);letter-spacing:.8px;cursor:pointer}
+.tbl-sort:hover,.tbl-sort:focus-visible{color:var(--ph-hi);outline:1px solid var(--ph-dim);outline-offset:-1px}
+.data-table td{padding:6px 9px;border-bottom:1px solid #ffffff0d;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.data-table td.num{text-align:right}.data-table .tbl-id,.data-table .tbl-when{color:var(--ph-dim)}
+.data-table tbody tr{cursor:pointer}
+.data-table tbody tr:hover,.data-table tbody tr:focus-visible{background:#8cf57d14;outline:none}
+.data-table tbody tr:focus-visible td:first-child{box-shadow:inset 3px 0 var(--ph)}
+.table-more{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-top:8px;font:10px var(--term);color:var(--ph-dim)}
+.table-more:empty{display:none}
+.col-lines{display:grid;gap:8px;margin-bottom:10px}
+.col-line{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.col-line .col-name{flex:1 1 160px;min-width:0}.col-line .col-type{flex:0 1 130px}
+.col-note{display:block;margin-top:10px;color:var(--ph-dim)}
+#row-form label b{margin-left:8px}#row-form label small{margin-left:8px;color:var(--ph-dim);font-weight:400}
+.data-table th.num .tbl-sort{text-align:right}

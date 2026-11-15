@@ -82,6 +82,14 @@ test('keys survive a restart and accounts guard the silo',async t=>{
   const formed=await a.request('/workflows',{name:'Form',steps:[sum],form:{fields:[{name:'q',label:'Question'}]}});assert.equal(formed.status,201,JSON.stringify(formed.data));
   const seenByViewer=(await v.request('/state')).data.workflows.find(x=>x.id===formed.data.id);assert.equal(seenByViewer.formToken,'redacted');
   assert.equal((await o.request('/workflows/'+formed.data.id,{...formed.data,steps:[{type:'code',code:'return 3'}]},'PUT')).status,403);
+  // Tables: viewers read them, operators change them and add table steps, which change only SILO's own tables.
+  const tb=await o.request('/tables',{name:'Visits',columns:[{name:'who',type:'text'}]});assert.equal(tb.status,201,JSON.stringify(tb.data));
+  assert.equal((await v.request('/tables',{name:'Nope',columns:[{name:'x'}]})).status,403);
+  assert.equal((await v.request('/tables/'+tb.data.id+'/rows',{values:{who:'Vic'}})).status,403);
+  assert.equal((await o.request('/tables/'+tb.data.id+'/rows',{values:{who:'Oli'}})).status,201);
+  assert.equal((await v.request('/tables/'+tb.data.id+'/rows')).data.rows[0].who,'Oli');
+  const logged=await o.request('/workflows',{name:'Log it',steps:[{type:'action',app:'table:'+tb.data.id,op:'add_row',fields:{who:'{{brief}}'}}]});
+  assert.equal(logged.status,201,JSON.stringify(logged.data));
   const ana=st.users.find(u=>u.name==='Ana');
   assert.equal((await a.request('/users/'+ana.id,{role:'viewer'})).status,400,'keep one owner');
   assert.equal((await a.request('/settings',{network:true})).status,200);
