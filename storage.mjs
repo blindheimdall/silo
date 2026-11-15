@@ -317,7 +317,8 @@ export class StateStore {
     if (this.closed || !this.state) return;
     this.jsonDirty = false;
     this.lastJsonAt = Date.now();
-    const text = JSON.stringify(this.state, null, 2), sha = sha256(text);
+    // Compact: about a third smaller and faster to write than indented, and still opened by any JSON viewer.
+    const text = JSON.stringify(this.state), sha = sha256(text);
     const tmp = `${this.jsonFile}.${process.pid}.${Date.now()}.tmp`;
     this.jsonWriting = (async () => {
       try {
@@ -360,7 +361,7 @@ export class StateStore {
     if (this.db && this.state) {
       try { if (this.syncToSqlite(this.state, {verify: true})) this.jsonDirty = true; } catch {}
       if (this.jsonDirty || this.jsonWriting) {
-        const text = JSON.stringify(this.state, null, 2), tmp = `${this.jsonFile}.${process.pid}.close.tmp`;
+        const text = JSON.stringify(this.state), tmp = `${this.jsonFile}.${process.pid}.close.tmp`;
         try {
           const sha = sha256(text);
           this.rememberJson(sha, true);

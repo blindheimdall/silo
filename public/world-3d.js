@@ -970,9 +970,13 @@ export class SiloWorld3D{
       atlas=new T.CanvasTexture(canvas);atlas.colorSpace=T.SRGBColorSpace;atlas.magFilter=T.NearestFilter;atlas.minFilter=T.NearestFilter;atlas.generateMipmaps=false;this.atlasTextures.set(look.key,atlas);this.ownedTextures.push(atlas);}
     return atlas;
   }
+  // The most recently used labels are kept, up to a few more than there are residents: renamed residents and old
+  // councils let their textures go instead of piling up. One still on a sprite is uploaded again if it is drawn.
   labelFor(name){
     let map=this.labelCache.get(name);
-    if(!map){map=this.signTexture(name.toUpperCase(),{color:'#f4dca2',bg:'#121a13',border:'#c49a58'});this.labelCache.set(name,map);}
+    if(map){this.labelCache.delete(name);this.labelCache.set(name,map);return map;}
+    map=this.signTexture(name.toUpperCase(),{color:'#f4dca2',bg:'#121a13',border:'#c49a58'});this.labelCache.set(name,map);
+    while(this.labelCache.size>640){const [k,old]=this.labelCache.entries().next().value;this.labelCache.delete(k);old.dispose?.();}
     return map;
   }
 

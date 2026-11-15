@@ -1493,19 +1493,36 @@ async function loadApps(){
 function openAppConnect(id){
   const s=appList.find(x=>x.id===id);if(!s)return;
   const local=['127.0.0.1','localhost'].includes(location.hostname);
+  // With SILO's own app the sign-in needs nothing pasted: Google and Microsoft open their page, GitHub gives a code.
+  // Your own registration stays one click away, folded under the steps it needs.
+  const quick=s.oneClick,device=quick&&s.kind==='token';
+  const steps=`<p class="meta-label">ONCE, BEFORE YOU CONNECT</p><ol class="app-steps">${s.setup.map(l=>`<li>${esc(l)}</li>`).join('')}</ol>`;
   const fields=s.kind==='token'?`<div class="form-group"><label for="app-token">Token</label><input class="field" id="app-token" type="password" autocomplete="off" placeholder="${s.connected?'Paste a new token to replace the saved one':'Paste the token'}"></div>`
-    :`<div class="form-group"><label for="app-client">Client ID</label><input class="field" id="app-client" autocomplete="off" value="${esc(s.clientId)}"></div>${s.secretNeeded?`<div class="form-group"><label for="app-secret">Client secret</label><input class="field" id="app-secret" type="password" autocomplete="off" placeholder="${s.hasClient?'Saved. Paste a new one to replace it.':''}"></div>`:''}<p class="mono-line">Sign-in comes back to ${esc(s.redirect)}</p>${local?'':'<p class="modal-error">Open SILO on this computer to connect: the sign-in comes back to 127.0.0.1.</p>'}`;
-  showModal(`${modalHead('Connect '+esc(s.name),esc(s.what))}<div class="modal-body"><p class="meta-label">ONCE, BEFORE YOU CONNECT</p><ol class="app-steps">${s.setup.map(l=>`<li>${esc(l)}</li>`).join('')}</ol>${fields}${errEl()}</div><div class="modal-footer"><button class="btn" data-action="close-modal">Cancel</button><button class="btn primary" id="app-go">${s.kind==='token'?'Save and check':'Connect'}</button></div>`,'app');
+    :`<div class="form-group"><label for="app-client">Client ID</label><input class="field" id="app-client" autocomplete="off" value="${esc(s.clientId)}"></div>${s.secretNeeded?`<div class="form-group"><label for="app-secret">Client secret</label><input class="field" id="app-secret" type="password" autocomplete="off" placeholder="${s.hasClient?'Saved. Paste a new one to replace it.':''}"></div>`:''}<p class="mono-line">Sign-in comes back to ${esc(s.redirect)}</p>`;
+  const away=s.kind==='oauth'&&!local?'<p class="modal-error">Open SILO on this computer to connect: the sign-in comes back to 127.0.0.1.</p>':'';
+  const body=quick?`<p>${device?`SILO shows a short code. Enter it on GitHub and allow SILO: no token to make or paste.`:`Sign in with your ${esc(s.name)} account and allow SILO. Nothing to set up.`}</p><div id="app-code"></div>${away}<details class="app-own"${s.hasClient||s.connected&&!s.builtin?' open':''}><summary>Use your own ${s.kind==='token'?'token':'app registration'}</summary>${steps}${fields}</details>`:`${steps}${fields}${away}`;
+  const label=quick?(device?'Get a code':'Sign in with '+s.name):s.kind==='token'?'Save and check':'Connect';
+  showModal(`${modalHead('Connect '+esc(s.name),esc(s.what))}<div class="modal-body">${body}${errEl()}</div><div class="modal-footer"><button class="btn" data-action="close-modal">Cancel</button><button class="btn primary" id="app-go">${esc(label)}</button></div>`,'app');
+  const own=()=>s.kind==='token'?$('#app-token').value.trim():$('#app-client').value.trim();
   $('#app-go').onclick=async()=>{
     const btn=$('#app-go');btn.disabled=true;const err=$('#form-error');if(err)err.textContent='';
-    try{
-      if(s.kind==='token'){const r=await post('/services/'+id,{token:$('#app-token').value});modal.close();toast(`${s.name} is connected as ${r.account}.`);loadApps();return;}
-      const r=await post('/services/'+id,{clientId:$('#app-client').value.trim(),clientSecret:$('#app-secret')?.value||''});
-      window.open(r.url,'_blank','noopener');
-      btn.textContent='Waiting for the sign-in...';
-      const until=Date.now()+5*60000;
-      const check=async()=>{if(!modal.open)return;await loadApps();const now=appList.find(x=>x.id===id);if(now?.connected&&now.account!==s.account||now?.connected&&!s.connected){modal.close();toast(`${s.name} is connected${now.account?' as '+now.account:''}.`);return;}if(Date.now()<until)setTimeout(check,2500);else{btn.disabled=false;btn.textContent='Connect';}};
+    const wait=(text,stop)=>{
+      btn.textContent=text;const until=Date.now()+(stop||5*60000);
+      const check=async()=>{if(!modal.open)return;await loadApps();const now=appList.find(x=>x.id===id);
+        if(now?.connected&&now.account!==s.account||now?.connected&&!s.connected){modal.close();toast(`${s.name} is connected${now.account?' as '+now.account:''}.`);return;}
+        if(now?.code?.error){if(err)err.textContent=now.code.error;btn.disabled=false;btn.textContent=label;return;}
+        if(Date.now()<until)setTimeout(check,2500);else{btn.disabled=false;btn.textContent=label;}};
       setTimeout(check,2500);
+    };
+    try{
+      if(s.kind==='token'&&!(device&&!own())){const r=await post('/services/'+id,{token:$('#app-token').value});modal.close();toast(`${s.name} is connected as ${r.account}.`);loadApps();return;}
+      if(device){
+        const r=await post('/services/'+id,{device:true});
+        $('#app-code').innerHTML=`<p class="meta-label">YOUR CODE</p><p class="device-code"><strong>${esc(r.userCode)}</strong></p><p><a href="${esc(r.verificationUri)}" target="_blank" rel="noopener noreferrer">${esc(r.verificationUri)}</a></p>`;
+        window.open(r.verificationUri,'_blank','noopener');wait('Waiting for GitHub...',Math.max(0,r.expiresAt-Date.now()));return;
+      }
+      const r=await post('/services/'+id,quick&&!own()?{builtin:true}:{clientId:own(),clientSecret:$('#app-secret')?.value||''});
+      window.open(r.url,'_blank','noopener');wait('Waiting for the sign-in...');
     }catch(e){if(err)err.textContent=e.message;else toast(e.message,true);btn.disabled=false;}
   };
 }

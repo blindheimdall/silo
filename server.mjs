@@ -34,7 +34,7 @@ import { CHECK_OPS, LIMIT_OPS, GATES, REPEAT_MAX, weightOf, repeatOf, parseJudge
 import { discover, authUrl, exchangeCode, verifyIdToken, pkce, identity, domainAllowed, roleFromClaims, checkIssuer, clearSsoCache, SSO_ROLES } from './sso.mjs';
 import zlib from 'node:zlib';
 import { Tunnel, findCloudflared, downloadCloudflared, cleanHostname, checkToken } from './tunnel.mjs';
-import { SERVICES, ACTIONS, toolSchema, toolDescription, oauthStart, oauthExchange, oauthRefresh, redirectUri, runAction, whoAmI, approvalText, serviceBase, serviceRequest } from './connectors.mjs';
+import { SERVICES, ACTIONS, toolSchema, toolDescription, oauthStart, oauthExchange, oauthRefresh, redirectUri, runAction, whoAmI, approvalText, serviceBase, serviceRequest, builtinClient, deviceStart, devicePoll } from './connectors.mjs';
 import { extractText, READABLE, makeDocx, makeXlsx, makePdf, parseCsv, parseMarkdown, MIME } from './documents.mjs';
 import { STT_CHOICES, TTS_CHOICES, DEFAULT_VOICE, sttProvider, ttsProvider, audioUrl, defaultModel, transcribe, synthesize, speakable, audioExt } from './voice.mjs';
 import os from 'node:os';
@@ -201,12 +201,12 @@ const ACTIVITY_RANK={queued:1,thinking:2,tool:3,asking:4,approval:5};
 function residentActivity(){
   const out={},now=Date.now(),byId=new Map(state.agents.map(a=>[a.id,a]));
   // Standing conditions first: a connected resident that cannot work right now.
+  // What blocks a provider is worked out once for each provider, not once for each of its residents.
+  const blockedBy=new Map(),providerBlock=p=>{if(!blockedBy.has(p))blockedBy.set(p,p!=='ollama'&&!secrets.has(p)?`No key for ${p}. Add it in IT.`:limitRatios(p).some(([,r])=>r>=1)?`The spending limit for ${p} is reached.`:'');return blockedBy.get(p);};
   for(const a of state.agents){
     if(a.provider==='demo')continue;
-    const p=a.provider;let why='';
-    if(p!=='ollama'&&!secrets.has(p))why=`No key for ${p}. Add it in IT.`;
-    else if(limitRatios(p).some(([,r])=>r>=1))why=`The spending limit for ${p} is reached.`;
-    else if(state.settings.power?.[a.floor]===0)why='This sector is on low power.';
+    let why=providerBlock(a.provider);
+    if(!why&&state.settings.power?.[a.floor]===0)why='This sector is on low power.';
     if(why)out[a.id]={state:'blocked',detail:why};
   }
   // Recent outcomes: failures for 10 minutes, finished workflow results for 90 seconds.
@@ -306,7 +306,7 @@ function snapshotFor(role,page=false){
   if(cur?.tag===tag){cur.key=key;return cur;}
   // The parsed form of a version goes along with it, so a patch never parses the same body twice. Pages keep more
   // versions (their state is small), so a page a little behind gets a patch instead of everything.
-  const next={key,body,tag,history:cur?[{tag:cur.tag,body:cur.body,obj:cur.obj},...cur.history].slice(0,page?12:4):[],patches:new Map()};
+  const next={key,body,tag,history:cur?[{tag:cur.tag,body:cur.body,obj:cur.obj},...cur.history].slice(0,page?6:4):[],patches:new Map()};
   snapshots.set(name,next);return next;
 }
 // What a page needs of a run: its summary, its steps without their output, and of its plan only who does each step
@@ -750,6 +750,25 @@ async function dropGithubHook(w){
 async function tidyGithubHook(w){
   const x=w.appRemote;if(!x?.id)return;
   if(!w.app?.instant||TRIGGERS[w.app.kind]?.instant!=='github'||w.app.repo!==x.repo||appHookUrl(w)!==x.url)await dropGithubHook(w);
+}
+// Sign-ins with a code (GitHub): one at a time for each app, checked in the background until you enter the code, it
+// expires or GitHub refuses. Nothing about it is saved until the token is in.
+const deviceFlows=new Map();
+function pollDevice(svc,flow){
+  flow.timer=setTimeout(async()=>{
+    if(deviceFlows.get(svc)!==flow)return;
+    if(Date.now()>flow.expiresAt){flow.error='The code expired. Start again.';return;}
+    let r;
+    try{r=await devicePoll(svc,flow);}
+    catch(e){if(deviceFlows.get(svc)!==flow)return;if(e.final){flow.error=e.message;return;}return pollDevice(svc,flow);}
+    if(deviceFlows.get(svc)!==flow)return;
+    if(!r.token){if(r.wait)flow.interval=r.wait;return pollDevice(svc,flow);}
+    const name=SERVICES[svc].name;let account;
+    try{account=await whoAmI(svc,{token:async()=>r.token});}catch(e){if(deviceFlows.get(svc)===flow)flow.error=`${name} did not accept the token: ${e.message}`;return;}
+    if(deviceFlows.get(svc)!==flow)return;
+    deviceFlows.delete(svc);secrets.set('svc:'+svc,{token:r.token,builtin:true});state.services[svc]={account:string(account,120),connected:Date.now()};
+    await persistSecrets();event(`${name} connected`,account,'connection');await persist();
+  },flow.interval*1000);flow.timer.unref?.();
 }
 function serviceConnected(svc){const sec=secrets.get('svc:'+svc)||{};return SERVICES[svc]?.kind==='token'?!!sec.token:!!(sec.accessToken||sec.refreshToken);}
 // Shared procedures: a workflow as a file to pass on, without ids, keys, addresses, mail settings, runs or files.
@@ -5881,14 +5900,23 @@ const server=http.createServer(async(req,res)=>{
       if(route==='/api/files'&&req.method==='GET')return send(res,200,await listFiles());
       if(route==='/api/services'&&req.method==='GET'){
         return send(res,200,{services:Object.entries(SERVICES).map(([id,x])=>{const sec=secrets.get('svc:'+id)||{},redirect=x.kind==='oauth'?redirectUri(id,PORT):'';
+          const f=deviceFlows.get(id);
           return {id,name:x.name,what:x.what,kind:x.kind,secretNeeded:!!x.secretNeeded,redirect,setup:x.setup.map(l=>l.replace('{redirect}',redirect)),
-            connected:x.kind==='token'?!!sec.token:!!(sec.accessToken||sec.refreshToken),hasClient:!!sec.clientId,clientId:sec.clientId||'',
+            oneClick:!!builtinClient(id),builtin:!!sec.builtin,...(f&&{code:{userCode:f.userCode,verificationUri:f.verificationUri,expiresAt:f.expiresAt,error:f.error||''}}),
+            connected:x.kind==='token'?!!sec.token:!!(sec.accessToken||sec.refreshToken),hasClient:!!sec.clientId&&!sec.builtin,clientId:sec.builtin?'':sec.clientId||'',
             account:state.services[id]?.account||'',problem:state.services[id]?.problem||'',users:state.agents.filter(a=>a.tools?.includes(id)).length};})});
       }
       const sv=route.match(/^\/api\/services\/(google|microsoft|slack|github|notion)$/);
       if(sv&&req.method==='POST'){
         const svc=sv[1],x=SERVICES[svc],name=x.name;
-        if(b.disconnect){secrets.delete('svc:'+svc);delete state.services[svc];await persistSecrets();event(`${name} disconnected`,'','connection');await persist();return send(res,200,{ok:true});}
+        if(b.disconnect){const f=deviceFlows.get(svc);if(f){clearTimeout(f.timer);deviceFlows.delete(svc);}secrets.delete('svc:'+svc);delete state.services[svc];await persistSecrets();event(`${name} disconnected`,'','connection');await persist();return send(res,200,{ok:true});}
+        if(x.kind==='token'&&b.device){
+          const built=builtinClient(svc);if(!built)fail(`This SILO has no ${name} app of its own. Paste a token instead.`);
+          const old=deviceFlows.get(svc);if(old)clearTimeout(old.timer);
+          const st=await deviceStart(svc,built).catch(e=>fail(e.message,502));
+          const flow={...st,clientId:built.clientId};deviceFlows.set(svc,flow);pollDevice(svc,flow);
+          return send(res,200,{userCode:st.userCode,verificationUri:st.verificationUri,expiresAt:st.expiresAt});
+        }
         if(x.kind==='token'){
           const token=string(String(b.token||''),400).trim();if(!token)fail('Paste the token.');
           if(x.prefix&&!x.prefix.test(token))fail(`That does not look like a ${name} token.`);
@@ -5897,10 +5925,14 @@ const server=http.createServer(async(req,res)=>{
           await persistSecrets();event(`${name} connected`,account,'connection');await persist();return send(res,200,{ok:true,account});
         }
         if(viaTunnel)fail(`Connect ${name} on this computer: the sign-in comes back to 127.0.0.1.`);
-        const clientId=string(String(b.clientId||''),300).trim()||secrets.get('svc:'+svc)?.clientId;if(!clientId)fail('Paste the client ID.');
-        const clientSecret=typeof b.clientSecret==='string'&&b.clientSecret.trim()?string(b.clientSecret.trim(),300):secrets.get('svc:'+svc)?.clientSecret||'';
+        // A client ID you paste is your own app. Without one, SILO's own app is used when it has one and you did not save
+        // your own before; the sign-in then needs nothing from you but the account.
+        const prev=secrets.get('svc:'+svc)||{},own=string(String(b.clientId||''),300).trim(),built=builtinClient(svc);
+        const builtin=!own&&!!built&&(b.builtin===true||!prev.clientId||!!prev.builtin);
+        const clientId=builtin?built.clientId:own||prev.clientId;if(!clientId)fail('Paste the client ID.');
+        const clientSecret=builtin?built.clientSecret:typeof b.clientSecret==='string'&&b.clientSecret.trim()?string(b.clientSecret.trim(),300):!prev.builtin&&prev.clientSecret||'';
         if(x.secretNeeded&&!clientSecret)fail('Paste the client secret.');
-        const prev=secrets.get('svc:'+svc)||{};secrets.set('svc:'+svc,{...(prev.clientId===clientId?prev:{}),clientId,clientSecret});await persistSecrets();
+        secrets.set('svc:'+svc,{...(prev.clientId===clientId?prev:{}),clientId,clientSecret,builtin});await persistSecrets();
         const st=oauthStart(svc,{clientId,port:PORT});
         for(const [k,v] of connectFlows)if(Date.now()-v.at>15*60000)connectFlows.delete(k);
         connectFlows.set(st.state,{svc,verifier:st.verifier,at:Date.now()});

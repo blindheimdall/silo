@@ -1,13 +1,16 @@
 // Connectors to Google (Gmail, Calendar, Drive, Sheets), Microsoft 365 (Outlook, Calendar, OneDrive), Slack, GitHub and
-// Notion. Google and Microsoft sign in with OAuth (PKCE, your own app registration); the others take a token.
+// Notion. Google and Microsoft sign in with OAuth (PKCE, SILO's own app or yours); GitHub with a code when SILO has its
+// own app; the others take a token.
 // Each service is one resident tool. Reading is covered by the permission; sending, creating and posting wait for you.
 import { randomBytes, createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const REAL = {
   gmail: 'https://gmail.googleapis.com/gmail/v1', gcal: 'https://www.googleapis.com/calendar/v3', gdrive: 'https://www.googleapis.com/drive/v3', sheets: 'https://sheets.googleapis.com/v4',
   googleToken: 'https://oauth2.googleapis.com/token', googleAuth: 'https://accounts.google.com/o/oauth2/v2/auth',
   graph: 'https://graph.microsoft.com/v1.0', msToken: 'https://login.microsoftonline.com/common/oauth2/v2.0/token', msAuth: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
   slack: 'https://slack.com/api', github: 'https://api.github.com', notion: 'https://api.notion.com/v1',
+  ghDevice: 'https://github.com/login/device/code', ghToken: 'https://github.com/login/oauth/access_token',
 };
 // Tests point every service at one local fake server.
 const B = k => process.env.SILO_TEST_CONNECTOR_BASE ? process.env.SILO_TEST_CONNECTOR_BASE + '/' + k : REAL[k];
@@ -90,6 +93,54 @@ export function toolDescription(svc) {
 }
 
 // ---------- OAuth ----------
+// One-click sign-in. A SILO build can carry its own app registration (silo-apps.json next to the server, or the
+// SILO_GOOGLE_CLIENT_ID, SILO_GOOGLE_CLIENT_SECRET, SILO_MICROSOFT_CLIENT_ID and SILO_GITHUB_CLIENT_ID variables):
+// Google and Microsoft as desktop apps with PKCE and a loopback address, GitHub as an OAuth app with the device flow.
+// None of these is a confidential client: Google treats the secret of a desktop app as public, Microsoft and GitHub
+// need none. Your own registration still works and wins when you paste one.
+let appsFile;
+function readAppsFile() {
+  if (appsFile === undefined) {
+    try { const d = JSON.parse(readFileSync(new URL('./silo-apps.json', import.meta.url), 'utf8')); appsFile = d && typeof d === 'object' && !Array.isArray(d) ? d : {}; } catch { appsFile = {}; }
+  }
+  return appsFile;
+}
+const APP_ENV = { google: ['SILO_GOOGLE_CLIENT_ID', 'SILO_GOOGLE_CLIENT_SECRET'], microsoft: ['SILO_MICROSOFT_CLIENT_ID'], github: ['SILO_GITHUB_CLIENT_ID'] };
+export function builtinClient(svc) {
+  const env = APP_ENV[svc]; if (!env) return null;
+  const file = readAppsFile()[svc] || {}, text = v => typeof v === 'string' ? v.trim().slice(0, 300) : '';
+  const clientId = text(process.env[env[0]]) || text(file.clientId), clientSecret = (env[1] && text(process.env[env[1]])) || text(file.clientSecret);
+  if (!clientId || (SERVICES[svc].secretNeeded && !clientSecret)) return null;
+  return { clientId, clientSecret: SERVICES[svc].secretNeeded ? clientSecret : '' };
+}
+
+// GitHub's device flow: SILO shows a short code, you enter it at github.com/login/device, and SILO gets the token. It
+// needs no address to come back to, so it also works when SILO is opened from another computer.
+const GITHUB_SCOPES = 'repo read:user';
+async function githubForm(key, params) {
+  const r = await fetch(B(key), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: new URLSearchParams(params).toString(), signal: AbortSignal.timeout(30000), redirect: 'error' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok && !d.error) throw new Error(`GitHub answered ${r.status}.`);
+  return d;
+}
+export async function deviceStart(svc, { clientId }) {
+  if (svc !== 'github') throw new Error('Only GitHub signs in with a code.');
+  const d = await githubForm('ghDevice', { client_id: clientId, scope: GITHUB_SCOPES });
+  if (d.error || !d.device_code || !d.user_code) throw new Error(d.error_description || d.error || 'GitHub did not give a code.');
+  const uri = /^https:\/\/github\.com\//.test(d.verification_uri || '') ? d.verification_uri : 'https://github.com/login/device';
+  return { deviceCode: d.device_code, userCode: String(d.user_code).slice(0, 20), verificationUri: uri, interval: Math.min(60, Math.max(process.env.SILO_TEST_CONNECTOR_BASE ? 0.1 : 5, Number(d.interval) || 5)), expiresAt: Date.now() + Math.min(1800, Number(d.expires_in) || 900) * 1000 };
+}
+// One check: { token } when you entered the code, { wait } while GitHub still waits for you (in seconds), or an error.
+export async function devicePoll(svc, { clientId, deviceCode }) {
+  const d = await githubForm('ghToken', { client_id: clientId, device_code: deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' });
+  if (d.access_token) return { token: String(d.access_token) };
+  if (d.error === 'authorization_pending') return { wait: 0 };
+  if (d.error === 'slow_down') return { wait: Math.min(60, Number(d.interval) || 10) };
+  // A refusal from GitHub ends the sign-in; a network error does not, and the next check tries again.
+  const e = new Error(d.error === 'access_denied' ? 'You did not allow SILO on GitHub.' : d.error === 'expired_token' ? 'The code expired. Start again.' : d.error_description || d.error || 'GitHub did not give a token.');
+  e.final = true; throw e;
+}
+
 export function redirectUri(svc, port) { return `http://${SERVICES[svc].redirectHost}:${port}/connect/callback`; }
 export function oauthStart(svc, { clientId, port }) {
   const verifier = randomBytes(32).toString('base64url'), state = randomBytes(18).toString('hex');

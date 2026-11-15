@@ -1,0 +1,5 @@
+{
+  "google": { "clientId": "000000000000-example.apps.googleusercontent.com", "clientSecret": "GOCSPX-example" },
+  "microsoft": { "clientId": "00000000-0000-0000-0000-000000000000" },
+  "github": { "clientId": "Ov23liExample00000000" }
+}

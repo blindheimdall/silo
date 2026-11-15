@@ -626,6 +626,8 @@ body:has(#terminal-screen:not([hidden])) .trail-chip{display:none}
 @media(max-width:800px){.command-dock{max-width:calc(100vw - 34px);overflow-x:auto;scrollbar-width:none;justify-content:flex-start;overscroll-behavior-x:contain}.command-dock::-webkit-scrollbar{display:none}.command-dock .nav-item{flex:0 0 auto}}
 @media(max-width:480px){.command-dock .nav-item{width:42px;font-size:6px;letter-spacing:0}}
 .app-steps{margin:6px 0 16px;padding-left:20px;color:var(--ph);font:11px/1.8 var(--term)}.app-steps li{margin:3px 0}
+.app-own{margin:14px 0 4px}.app-own>summary{cursor:pointer;color:var(--ph);font:11px/1.8 var(--term)}.app-own[open]>summary{margin-bottom:8px}
+.device-code{margin:4px 0 6px;font:600 26px/1.2 var(--term);letter-spacing:.18em}
 .shape-body{display:none;margin-top:8px}.trigger-box:has([name=shapeOn]:checked) .shape-body{display:block}
 .shape-field{display:grid;grid-template-columns:1fr 120px auto auto;gap:8px;align-items:center;margin:6px 0}
 @media(max-width:560px){.shape-field{grid-template-columns:1fr 1fr}}
