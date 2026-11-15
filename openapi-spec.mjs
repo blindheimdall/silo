@@ -57,6 +57,9 @@ export function openApiSpec({ version = '0.0.0', server = 'http://127.0.0.1:3000
         put: op('run', 'Change a resident', { parameters: [id], requestBody: json({ $ref: '#/components/schemas/Agent' }), responses: { 200: ok('The resident.', { $ref: '#/components/schemas/Agent' }) } }),
         delete: op('run', 'Remove a resident', { parameters: [id], responses: { 200: ok('Removed.') } }),
       },
+      '/api/workflows/draft': { post: op('run', 'Draft a workflow from a description. A resident with a model writes it; it is checked like a saved workflow and not saved', {
+        requestBody: json({ type: 'object', properties: { text: { type: 'string', maxLength: 4000 }, agentId: { type: 'string', description: 'The resident who drafts it. The first one with a model when left out.' }, current: { $ref: '#/components/schemas/Workflow', description: 'A draft to change as asked, instead of starting over.' } }, required: ['text'] }),
+        responses: { 200: ok('The draft, to save with POST /api/workflows.', { type: 'object', properties: { draft: { $ref: '#/components/schemas/Workflow' }, notes: { type: 'string' }, agent: { type: 'string' }, tries: { type: 'integer' }, tokens: { type: 'integer' } } }), 422: { $ref: '#/components/responses/Error' }, 502: { $ref: '#/components/responses/Error' }, 504: { $ref: '#/components/responses/Error' } } }) },
       '/api/workflows/{id}/run': { post: op('run', 'Start a workflow run', {
         parameters: [id], requestBody: json({ type: 'object', properties: { input: { type: 'string', maxLength: 15000 } } }),
         responses: { 202: ok('The run, started. Follow it in /api/state or /api/traces.', { $ref: '#/components/schemas/Run' }) } }) },

@@ -120,6 +120,16 @@ globalThis.fetch=async (url,options)=>{
   // 'banana' says BANANA only while its instructions ask for it. 'coin' names Acme on every other call.
   else if(b.model==='banana')text=/BANANA/.test(JSON.stringify(messages.slice(0,-1)))||/BANANA/.test(String(b.instructions||b.system||''))?'Here it is: BANANA.':'Nothing to add.';
   else if(b.model==='coin')text=(coinCalls++)%2===0?'Acme it is.':'Someone else.';
+  else if(b.model==='builder'){
+    // The workflow builder: a visitor log from the ids in the catalog. With BROKEN FIRST the first answer names a
+    // resident that is not there, and the fixed one comes after the refusal. With NEVER RIGHT it never passes.
+    const all=messages.map(plain).join('\n'),table=(all.match(/table:[0-9a-f-]{36}/)||[])[0],agent=(all.match(/- ([0-9a-f-]{36}): Builder Fixture,/)||[])[1];
+    const refused=last.startsWith('That workflow was refused'),changing=/The workflow as it is now:/.test(all);
+    if(/NEVER RIGHT/.test(all)||(/BROKEN FIRST/.test(all)&&!refused))text=JSON.stringify({name:'Broken',steps:[{type:'agent',agentId:'not-a-resident',prompt:'x'}]});
+    else text='Here it is:\n```json\n'+JSON.stringify({name:changing?'Visitor log, daily':'Visitor log',description:'Keeps who came, and greets them.',brief:'',notes:'Fill the table first.',start:changing?{mode:'daily',at:'08:30',days:[1,2,3,4,5]}:null,
+      form:{title:'Sign in',fields:[{name:'email',label:'Your email',type:'email',required:true}]},
+      steps:[{type:'action',app:table,op:'upsert_row',fields:{match_on:'email',email:'{{brief.email}}',nope:'left out'}},{type:'agent',agentId:agent,prompt:'Write a welcome for {{brief.email}}.'}]})+'\n```';
+  }
   else if(b.model==='judge')text=/<result>[\s\S]*Acme[\s\S]*<\/result>/.test(last)?'PASS\nThe supplier is named.':'FAIL\nThe supplier is not named.';
   else if(b.model==='tool-user'||b.model==='no-tools'){
     // Calls the tools listed as CALL {...} lines in the latest real message, one per round, then reports the last result.

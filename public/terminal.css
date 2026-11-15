@@ -849,3 +849,4 @@ dialog:has(.table-modal){width:min(1060px,calc(100vw - 32px))}
 .col-note{display:block;margin-top:10px;color:var(--ph-dim)}
 #row-form label b{margin-left:8px}#row-form label small{margin-left:8px;color:var(--ph-dim);font-weight:400}
 .data-table th.num .tbl-sort{text-align:right}
+.draft-note{margin-bottom:14px;border-color:var(--amb-dim)}

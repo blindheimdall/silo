@@ -865,6 +865,81 @@ function validateTemplate(t){
   return {silo:'procedure',format:1,name:w.name,description:w.description,brief:w.brief,...(start&&{start}),...(watch&&{watch}),steps,...(w.shape&&{shape:w.shape}),...(tests.length&&{tests:tests.map(({name,input,checks,reference})=>({name,input,checks,...(reference&&{reference})}))}),...(t.judge&&{judge:person(t.judge)}),...(w.budget&&{budget:w.budget}),...(typeof t.made==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(t.made)&&{made:t.made})};
 }
 
+// The workflow builder: a resident with a real model turns a description into a workflow. The draft is checked with
+// the same rules as a saved workflow and sent back with the reason until it passes, three tries at most. Nothing is
+// saved or started: the draft opens in the editor, and you read, change and save it yourself.
+const DRAFT_TRIES=3,CATALOG_MAX=24000;
+const modelReady=a=>!!a&&a.provider!=='demo'&&(secrets.has(a.provider)||a.provider==='ollama');
+async function builderCatalog(me){
+  const owner=!me||me.role==='owner',lines=[];
+  const ready=[...state.agents].sort((x,y)=>Number(modelReady(y))-Number(modelReady(x))).slice(0,60);
+  lines.push('Residents (agentId: name, role, tools):',...ready.map(a=>`- ${a.id}: ${a.name}, ${a.role}${a.provider==='demo'?' (demo, scripted answers only)':''}${a.tools?.length?`, tools: ${a.tools.filter(t=>!t.startsWith('mcp:')).join(' ')}`:''}`));
+  if(state.agents.length>ready.length)lines.push(`(and ${state.agents.length-ready.length} more residents)`);
+  // Only owners add app steps of accounts and connectors, and code steps; anyone who may write adds table steps.
+  const apps=(await workflowActions()).filter(a=>owner||a.kind==='table');
+  lines.push('','Apps for "action" steps (app id, then each operation: fields, * needed; "changes" marks operations that change something):');
+  for(const a of apps){
+    if(a.kind==='table'){const t=tables.meta.get(a.id.slice(6));lines.push(`- ${a.id} = table "${a.name}", columns: ${t.columns.map(c=>`${c.name} (${COLUMN_TYPES[c.type]}${c.required?', needed':''}${c.unique?', unique':''})`).join(', ')}. Operations: ${a.ops.map(o=>o.name+(o.write?' (changes)':'')).join(', ')}. add_row and update_row take the columns as fields; upsert_row takes match_on (a column) and the columns; find_rows and count_rows take column values to match, search, and find_rows also order_by (a column, - first for largest first) and limit; get_row and delete_row take row_id.`);continue;}
+    lines.push(`- ${a.id} = ${a.name}${a.connected===false?' (not connected yet)':''}:`);
+    for(const o of a.ops.slice(0,40))lines.push(`  ${o.name}${o.write?' (changes)':''}: ${o.fields.slice(0,20).map(f=>f.name+(f.required?'*':'')).join(', ')||'no fields'}`);
+  }
+  if(!apps.length)lines.push('- none');
+  if(state.workflows.length)lines.push('','Workflows for "workflow" steps (workflowId: name):',...state.workflows.slice(0,40).map(w=>`- ${w.id}: ${w.name}`));
+  if(!owner)lines.push('','This person is not an owner: use no "code" steps, and "action" steps only with the tables above.');
+  const text=lines.join('\n');
+  return text.length>CATALOG_MAX?text.slice(0,CATALOG_MAX)+'\n(the list goes on, cut here)':text;
+}
+const BUILDER_GUIDE=`Answer with one JSON object only: {"name", "description", "brief", "steps", "start", "form", "notes"}.
+"brief" is the input used when it runs on a schedule or by hand. "notes" says in one or two sentences what the person must set up or check before using it (an app to connect, a table to fill), or is empty.
+Steps run in order, 1 to 12. Kinds:
+- {"type":"agent","agentId":"<id>","prompt":"what to do"}: a resident works on it. Texts can use {{brief}}, {{previous}}, {{step 2}}, {{step 2.field}}, {{brief.field}} for a form answer, and {{item}} or {{item.field}} in a step that repeats.
+- {"type":"action","app":"<app id>","op":"<operation>","fields":{"<field>":"text or {{...}}"}}: calls an app directly, with no model. Use only the fields listed for that operation.
+- {"type":"code","code":"return ..."}: JavaScript that gets input (the brief), previous, steps[1], steps[2] (answers as text), item, and json(text). What it returns is the answer.
+- {"type":"review","agentId":"<id>","prompt":"what to check","target":<earlier resident step number>,"rounds":2}: answers APPROVED or REVISE and sends the work back.
+- {"type":"approval","prompt":"what to check"}: waits for the person's OK. Put one before a step that sends a message or changes something outside SILO, unless the request says not to.
+- {"type":"wait","unit":"minutes"|"hours"|"days","amount":<n>} or {"type":"wait","unit":"until","time":"09:00","day":-1}.
+- {"type":"workflow","workflowId":"<id>","prompt":"its brief"}: runs another workflow as one step.
+Any step may have "when":{"step":0 for the previous step or an earlier step number,"op":"contains" or "missing","text":"a word"}. Agent, action and code steps may have "each":"{{step N}}" (or "{{previous}}", "{{step N.list}}") to repeat once for each item of a list.
+"start" is null when it runs only by hand or from its form, {"mode":"interval","interval":<minutes>} or {"mode":"daily","at":"HH:MM","days":[1,2,3,4,5]} (0 is Sunday).
+"form" is null, or a public form whose answers become the brief as JSON: {"title":"...","intro":"...","fields":[{"name":"email","label":"Your email","type":"text"|"textarea"|"email"|"number"|"date","required":true}]} (at most 12 fields, names of letters, digits and _).
+Use only the ids listed below. Prefer action and code steps for fixed work, and residents for judgment and writing; pick residents whose role and tools fit. Never put keys or passwords anywhere. Keep it as small as the request allows.`;
+// The model's JSON as a workflow body: the triggers it may set, and no address, watched folder or inbox of its own.
+function draftBody(x){
+  if(!x||typeof x!=='object'||Array.isArray(x))fail('The answer was not one JSON object.');
+  const st=x.start&&typeof x.start==='object'?x.start:null;
+  return {name:x.name,description:x.description||'',brief:typeof x.brief==='string'?x.brief:'',steps:x.steps,enabled:!!st,mode:st?.mode==='daily'?'daily':'interval',interval:st?.interval,at:st?.at,days:st?.days,hook:false,watch:null,...(x.form?{form:x.form}:{})};
+}
+async function draftWorkflow(b,me,signal){
+  const request=string(String(b.text||''),4000);if(!request)fail('Say what the workflow should do.');
+  const agent=b.agentId?findAgent(String(b.agentId)):state.agents.find(modelReady);
+  if(!agent)fail('The builder needs a resident with a model. Connect a model in IT / Uplink and give it to a resident.');
+  if(agent.provider==='demo')fail(`${agent.name} gives scripted answers only. Pick a resident with a real model.`);
+  let current=null;
+  if(b.current&&typeof b.current==='object'){current=JSON.stringify({name:b.current.name,description:b.current.description,brief:b.current.brief,steps:b.current.steps,form:b.current.form||null},null,1);if(current.length>30000)fail('That draft is too large to change here.');}
+  const prompt=`You design workflows for SILO.\n\n${BUILDER_GUIDE}\n\n${await builderCatalog(me)}\n\n${current?`The workflow as it is now:\n${current}\n\nChange it as the person asks, and keep the rest:\n`:'What the workflow should do:\n'}<request>\n${request}\n</request>`;
+  const messages=[{role:'user',content:prompt}];let tokens=0,last='';
+  for(let n=1;n<=DRAFT_TRIES;n++){
+    if(signal?.aborted)throw signal.reason;
+    let r;try{r=await answer(agent,messages,signal,{},`Workflow builder (${agent.name})`,0,[],{noTools:true});}
+    catch(e){if(signal?.aborted)throw e;fail(`${agent.name} could not answer: ${String(e.message).slice(0,300)}`,502);}
+    tokens+=r.tokens||0;messages.push({role:'assistant',content:r.text||''});
+    try{
+      const x=jsonOf(r.text);if(x===undefined)fail('There was no JSON in the answer.');
+      const body=draftBody(x);
+      // Said with the step and the id, so the model can fix it.
+      if(Array.isArray(body.steps))body.steps.forEach((s,i)=>{if(s&&typeof s==='object'&&s.agentId!==undefined&&!state.agents.some(a=>a.id===s.agentId))fail(`Step ${i+1}: there is no resident with the id "${String(s.agentId).slice(0,60)}". Use an agentId from the list.`);});
+      const w=validateWorkflow(body);
+      if(me&&me.role!=='owner')guardAppSteps(me,w);
+      const draft={name:w.name,description:w.description,brief:w.brief,steps:w.steps,enabled:w.enabled,mode:w.mode,interval:w.interval,at:w.at,days:w.days,...(w.form&&{form:w.form})};
+      event('Workflow drafted',`${w.name} / ${w.steps.length} step${w.steps.length===1?'':'s'} by ${agent.name}${n>1?` after ${n} tries`:''}`,'workflow');
+      return {draft,notes:string(String(x.notes||''),500),agent:agent.name,tries:n,tokens};
+    }catch(e){
+      last=String(e.message).slice(0,500);
+      messages.push({role:'user',content:`That workflow was refused: ${last}\nAnswer with the whole JSON object again, fixed.`});
+    }
+  }
+  fail(`${agent.name} could not make a workflow that passes the checks. The last reason: ${last}`,422);
+}
 // A fixed result: the fields a workflow promises to return, as JSON. SILO checks it at the end of every run.
 const SHAPE_TYPES={text:'text',number:'a number',date:'a date like 2026-11-09',boolean:'true or false',list:'a list'};
 function validateShape(x){
@@ -6210,6 +6285,14 @@ const server=http.createServer(async(req,res)=>{
       }
       const tdel=route.match(/^\/api\/templates\/([^/]+)$/);
       if(tdel&&req.method==='DELETE'){const before=state.templates.length;state.templates=state.templates.filter(t=>t.id!==tdel[1]);if(state.templates.length===before)fail('Procedure not found.',404);await persist();return send(res,200,{ok:true});}
+      if(route==='/api/workflows/draft'&&req.method==='POST'){
+        // A closed page stops the builder, so it does not go on spending for nobody.
+        const ctl=new AbortController(),gone=()=>{if(!res.writableEnded)ctl.abort(new Error('The page was closed.'));};res.on('close',gone);
+        const timer=setTimeout(()=>ctl.abort(new Error('The builder took longer than 3 minutes.')),180000);
+        try{return send(res,200,await draftWorkflow(b,me,ctl.signal));}
+        catch(e){if(ctl.signal.aborted&&!e.status)fail(String(ctl.signal.reason?.message||'Stopped.'),504);throw e;}
+        finally{clearTimeout(timer);res.off('close',gone);}
+      }
       if(route==='/api/workflows'&&req.method==='POST'){const w={...validateWorkflow(b),id:id()};guardAppSteps(me,w);if(applyMailSecret(w,b))await persistSecrets();await primeWatch(w);state.workflows.push(w);await persist();return send(res,201,w);}
       const wh=route.match(/^\/api\/workflows\/([^/]+)\/apphook(\/github)?$/);
       if(wh){
