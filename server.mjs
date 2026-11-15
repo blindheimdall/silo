@@ -54,6 +54,7 @@ import { toolsFor, openaiInput, anthropicMessages, chatMessages, CallCollector, 
 import { runCode as runCodeStepScript, CODE_MAX } from './code-step.mjs';
 import { Tables, COLUMN_TYPES, FILTER_OPS, RESERVED as TABLE_RESERVED, CSV_MAX } from './data-tables.mjs';
 import { TALK_KINDS, PUBLIC_TALK, Conversations, Limits, Seen, cleanText, slackVerify, slackEvent, slackSend, whatsappHandshake, whatsappVerify, whatsappMessages, whatsappSend, teamsVerify, teamsMessage, teamsToken, teamsSend, forgetTeamsTokens, serviceUrlAllowed, widgetScript, widgetTryPage, WIDGET_COLOR } from './talk-channels.mjs';
+import { Inbox } from './talk-inbox.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // An installed SILO keeps its data and workspace outside the app folder; launch.json says where.
@@ -181,6 +182,7 @@ state.traces||=[];
 for(const t of state.traces)if(t.status==='running'){t.status='interrupted';t.ended||=Date.now();t.ms=t.ended-t.started;for(const sp of t.spans)if(sp.status==='running')sp.status='interrupted';t.totals=totals(t.spans);}
 // Tables keep rows for workflows, residents, programs and people, in data/tables.db apart from the state.
 const tables=new Tables(DATA).open();tables.onChange=()=>{stateRev++;};
+const inbox=new Inbox(DATA).open();inbox.onChange=()=>{stateRev++;};
 if(tables.damaged)console.warn(`[tables] data/tables.db could not be read and was moved to ${path.basename(tables.damaged)}; a new one was started.`);
 // A trace can still change after it ended (a span that finishes late), so every change names its trace for the next save.
 const tracer=new Tracer({list:()=>state.traces,onChange:t=>{stateRev++;if(t?.ended)store.touch(t);},onFinish:t=>otel.addTrace(t)});
@@ -368,6 +370,11 @@ state.settings.voice={...DEFAULT_VOICE,...(state.settings.voice||{})};
 // Talk channels: which resident answers where. Keys and secrets are in the vault, not here.
 const TALK_DEFAULT={widget:{enabled:false,agentId:'',key:'',origins:[],title:'Chat with us',greeting:'',color:'#2f5d50',daily:300},slack:{enabled:false,agentId:'',tools:false,daily:500},whatsapp:{enabled:false,agentId:'',phoneId:'',daily:300},teams:{enabled:false,agentId:'',appId:'',tenant:'',tools:false,daily:500}};
 state.settings.talk=Object.fromEntries(Object.entries(TALK_DEFAULT).map(([k,v])=>[k,{...v,...(state.settings.talk?.[k]||{})}]));
+state.settings.talkInbox={keepDays:30,...(state.settings.talkInbox||{})};
+// Old conversations go, and one a person took over but left for a day goes back to the resident.
+const pruneInbox=()=>{try{const r=inbox.prune({keepDays:state.settings.talkInbox.keepDays});if(r.givenBack)event('Talk inbox',`${r.givenBack} conversation${r.givenBack===1?' was':'s were'} given back to the resident after a day without an answer.`,'talk');}catch(e){event('Talk inbox could not be cleaned',e.message,'error');}};
+pruneInbox();setInterval(pruneInbox,3600000).unref();
+if(inbox.damaged)setImmediate(()=>event('Talk inbox was damaged',`The file was moved aside to ${path.basename(inbox.damaged)} and a new one was started.`,'error'));
 // Updates: a signed release from a feed you set (an https address or a folder). Off until you set one.
 state.settings.update={feed:'',auto:false,...(state.settings.update||{})};
 const releaseKey=()=>{try{return readFileSync(path.join(ROOT,'release-key.pub'),'utf8');}catch{return '';}};
@@ -487,7 +494,7 @@ setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
 setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,tables:tables.list(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 function string(v,max=10000){if(typeof v!=='string'||v.length>max)fail('Invalid or oversized text.');return v.trim();}
 function findAgent(agentId){const a=state.agents.find(a=>a.id===agentId);if(!a)fail('Agent not found.',404);return a;}
@@ -2911,32 +2918,53 @@ async function consult(agent,text,{source,history=[],signal,timeout=600000,noToo
 // Talk channels: people outside SILO write, the channel's resident answers with the last turns of that conversation.
 // Public channels (the website, WhatsApp) never give it tools; Slack and Teams do only when you turn that on, and then
 // changes wait for your OK as always. A failure is logged for you at most once a minute; the person gets a short note.
-const talkMemory=new Conversations(),talkLimits=new Limits(),talkSeen=new Seen(),talkUse={};
+// Every message is kept in the talk inbox. A conversation a person of your team took over gets no answer from the
+// resident: the message waits there, and your team is told at most once every 5 minutes for each conversation.
+const talkTurns=new Conversations(),talkLimits=new Limits(),talkSeen=new Seen(),talkUse={};
 const TALK_SAYS={off:'This chat is not available right now.',paused:'The assistant is paused right now. Try again later.',full:'Too many questions today. Try again tomorrow.',failed:'Sorry, I cannot answer right now. Try again in a moment.'};
-const TALK_PREFIX={widget:'widget:',slack:'slack:',whatsapp:'wa:',teams:'teams:'};
-async function talkAnswer(kind,key,text,who){
+// The answer to send: {text, n}, or {human: true} when a person of your team answers instead.
+async function talkAnswer(kind,key,text,who,route={}){
   const cfg=state.settings.talk[kind],agent=cfg.enabled&&state.agents.find(a=>a.id===cfg.agentId);
-  if(!agent)return TALK_SAYS.off;
-  if(state.paused)return TALK_SAYS.paused;
-  if(!talkLimits.hit('day:'+kind,cfg.daily,86400000))return TALK_SAYS.full;
-  return talkMemory.turn(key,async()=>{
+  if(!agent)return {text:TALK_SAYS.off};
+  return talkTurns.turn(key,async()=>{
+    const history=inbox.history(key),said=inbox.record({kind,key,who,route,role:'person',text});
+    const notice=t=>({text:t,n:inbox.record({kind,key,role:'notice',text:t,by:'SILO'}).n});
+    if(said.mode==='person'){
+      if(talkLimits.hit('heard:'+said.id,1,300000))event(`${TALK_KINDS[kind]}: ${said.who} is waiting for an answer`,`In the talk inbox: ${text.slice(0,150)}`,'talk');
+      return {human:true,n:said.n};
+    }
+    if(state.paused)return notice(TALK_SAYS.paused);
+    if(!talkLimits.hit('day:'+kind,cfg.daily,86400000))return notice(TALK_SAYS.full);
     try{
-      const r=await consult(agent,text,{source:`${TALK_KINDS[kind]} (${who})`,history:talkMemory.history(key),timeout:kind==='widget'?90000:300000,noTools:PUBLIC_TALK.has(kind)||!cfg.tools});
-      const reply=String(r.text||'').trim()||'...';
-      talkMemory.add(key,text,reply);talkUse[kind]=(talkUse[kind]||0)+1;
-      return reply;
+      const r=await consult(agent,text,{source:`${TALK_KINDS[kind]} (${who})`,history,timeout:kind==='widget'?90000:300000,noTools:PUBLIC_TALK.has(kind)||!cfg.tools});
+      const reply=String(r.text||'').trim()||'...';talkUse[kind]=(talkUse[kind]||0)+1;
+      // Taken over while the resident was answering: its answer is kept for your team and not sent.
+      if(inbox.byKey(key)?.mode==='person'){inbox.record({kind,key,role:'note',text:'Not sent, because the conversation was taken over: '+reply,by:agent.name});return {human:true,n:said.n};}
+      return {text:reply,n:inbox.record({kind,key,role:'resident',text:reply,by:agent.name}).n};
     }catch(e){
       if(talkLimits.hit('err:'+kind,1,60000))event(`${TALK_KINDS[kind]}: ${agent.name} could not answer`,String(e.message).slice(0,300),'error');
-      return TALK_SAYS.failed;
+      return notice(TALK_SAYS.failed);
     }
   });
 }
+// An answer from your team goes back the way the person wrote: in the Slack thread, to the WhatsApp number, to the Teams
+// conversation. The website chat picks it up on its own.
+async function talkDeliver(c,text){
+  const kind=c.kind,cfg=state.settings.talk[kind],route=inbox.route(c);
+  if(!cfg?.enabled)fail(`${TALK_KINDS[kind]||'This channel'} is off. Turn it on in IT / Uplink to answer here.`,409);
+  try{
+    if(kind==='slack'){const token=secrets.get('svc:slack')?.token;if(!token)fail('Connect Slack in Apps first: its bot token sends the answers.',409);await slackSend(token,{channel:route.channel,thread:route.thread,text});}
+    else if(kind==='whatsapp'){const sec=talkSecret('whatsapp');await whatsappSend(cfg.phoneId,sec.token,route.to,text);}
+    else if(kind==='teams'){const sec=talkSecret('teams');await teamsSend({serviceUrl:route.serviceUrl,conversation:route.conversation,id:route.id},text,await teamsToken(cfg.appId,sec.password,cfg.tenant));}
+  }catch(e){if(e.status)throw e;fail('Not sent: '+String(e.message).slice(0,300),502);}
+}
+const inboxSettings=()=>({keepDays:state.settings.talkInbox.keepDays});
 // The answer goes out after the service got its quick OK. A failure to send is logged at most once a minute.
 function talkReply(kind,fn){fn().catch(e=>{if(talkLimits.hit('send:'+kind,1,60000))event(`${TALK_KINDS[kind]}: the answer could not be sent`,String(e.message).slice(0,300),'error');});}
 const talkSecret=kind=>secrets.get('talk:'+kind)||{};
 function talkView(){
   const t=state.settings.talk,pub=tunnel.host()?`https://${tunnel.host()}`:'',sec=talkSecret;
-  return {public:pub,local:`http://127.0.0.1:${PORT}`,slackConnected:!!secrets.get('svc:slack')?.token,conversations:talkMemory.size,used:{...talkUse},
+  return {public:pub,local:`http://127.0.0.1:${PORT}`,slackConnected:!!secrets.get('svc:slack')?.token,conversations:inbox.counts().conversations,used:{...talkUse},
     widget:{...t.widget,script:t.widget.key?`<script src="${pub||`http://127.0.0.1:${PORT}`}/widget/${t.widget.key}.js" async></script>`:'',tryUrl:t.widget.key?`/widget/${t.widget.key}/try`:''},
     slack:{...t.slack,hasSecret:!!sec('slack').signingSecret,url:pub&&pub+'/talk/slack'},
     whatsapp:{...t.whatsapp,hasToken:!!sec('whatsapp').token,hasSecret:!!sec('whatsapp').appSecret,verifyToken:sec('whatsapp').verifyToken||'',url:pub&&pub+'/talk/whatsapp'},
@@ -2976,8 +3004,8 @@ async function saveTalk(kind,b){
     const need={widget:[],slack:[[!!secrets.get('svc:slack')?.token,'Connect Slack in Apps first: its bot token sends the answers.'],[!!sec.signingSecret,'Paste the signing secret of your Slack app.']],whatsapp:[[!!next.phoneId,'Give the phone number ID.'],[!!sec.token,'Paste the access token.'],[!!sec.appSecret,'Paste the app secret.']],teams:[[!!next.appId,'Give the Microsoft App ID.'],[!!sec.password,'Paste the client secret of the bot.']]}[kind];
     for(const [ok,msg] of need)if(!ok)fail(msg);
   }
-  // Another resident, or the channel turned off: the conversations start over.
-  if(cur.agentId!==next.agentId||cur.enabled&&!next.enabled)talkMemory.forget(TALK_PREFIX[kind]);
+  // Another resident, or turning a channel off: the conversations stay in the inbox, the resident's memory starts over.
+  if(cur.agentId!==next.agentId||cur.enabled&&!next.enabled)inbox.forgetKind(kind);
   if(kind!=='widget')secrets.set('talk:'+kind,sec);
   state.settings.talk[kind]=next;
   await persistSecrets();
@@ -5311,9 +5339,20 @@ const server=http.createServer(async(req,res)=>{
       if(!allowed)return send(res,403,{error:'This site may not use this chat.'},cors);
       let b;try{b=JSON.parse(await readText(req,8000));}catch(e){return send(res,e.status===413?413:400,{error:'The message could not be read.'},cors);}
       const visitor=String(b?.visitor||''),text=cleanText(b?.text,1000);
-      if(!/^[A-Za-z0-9_-]{16,64}$/.test(visitor)||!text)return send(res,400,{error:'Write a message first.'},cors);
+      if(!/^[A-Za-z0-9_-]{16,64}$/.test(visitor))return send(res,400,{error:'Write a message first.'},cors);
+      // No text: the chat asks for answers it has not shown yet, like one from your team. Only its own conversation.
+      if(!text&&b?.after!==undefined){
+        if(!talkLimits.hit('poll:'+visitor,40,60000)||!talkLimits.hit('pollip:'+clientIp,240,60000))return send(res,429,{error:'Too many requests.'},cors);
+        const c=inbox.byKey('widget:'+visitor);if(!c)return send(res,200,{messages:[],human:false},cors);
+        return send(res,200,{messages:inbox.messages(c.id,{after:b.after,limit:50,sent:true}).map(m=>({n:m.n,t:m.text})),human:c.mode==='person'},cors);
+      }
+      if(!text)return send(res,400,{error:'Write a message first.'},cors);
       if(!talkLimits.hit('ip:'+clientIp,20,60000)||!talkLimits.hit('visitor:'+visitor,8,60000))return send(res,429,{error:'Too many messages. Wait a minute, then write again.'},cors);
-      return send(res,200,{reply:await talkAnswer('widget','widget:'+visitor,text,'visitor '+visitor.slice(0,6))},cors);
+      const a=await talkAnswer('widget','widget:'+visitor,text,'visitor '+visitor.slice(0,6));
+      // Answers from your team the chat has not shown yet come along, so none is missed and none is shown twice.
+      const after=Math.max(0,Math.floor(Number(b.after))||0),c=after&&a.n?inbox.byKey('widget:'+visitor):null;
+      const missed=c?inbox.messages(c.id,{after,limit:50,sent:true}).filter(m=>m.n<a.n).map(m=>({n:m.n,t:m.text})):[];
+      return send(res,200,a.human?{reply:null,human:true,n:a.n,missed}:{reply:a.text,n:a.n??0,human:false,missed},cors);
     }
     if(url.pathname==='/talk/slack'){
       if(req.method!=='POST')fail('Send a POST request.',405);
@@ -5326,7 +5365,7 @@ const server=http.createServer(async(req,res)=>{
       send(res,200,{ok:true});
       const cfg=state.settings.talk.slack,token=secrets.get('svc:slack')?.token;
       if(!m||!cfg.enabled||!token||!talkSeen.first('slack:'+m.id)||!talkLimits.hit('slack:'+m.user,6,60000))return;
-      talkReply('slack',async()=>slackSend(token,{channel:m.channel,thread:m.thread,text:await talkAnswer('slack',m.key,m.text,'user '+m.user)}));
+      talkReply('slack',async()=>{const a=await talkAnswer('slack',m.key,m.text,'user '+m.user,{channel:m.channel,thread:m.thread});if(a.text)await slackSend(token,{channel:m.channel,thread:m.thread,text:a.text});});
       return;
     }
     if(url.pathname==='/talk/whatsapp'){
@@ -5342,7 +5381,7 @@ const server=http.createServer(async(req,res)=>{
         if(!talkSeen.first('wa:'+m.id)||!talkLimits.hit('wa:'+m.from,6,60000))continue;
         // The log names the person by their WhatsApp name, or by the last digits of the number.
         const who=m.name||'number ending '+m.from.slice(-4);
-        talkReply('whatsapp',async()=>whatsappSend(cfg.phoneId,sec.token,m.from,m.text?await talkAnswer('whatsapp','wa:'+m.from,m.text,who):'I can read text messages only. Please write your question.'));
+        talkReply('whatsapp',async()=>{const a=m.text?await talkAnswer('whatsapp','wa:'+m.from,m.text,who,{to:m.from}):{text:'I can read text messages only. Please write your question.'};if(a.text)await whatsappSend(cfg.phoneId,sec.token,m.from,a.text);});
       }
       return;
     }
@@ -5354,7 +5393,7 @@ const server=http.createServer(async(req,res)=>{
       send(res,200,{});
       const m=teamsMessage(a);
       if(!m||!cfg.enabled||!sec.password||!serviceUrlAllowed(m.serviceUrl)||!talkSeen.first('teams:'+m.id)||!talkLimits.hit('teams:'+String(a.from?.id||m.conversation),6,60000))return;
-      talkReply('teams',async()=>{const text=await talkAnswer('teams',m.key,m.text,m.user||'someone');await teamsSend(m,text,await teamsToken(cfg.appId,sec.password,cfg.tenant));});
+      talkReply('teams',async()=>{const a=await talkAnswer('teams',m.key,m.text,m.user||'someone',{serviceUrl:m.serviceUrl,conversation:m.conversation,id:m.id});if(a.text)await teamsSend(m,a.text,await teamsToken(cfg.appId,sec.password,cfg.tenant));});
       return;
     }
     // Public forms: a page anyone with the address can fill in, also from the internet through the tunnel. The answers
@@ -6207,6 +6246,41 @@ const server=http.createServer(async(req,res)=>{
         }
       }
       if(route==='/api/talk'&&req.method==='GET'){if(me&&me.role!=='owner')fail('Only an owner can set up talk channels.',403);return send(res,200,talkView());}
+      // The talk inbox: owners and operators read the conversations, answer in the resident's place and give them back.
+      // Viewers do not see them: they hold what people outside wrote.
+      if(route.startsWith('/api/talk/inbox')){
+        if(me?.role==='viewer')fail('Viewers do not see talk conversations. Ask an owner.',403);
+        const by=me?.name||'you';
+        if(route==='/api/talk/inbox'&&req.method==='GET'){
+          const q=url.searchParams,kind=q.get('kind')||'';if(kind&&!TALK_KINDS[kind])fail('Unknown channel.');
+          return send(res,200,{...inbox.list({kind,mode:q.get('mode')||'',search:String(q.get('q')||'').slice(0,200),limit:q.get('limit'),offset:q.get('offset')}),counts:inbox.counts(),settings:inboxSettings(),
+            channels:Object.fromEntries(Object.keys(TALK_KINDS).map(k=>{const c=state.settings.talk[k];return [k,{name:TALK_KINDS[k],enabled:!!c.enabled,agent:state.agents.find(a=>a.id===c.agentId)?.name||''}];}))});
+        }
+        if(route==='/api/talk/inbox/settings'&&req.method==='POST'){
+          if(me&&me.role!=='owner')fail('Only an owner changes how long conversations are kept.',403);
+          const d=Math.round(Number(b.keepDays));if(!Number.isFinite(d)||d<1||d>365)fail('Keep conversations 1 to 365 days.');
+          state.settings.talkInbox.keepDays=d;pruneInbox();auditNote({action:'talk.keep',actor:by,target:d+' days'});await persist();return send(res,200,inboxSettings());
+        }
+        const ib=route.match(/^\/api\/talk\/inbox\/([0-9a-f-]{36})(?:\/(read|mode|reply))?$/);if(!ib)fail('Not found.',404);
+        const [,cid,act]=ib;
+        if(!act&&req.method==='GET')return send(res,200,{conversation:inbox.get(cid),messages:inbox.messages(cid,{after:url.searchParams.get('after')})});
+        if(!act&&req.method==='DELETE'){const c=inbox.get(cid);inbox.remove(cid);auditNote({action:'talk.delete',actor:by,target:`${TALK_KINDS[c.kind]||c.kind}: ${c.who}`});return send(res,200,{ok:true});}
+        if(req.method!=='POST')fail('Method not allowed.',405);
+        if(act==='read')return send(res,200,inbox.read(cid));
+        if(act==='mode'){const c=inbox.setMode(cid,b.mode,by);auditNote({action:'talk.'+(c.mode==='person'?'take':'give-back'),actor:by,target:`${TALK_KINDS[c.kind]||c.kind}: ${c.who}`});return send(res,200,c);}
+        if(act==='reply'){
+          const text=cleanText(b.text,4000);if(!text)fail('Write the answer first.');
+          const c=inbox.conv(cid);
+          // Only one answer at a time per conversation, so two people of your team do not send the same thing twice.
+          if(!talkLimits.hit('reply:'+cid+':'+text.slice(0,200),1,5000))fail('That answer was just sent.',409);
+          await talkDeliver(c,text);
+          if(c.mode!=='person')inbox.setMode(cid,'person',by);
+          const m=inbox.record({kind:c.kind,key:c.key,role:'human',text,by});inbox.read(cid);
+          auditNote({action:'talk.reply',actor:by,target:`${TALK_KINDS[c.kind]||c.kind}: ${c.who}`});
+          return send(res,200,{conversation:inbox.get(cid),n:m.n});
+        }
+        fail('Not found.',404);
+      }
       const tk=route.match(/^\/api\/talk\/(widget|slack|whatsapp|teams)$/);
       if(tk&&req.method==='POST'){if(me&&me.role!=='owner')fail('Only an owner can set up talk channels.',403);await saveTalk(tk[1],b);return send(res,200,talkView());}
       if(route==='/api/phone'&&req.method==='GET')return send(res,200,{enabled:state.phone.enabled,approvals:state.phone.approvals!==false,events:state.phone.events,chats:state.phone.chats.map(c=>({id:String(c.id),name:c.name,user:c.user,paired:c.paired,seen:c.seen})),botName:state.phone.botName||'',hasToken:!!secrets.get('phone')?.token,running:!!phoneBot?.running,error:state.phone.error||'',errorAt:state.phone.errorAt||0,pairing:phonePair&&phonePair.expires>Date.now()?{expires:phonePair.expires}:null});
@@ -6641,12 +6715,12 @@ async function shutdown(code=0){
   try{await Promise.race([persist(),new Promise(r=>setTimeout(r,3000))]);}catch{}
   try{await Promise.race([Promise.all([audit.queue,otel.flush(true)]),new Promise(r=>setTimeout(r,3000))]);}catch{}
   for(const c of liveStreams)c.close();
-  try{tunnel.stop(true);browsers.closeAll();desktop.close();kernels.close();}catch{}try{store.close();}catch{}tables.close();process.exit(code);
+  try{tunnel.stop(true);browsers.closeAll();desktop.close();kernels.close();}catch{}try{store.close();}catch{}tables.close();inbox.close();process.exit(code);
 }
 for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>shutdown(0));
 // Under the supervisor: it asks to stop through its channel, and when the supervisor is gone the server stops too.
 if(SUPERVISED&&process.send){process.on('message',m=>{if(m==='stop')shutdown(0);});process.on('disconnect',()=>shutdown(0));}
-process.on('exit',()=>{try{tunnel.stop(true);browsers.closeAll();desktop.close();}catch{}try{store.close();}catch{}tables.close();});
+process.on('exit',()=>{try{tunnel.stop(true);browsers.closeAll();desktop.close();}catch{}try{store.close();}catch{}tables.close();inbox.close();});
 phoneStart();
 const mailer=setInterval(()=>{checkMailTriggers().catch(e=>event('Email trigger failed',e.message,'error'));},MAIL_EVERY);
 const appWatcher=setInterval(()=>{checkAppTriggers().catch(e=>event('App trigger failed',e.message,'error'));},APP_EVERY);

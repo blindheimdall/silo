@@ -57,7 +57,7 @@ function render(){
 // Councils walk in the world, work turns the generator, and a failed workflow sounds the alarm.
 let alarmSeen;
 function syncOpenPanels(){
-  syncTableView();
+  syncTableView();syncInbox();
   if(modal.open&&modalKind==='tests'&&$('#eval-report')){const o=suiteOf(openTestsKind,openTestsId);if(o){const html=evalReport(o);if($('#eval-report').dataset.html!==html){$('#eval-report').innerHTML=html;$('#eval-report').dataset.html=html;}const cb=candidateBox(o),slot=$('#candidate-slot');if(slot&&slot.dataset.html!==cb){slot.innerHTML=cb;slot.dataset.html=cb;}}}
 }
 function syncWorldSignals(){
@@ -100,7 +100,7 @@ const PERM_LABELS={tables:'tables',read_files:'files',write_files:'proposals',we
 function permLabel(t,upper=false){const l=PERM_LABELS[t]||(t.startsWith('mcp:')?state?.mcp?.find(c=>'mcp:'+c.id===t)?.name||'connector':t);return upper?l.toUpperCase():l;}
 function agentPanel(){const a=selectedAgent();if(!a)return '<div class="empty">No residents yet.</div>';const f=state.floors[a.floor],st=a.stats||{},sh=getAgent(a.shadowId);const bad=(st.fail||0)+(st.rejected||0);const drillBadge=a.lastDrill?(a.lastDrill.ok?' · <span class="tag-ok">DRILL PASSED</span>':' · <span class="tag-warn">DRILL BREACH</span>'):'';return `<div class="panel-title">Resident profile <span class="panel-title-end"><small>L${String(a.level||SECTORS[a.floor].home).padStart(3,'0')}</small><button class="resident-close" data-action="close-resident" aria-label="Close resident profile" title="Close (Esc)">×</button></span></div><div class="agent-profile"><div class="agent-identity"><div class="pixel-avatar">${pixelAvatar(a)}</div><div><h3>${esc(a.name)}</h3><p>${esc(a.role)}</p><div class="agent-status">${activityBadge(a)}${bad?` · <span class="tag-warn">${bad} FLAGGED</span>`:''}${drillBadge}</div>${activityDetail(a)}</div></div><div class="agent-meta"><div><div class="meta-label">HOME FLOOR</div><div class="meta-value">L${String(a.level||SECTORS[a.floor].home).padStart(3,'0')} / ${esc(f.name)}</div></div><div><div class="meta-label">INTELLIGENCE</div><div class="meta-value">${a.provider==='demo'?'Demo resident, no model':esc(a.provider)+', live model'}${sh?' · Shadow: '+esc(sh.name):''}</div></div><div><div class="meta-label">MISSIONS</div><div class="meta-value">${a.chats.filter(m=>m.role==='assistant'&&!m.error).length} completed${st.cleaned?' · '+st.cleaned+'× cleaned':''}</div></div><div><div class="meta-label">PERMISSIONS</div><div class="meta-value">${a.tools.length?esc(a.tools.map(t=>permLabel(t)).join(' / ')):'Conversation only'}${a.memory?.length?' / '+a.memory.length+' notes':''}${a.whispers?.length?' / '+a.whispers.length+' whispers':''}</div></div></div></div>${browserBox(a)}<p class="agent-description"><span class="mini-caption">INSTRUCTIONS</span>${esc(a.instructions.slice(0,155))}${a.instructions.length>155?'...':''}</p><div class="agent-panel-actions">${button(icon('chat')+'Talk to '+esc(a.name),'chat',true,`data-id="${a.id}"`)}${button(icon('security'),'watch-agent',false,`data-id="${a.id}" aria-label="Watch on camera" title="Watch on camera"`)}${button('Letter','send-letter',false,`data-id="${a.id}" title="Dispatch a Porter on the stairs with a letter to ${esc(a.name)}"`)}${button('Drill','run-drill',false,`data-id="${a.id}" title="Run a Judicial compliance drill on ${esc(a.name)}"`)}${button('Clean','send-clean',false,`data-id="${a.id}" title="Send to clean the surface sensor and reset errors"`)}${button(icon('settings'),'edit-agent',false,`data-id="${a.id}" aria-label="Agent settings"`)}</div><div class="agent-residents"><div class="resident-caption"><span>NEARBY RESIDENTS</span><span>${state.agents.length} TOTAL</span></div><div class="resident-list">${nearby(a).map(x=>`<button class="resident" data-action="select-agent" data-id="${x.id}"><span class="tiny-avatar">${pixelAvatar(x)}</span>${esc(x.name)}<small>L${String(x.level||SECTORS[x.floor].home).padStart(3,'0')}</small><span class="dot ${x.status==='working'?'':'green'}"></span></button>`).join('')}</div></div>`;}
 function nearby(a){const level=a.level||SECTORS[a.floor].home;return state.agents.filter(x=>x.id!==a.id).map(x=>({x,d:Math.abs((x.level||SECTORS[x.floor].home)-level)})).sort((p,q)=>p.d-q.d).slice(0,4).map(p=>p.x);}
-function eventRow(e){return `<div class="activity-row"><span class="event-icon">${icon(e.type==='success'?'check':e.type==='workflow'?'workflows':e.type==='file'?'files':e.type==='error'?'close':e.type==='mission'?'chat':'activity')}</span><div><strong>${esc(e.title)}</strong><p>${esc(e.detail)}</p></div><time title="${esc(new Date(e.time).toLocaleString())}">${age(e.time)}</time></div>`;}
+function eventRow(e){return `<div class="activity-row"><span class="event-icon">${icon(e.type==='success'?'check':e.type==='workflow'?'workflows':e.type==='file'?'files':e.type==='error'?'close':e.type==='mission'||e.type==='talk'?'chat':'activity')}</span><div><strong>${esc(e.title)}</strong><p>${esc(e.detail)}</p></div><time title="${esc(new Date(e.time).toLocaleString())}">${age(e.time)}</time></div>`;}
 function agentCard(a){return `<article class="agent-card"><div class="agent-identity"><div class="pixel-avatar">${pixelAvatar(a)}</div><div><h3>${esc(a.name)}</h3><p>${esc(a.role)}</p></div></div><span class="floor-badge">L${String(a.level||SECTORS[a.floor].home).padStart(3,'0')} / ${esc(state.floors[a.floor].name).toUpperCase()}</span><p>${esc(a.instructions.slice(0,130))}</p><div class="agent-card-footer"><span class="provider-badge">${esc(a.provider)}</span><button class="btn small" data-action="edit-agent" data-id="${a.id}" aria-label="Edit ${esc(a.name)}">${icon('settings')}</button><button class="btn small" data-action="locate-agent" data-id="${a.id}" aria-label="Locate ${esc(a.name)}">${icon('silo')}</button><button class="btn small" data-action="watch-agent" data-id="${a.id}" aria-label="Watch ${esc(a.name)} on camera" title="Watch on camera">${icon('security')}</button><button class="btn small" data-action="agent-tests" data-id="${a.id}" aria-label="Tests of ${esc(a.name)}" title="Tests${a.candidate?': a change is held':a.evalWorse?': got worse':a.evals?.length?': '+(lastReport(a)?.score??''):''}">${icon('check')}${a.candidate||a.evalWorse?'<i class="test-dot"></i>':''}</button><button class="btn small" data-action="chat" data-id="${a.id}">${icon('chat')} Talk</button></div></article>`;}
 function filteredAgents(){return state.agents.filter(a=>(!floorFilter||a.floor===Number(floorFilter))&&(a.name+' '+a.role+' '+a.provider+' '+String(a.level).padStart(3,'0')).toLowerCase().includes(filter.toLowerCase()));}
 // The registry draws residents in pages, so 432 cards never land in the page at once.
@@ -367,7 +367,76 @@ const TALK_STEPS={
   whatsapp:['In developers.facebook.com, open your app with the WhatsApp product.','API Setup: copy the phone number ID, and make a permanent access token (a system user token with whatsapp_business_messaging).','App settings, Basic: copy the app secret.','WhatsApp, Configuration: paste the callback address and the verify token below, then subscribe to the messages field.'],
   teams:['In portal.azure.com, create an Azure Bot. Copy its Microsoft App ID, and make a client secret under Configuration, Manage Password.','Single tenant: also give the tenant ID. Multitenant: leave it empty.','Configuration: paste the messaging endpoint below.','Channels: add Microsoft Teams. Then add the bot to Teams with an app package (Developer Portal, Apps, New app, App features, Bot).']
 };
-function talkSection(){return `<h2 class="section-title">Talk channels</h2><div class="info-banner">${icon('chat')}<span><strong>Let a resident answer people outside SILO.</strong> Each conversation keeps its last turns for two hours, in memory only. Pick a resident made for it: its instructions shape every answer, and anyone who can write may ask. On the website and WhatsApp it never uses tools; in Slack and Teams only if you allow it, and changes still wait for your OK.</span></div><div id="talk-live" class="connection-grid"></div>`;}
+function talkSection(){return `<h2 class="section-title">Talk channels</h2><div class="info-banner">${icon('chat')}<span><strong>Let a resident answer people outside SILO.</strong> Every conversation is kept in the inbox, where your team reads it, answers in the resident's place and gives it back. The resident remembers the last turns of the last two hours. Pick a resident made for it: its instructions shape every answer, and anyone who can write may ask. On the website and WhatsApp it never uses tools; in Slack and Teams only if you allow it, and changes still wait for your OK.</span></div>${me?.role==='viewer'?'':`<div class="talk-inbox-bar">${button(icon('chat')+'Inbox <span id="talk-inbox-count">'+inboxBadge()+'</span>','talk-inbox')}</div>`}<div id="talk-live" class="connection-grid"></div>`;}
+// The talk inbox: every conversation of the talk channels. A person of your team takes one over, answers in the
+// resident's place and gives it back. The list and the open conversation follow new messages on their own.
+const inboxBadge=()=>{const c=state.talkInbox;return c?.waiting?`/ ${c.waiting} waiting`:c?.unread?`/ ${c.unread} new`:'';};
+const INBOX_ROLES={person:'',resident:'Resident',human:'Your team',notice:'SILO',note:'Note for your team'};
+let inboxView=null;
+function inboxItem(c){
+  const ch=inboxView.channels[c.kind]?.name||c.kind,waiting=c.mode==='person'&&c.lastRole==='person';
+  return `<button class="inbox-item${c.id===inboxView.open?' active':''}${c.unread?' unread':''}" data-action="inbox-open" data-id="${c.id}" aria-pressed="${c.id===inboxView.open}"><span class="inbox-who">${esc(c.who)}${c.unread?` <b>${c.unread}</b>`:''}</span><span class="inbox-meta">${esc(ch)} / ${age(c.updated)}${waiting?' / <em>WAITING</em>':c.mode==='person'?' / YOUR TEAM':''}</span><span class="inbox-last">${c.lastRole&&c.lastRole!=='person'?esc(INBOX_ROLES[c.lastRole]||'')+': ':''}${esc(c.last||'')}</span></button>`;
+}
+function inboxMessage(m,c){
+  const label=m.role==='person'?c.who:m.role==='resident'||m.role==='human'?`${INBOX_ROLES[m.role]}${m.by?', '+m.by:''}`:INBOX_ROLES[m.role];
+  return `<div class="inbox-msg r-${m.role}" data-n="${m.n}"><div class="inbox-msg-head">${esc(label)} / ${new Date(m.at).toLocaleString()}</div><div class="inbox-msg-text">${esc(m.text)}</div></div>`;
+}
+async function loadInboxList(more=false){
+  const v=inboxView;if(!v)return;const p=new URLSearchParams({limit:String(more?v.list.length+50:Math.max(50,v.list.length))});
+  if(v.q)p.set('q',v.q);if(v.mode)p.set('mode',v.mode);if(v.kind)p.set('kind',v.kind);
+  const seq=++v.seq,r=await api('/talk/inbox?'+p);if(inboxView!==v||seq!==v.seq||modalKind!=='inbox')return;
+  Object.assign(v,{list:r.conversations,total:r.total,channels:r.channels,settings:r.settings,sig:JSON.stringify(r.counts)});
+  $('#ib-items').innerHTML=r.conversations.length?r.conversations.map(inboxItem).join('')+(r.total>r.conversations.length?button(`Show more (${r.total-r.conversations.length})`,'inbox-more'):''):`<p class="mono-line">${v.q||v.mode||v.kind?'No conversation matches.':'No conversations yet. They appear here when someone writes to a talk channel.'}</p>`;
+  $('#ib-total').textContent=`${r.total} conversation${r.total===1?'':'s'}`;
+}
+function paintInboxConv(){
+  const v=inboxView,box=$('#ib-conv');if(!v||!box)return;const c=v.conv;
+  if(!c){box.innerHTML='<p class="mono-line inbox-empty">Pick a conversation.</p>';return;}
+  const ch=v.channels[c.kind]||{name:c.kind},off=!ch.enabled,team=c.mode==='person';
+  box.innerHTML=`<div class="inbox-head"><div><h3>${esc(c.who)}</h3><small>${esc(ch.name)} / since ${new Date(c.started).toLocaleString()} / <span class="inbox-mode ${team?'team':''}">${team?'WITH YOUR TEAM':'WITH THE RESIDENT'+(ch.agent?', '+esc(ch.agent).toUpperCase():'')}</span></small></div><div class="inbox-actions">${team?button('Give back to the resident','inbox-mode',false,'data-mode="resident"'):button('Take over','inbox-mode',false,'data-mode="person"')}${button(icon('close')+'Delete','inbox-delete')}</div></div>
+<div class="inbox-msgs" id="ib-msgs" role="log" aria-live="polite">${v.msgs.map(m=>inboxMessage(m,c)).join('')}</div>
+<form id="ib-form" class="inbox-reply">${off?`<p class="modal-error">${esc(ch.name)} is off, so nothing can be sent. Turn it on in IT / Uplink.</p>`:''}<label for="ib-text" class="tl-hidden">Your answer</label><textarea class="field" id="ib-text" rows="3" maxlength="4000" placeholder="Answer as your team. Ctrl+Enter sends." ${off?'disabled':''}></textarea><div class="inbox-reply-foot"><small>${team?'':'Sending takes the conversation over: the resident stops answering until you give it back. '}${c.kind==='widget'?'The visitor sees it within seconds while the chat is open on their page.':`It goes to ${esc(ch.name)} at once.`}</small><button type="submit" class="btn primary" ${off?'disabled':''}>Send</button></div><div class="modal-error" id="ib-error" role="alert"></div></form>`;
+  const list=$('#ib-msgs');list.scrollTop=list.scrollHeight;
+  $('#ib-text').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();$('#ib-form').requestSubmit();}};
+  $('#ib-form').onsubmit=async e=>{
+    e.preventDefault();const text=$('#ib-text').value.trim(),b=e.currentTarget.querySelector('[type=submit]');if(!text)return;
+    b.disabled=true;$('#ib-error').textContent='';
+    try{await post('/talk/inbox/'+c.id+'/reply',{text});if(inboxView!==v||v.conv?.id!==c.id)return;$('#ib-text').value='';await openInboxConv(c.id,true);loadInboxList().catch(()=>{});}
+    catch(err){if($('#ib-error'))$('#ib-error').textContent=err.message;}
+    finally{if(b.isConnected)b.disabled=!!off;}
+  };
+}
+// Opens a conversation, or brings the open one up to date with only the messages it does not have yet.
+async function openInboxConv(id,keep=false){
+  const v=inboxView;if(!v)return;
+  const same=keep&&v.conv?.id===id,after=same?v.msgs.at(-1)?.n||0:0;
+  if(!same){v.open=id;v.conv=null;v.msgs=[];$$('.inbox-item').forEach(b=>{const on=b.dataset.id===id;b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));});}
+  const r=await api(`/talk/inbox/${id}${after?'?after='+after:''}`);if(inboxView!==v||v.open!==id)return;
+  // A conversation that changed hands is drawn again, with what you were typing kept.
+  const was=v.conv,draft=same?$('#ib-text')?.value||'':'',fresh=r.messages.filter(m=>m.n>after);
+  v.conv=r.conversation;v.msgs=same?[...v.msgs,...fresh]:r.messages;
+  if(same&&$('#ib-msgs')&&was?.mode===v.conv.mode){if(fresh.length){const list=$('#ib-msgs'),down=list.scrollHeight-list.scrollTop-list.clientHeight<40;list.insertAdjacentHTML('beforeend',fresh.map(m=>inboxMessage(m,v.conv)).join(''));if(down)list.scrollTop=list.scrollHeight;}}
+  else{paintInboxConv();if(draft&&$('#ib-text'))$('#ib-text').value=draft;}
+  if(v.conv.unread)post('/talk/inbox/'+id+'/read',{}).catch(()=>{});
+}
+function openInbox(){
+  inboxView={q:'',mode:'',kind:'',list:[],total:0,channels:{},settings:{},open:null,conv:null,msgs:[],seq:0,sig:''};
+  const kinds=Object.entries(TALK_INFO).map(([k,[,name]])=>`<option value="${k}">${esc(name)}</option>`).join('');
+  showModal(`${modalHead('Talk inbox','Every conversation of the talk channels. Take one over to answer in the resident\'s place.')}<div class="modal-body inbox"><aside class="inbox-side"><div class="inbox-filters"><input class="field" type="search" id="ib-q" maxlength="200" placeholder="Search names and messages" aria-label="Search conversations" autocomplete="off"><select class="select" id="ib-mode" aria-label="Show"><option value="">All</option><option value="waiting">Waiting for your team</option><option value="unread">Not read yet</option><option value="person">With your team</option><option value="resident">With the resident</option></select><select class="select" id="ib-kind" aria-label="Channel"><option value="">Every channel</option>${kinds}</select></div><div class="inbox-items" id="ib-items"><p class="mono-line">Loading...</p></div><div class="inbox-foot"><small id="ib-total"></small>${ownerHere()?`<form id="ib-keep" class="inbox-keep"><label for="ib-days">Keep</label><input class="field" type="number" id="ib-days" min="1" max="365" required><span>days</span><button type="submit" class="btn small">Save</button></form>`:''}</div></aside><section class="inbox-conv" id="ib-conv"></section></div>`,'inbox');
+  paintInboxConv();
+  let timer;$('#ib-q').oninput=e=>{clearTimeout(timer);timer=setTimeout(()=>{inboxView.q=e.target.value.trim();loadInboxList().catch(err=>toast(err.message,true));},250);};
+  $('#ib-mode').onchange=e=>{inboxView.mode=e.target.value;loadInboxList().catch(err=>toast(err.message,true));};
+  $('#ib-kind').onchange=e=>{inboxView.kind=e.target.value;loadInboxList().catch(err=>toast(err.message,true));};
+  if($('#ib-keep'))$('#ib-keep').onsubmit=async e=>{e.preventDefault();try{const r=await post('/talk/inbox/settings',{keepDays:Number($('#ib-days').value)});inboxView.settings=r;toast(`Conversations are kept ${r.keepDays} day${r.keepDays===1?'':'s'}.`);loadInboxList().catch(()=>{});}catch(err){toast(err.message,true);}};
+  loadInboxList().then(()=>{if($('#ib-days'))$('#ib-days').value=inboxView.settings.keepDays||30;}).catch(err=>{$('#ib-items').innerHTML=`<p class="modal-error">${esc(err.message)}</p>`;});
+}
+// New messages anywhere: the list is loaded again, and the open conversation gets what it does not have yet.
+function syncInbox(){
+  const n=$('#talk-inbox-count');if(n)n.textContent=inboxBadge();
+  const v=inboxView;if(!v||!modal.open||modalKind!=='inbox')return;
+  const sig=JSON.stringify(state.talkInbox||{});if(sig===v.sig||v.busy)return;v.sig=sig;v.busy=true;
+  Promise.all([loadInboxList(),v.open?openInboxConv(v.open,true):null]).catch(()=>{}).finally(()=>{v.busy=false;});
+}
 let talkData=null;
 async function loadTalk(){
   const box=$('#talk-live');if(!box)return;
@@ -899,7 +968,7 @@ function briefText(){
 function briefDigest(){
   const since=Date.now()-864e5,recent=state.events.filter(e=>e.time>=since),list=recent.length?recent:state.events.slice(0,40);
   if(!list.length)return 'Nothing happened yet.';
-  const names={mission:['mission','missions'],workflow:['workflow event','workflow events'],error:['error','errors'],success:['success','successes'],file:['file','files'],agent:['resident change','resident changes'],system:['system event','system events']};
+  const names={mission:['mission','missions'],workflow:['workflow event','workflow events'],error:['error','errors'],success:['success','successes'],file:['file','files'],agent:['resident change','resident changes'],system:['system event','system events'],talk:['talk message','talk messages']};
   const count=new Map();for(const e of list){const k=names[e.type]?e.type:'other';count.set(k,(count.get(k)||0)+1);}
   const parts=[...count].sort((a,b)=>b[1]-a[1]).map(([k,n])=>n+' '+(names[k]?names[k][n===1?0:1]:n===1?'other event':'other events'));
   const lines=[(recent.length?'In the last day: ':'Recently: ')+parts.join(', ')+'.'];
@@ -1862,7 +1931,9 @@ const actions={
   'watch-courier':el=>{const id=courierFor(el.dataset.id);if(!id){toast('The courier has already delivered the folder.');return;}modal.close();navigate('silo');world.followCourier(id);},
   'cam-track':el=>trackResident(el.dataset.id),'cam-point':el=>pointCamera(el.dataset.id),'watch-agent':el=>{navigate('security');pointCamera(el.dataset.id);},'cam-untrack':()=>{trackId=null;if(feedWall)feedWall.track=null;syncSecurity();},
   'clean-lens':()=>{world?.cleanLens?.();toast('The lens is clean. The picture is clear again.');syncSecurity();},
-  'view-run':el=>{const r=state.runs.find(r=>r.id===el.dataset.id);if(r)openRun(r);else toast('That run is no longer kept.',true);},'talk-open':el=>openTalk(el.dataset.kind),
+  'view-run':el=>{const r=state.runs.find(r=>r.id===el.dataset.id);if(r)openRun(r);else toast('That run is no longer kept.',true);},'talk-open':el=>openTalk(el.dataset.kind),'talk-inbox':()=>openInbox(),'inbox-open':el=>openInboxConv(el.dataset.id).catch(e=>toast(e.message,true)),'inbox-more':()=>loadInboxList(true).catch(e=>toast(e.message,true)),
+'inbox-mode':async el=>{const v=inboxView;if(!v?.conv)return;try{v.conv=await post('/talk/inbox/'+v.conv.id+'/mode',{mode:el.dataset.mode});toast(el.dataset.mode==='person'?'Taken over. The resident does not answer until you give it back.':'Given back to the resident.');await openInboxConv(v.conv.id);loadInboxList().catch(()=>{});}catch(e){toast(e.message,true);}},
+'inbox-delete':async()=>{const v=inboxView,c=v?.conv;if(!c||!confirm(`Delete the conversation with ${c.who} and its ${c.count} message${c.count===1?'':'s'}? This cannot be undone.`))return;try{await api('/talk/inbox/'+c.id,{method:'DELETE'});v.open=null;v.conv=null;v.msgs=[];paintInboxConv();await loadInboxList();toast('Conversation deleted.');}catch(e){toast(e.message,true);}},
   'table-new':()=>openTableColumns(null),'table-import':el=>openTableImport(el.dataset.id?tableOf(el.dataset.id):null),'table-open':el=>openTable(el.dataset.id),
   'table-row':el=>openTableRow(el.dataset.row),'table-row-new':()=>openTableRow(null),'table-more':()=>loadTableRows(true),'table-back':()=>openTable(tableView.id,true),
   'table-columns':()=>openTableColumns(tableOf(tableView.id)),'table-csv':()=>downloadTable(tableOf(tableView.id)),
