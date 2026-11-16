@@ -5,17 +5,29 @@ import https from 'node:https';
 import dns from 'node:dns';
 import net from 'node:net';
 
+// An IPv6 address as its eight groups, written any way (::, leading zeros, an IPv4 address at the end), or null.
+function groups6(v){
+  const dotted=v.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if(dotted){if(!net.isIPv4(dotted[2]))return null;const [a,b,c,d]=dotted[2].split('.').map(Number);v=dotted[1]+((a<<8)|b).toString(16)+':'+((c<<8)|d).toString(16);}
+  const halves=v.split('::');if(halves.length>2)return null;
+  const part=s=>s?s.split(':'):[],head=part(halves[0]),tail=halves.length===2?part(halves[1]):[];
+  const fill=halves.length===2?8-head.length-tail.length:0;if(fill<0||(halves.length===1&&head.length!==8))return null;
+  const all=[...head,...Array(fill).fill('0'),...tail];
+  return all.every(g=>/^[0-9a-f]{1,4}$/.test(g))?all.map(g=>parseInt(g,16)):null;
+}
+const v4Of=(hi,lo)=>`${hi>>8}.${hi&255}.${lo>>8}.${lo&255}`;
 export function privateAddress(ip){
-  if(net.isIPv4(ip)){const [a,b]=ip.split('.').map(Number);return a===0||a===10||a===127||(a===169&&b===254)||(a===172&&b>=16&&b<=31)||(a===192&&b===168)||(a===100&&b>=64&&b<=127)||(a===198&&(b===18||b===19))||a>=224;}
-  const v=ip.toLowerCase().replace(/^\[|\]$/g,'');
-  const v4=v.startsWith('::ffff:')?v.slice(7):v.startsWith('64:ff9b::')?v.slice(9):null;
-  if(v4!==null){
-    if(net.isIPv4(v4))return privateAddress(v4);
-    const m=v4.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if(m){const hi=parseInt(m[1],16),lo=parseInt(m[2],16);return privateAddress(`${hi>>8}.${hi&255}.${lo>>8}.${lo&255}`);}
-    return true;
-  }
-  return v==='::'||v==='::1'||/^f[cd]/.test(v)||/^fe[89ab]/.test(v)||v.startsWith('ff')||v.startsWith('64:ff9b:');
+  if(net.isIPv4(ip)){const [a,b,c]=ip.split('.').map(Number);return a===0||a===10||a===127||(a===169&&b===254)||(a===172&&b>=16&&b<=31)||(a===192&&b===168)||(a===192&&b===0&&c===0)||(a===100&&b>=64&&b<=127)||(a===198&&(b===18||b===19))||a>=224;}
+  const g=groups6(String(ip).toLowerCase().replace(/^\[|\]$/g,'').replace(/%.*$/,''));
+  if(!g)return true;
+  const zero=n=>g.slice(0,n).every(x=>x===0);
+  // An IPv4 address inside: mapped (::ffff:a.b.c.d), the old compatible form (::a.b.c.d, ::1 and :: among them) and NAT64.
+  if(zero(5)&&g[5]===0xffff)return privateAddress(v4Of(g[6],g[7]));
+  if(zero(6))return true;
+  if(g[0]===0x64&&g[1]===0xff9b)return g[2]!==0||g.slice(3,6).some(Boolean)?true:privateAddress(v4Of(g[6],g[7]));
+  if(g[0]===0x2002)return privateAddress(v4Of(g[1],g[2]));
+  // ::/8 reserved, fc00::/7 unique local, fe80::/10 link-local, fec0::/10 old site-local, ff00::/8 multicast, 2001:db8::/32 examples.
+  return g[0]<0x100||(g[0]&0xfe00)===0xfc00||(g[0]&0xffc0)===0xfe80||(g[0]&0xffc0)===0xfec0||(g[0]&0xff00)===0xff00||(g[0]===0x2001&&g[1]===0xdb8);
 }
 const refused=()=>Object.assign(new Error('Pages on this computer or the local network cannot be read.'),{code:'EPRIVATE'});
 function lookupFor(allowLocal){

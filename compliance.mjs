@@ -2,11 +2,19 @@
 // decided, what the guardrails caught, who changed what) next to how SILO is set up now. It gathers evidence for a
 // GDPR record or an EU AI Act review; it is not legal advice and it does not certify anything.
 
-// Where a model call went, from the host it was sent to.
+import {isIP} from 'node:net';
+import {privateAddress} from './web-reader.mjs';
+
+// Where a model call went, from the host it was sent to. An address is read as an address (so a name like fdic.gov is
+// not taken for an fd00:: one); a name counts as your network only with a local ending.
 export function placeOf(host) {
-  const raw = String(host || '').toLowerCase(), h = raw.startsWith('[') ? raw.slice(1, raw.indexOf(']')) : raw.replace(/:\d+$/, '');
-  if (/^(localhost|127\.|::1$|0\.0\.0\.0$)/.test(h)) return 'this computer';
-  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fd|fe80:)|\.local$|\.lan$|\.internal$/.test(h)) return 'your network';
+  const raw = String(host || '').toLowerCase(), h = (raw.startsWith('[') ? raw.slice(1, raw.indexOf(']')) : raw.replace(/:\d+$/, '')).replace(/\.$/, '');
+  if (isIP(h)) {
+    if (/^(127\.|0\.0\.0\.0$|::1$|::ffff:127\.|::ffff:7f)/.test(h)) return 'this computer';
+    return privateAddress(h) ? 'your network' : 'internet';
+  }
+  if (h === 'localhost' || h.endsWith('.localhost')) return 'this computer';
+  if (/\.(local|lan|internal|home\.arpa|intranet|corp)$/.test(h) || (h && !h.includes('.'))) return 'your network';
   return 'internet';
 }
 

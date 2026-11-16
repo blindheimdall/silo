@@ -38,6 +38,10 @@ test('placeholders go out and the real values come back, also cut in pieces of a
   const convo=m.messages([{role:'user',content:'ana.pop@example.ro'},{role:'assistant',content:'',calls:[{id:'c1',name:'gmail',args:{to:'ana.pop@example.ro'}}]},{role:'tool',results:[{id:'c1',name:'gmail',content:'sent to ana.pop@example.ro'}]}]);
   assert.doesNotMatch(JSON.stringify(convo),/ana\.pop/);assert.equal(convo[1].calls[0].id,'c1');
   assert.match(m.instructions('Be brief.'),/placeholders/);assert.equal(new Masker(ALL).instructions('Be brief.'),'Be brief.','no note when nothing was hidden');
+  // Words to hide that are also placeholder names never cut into a placeholder.
+  const w=new Masker(ALL,{terms:['Secret','Email'],secrets:['held-secret-123456']}),out=w.mask('Secret: held-secret-123456, and [EMAIL_000000] from the model.');
+  assert.match(out,/^\[TERM_[0-9a-f]{6}\]: \[SECRET_[0-9a-f]{6}\], and \[EMAIL_000000\] from the model\.$/);
+  assert.equal(w.unmask(out),'Secret: held-secret-123456, and [EMAIL_000000] from the model.');
 });
 
 test('finds orders in English and Romanian, and not in ordinary text',()=>{

@@ -19,6 +19,9 @@ test('where a host is, and a model call as an audit detail and back',()=>{
   assert.equal(placeOf('127.0.0.1:11434'),'this computer');assert.equal(placeOf('localhost'),'this computer');assert.equal(placeOf('[::1]:8080'),'this computer');
   assert.equal(placeOf('192.168.1.20:1234'),'your network');assert.equal(placeOf('gpu.lan'),'your network');assert.equal(placeOf('172.20.0.3'),'your network');
   assert.equal(placeOf('api.openai.com'),'internet');assert.equal(placeOf('172.40.0.3'),'internet');
+  // A name is not read as an address: fdic.gov is on the internet, [fd00::1] and a Tailscale address are not.
+  assert.equal(placeOf('fdic.gov'),'internet');assert.equal(placeOf('fd-ai.com:443'),'internet');
+  assert.equal(placeOf('[fd00::1]:80'),'your network');assert.equal(placeOf('100.101.1.2:11434'),'your network');assert.equal(placeOf('gpu-box:11434'),'your network');
   const d=modelDetail({host:'api.openai.com',input:120,output:30,hidden:{email:2,phone:1},from:'workflow run',test:true});
   assert.equal(d,'host=api.openai.com in=120 out=30 hidden=email:2,phone:1 from=workflow_run test');
   assert.deepEqual(readModelDetail(d),{host:'api.openai.com',input:120,output:30,hidden:{email:2,phone:1},from:'workflow_run',test:true});

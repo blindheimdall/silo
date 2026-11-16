@@ -1402,7 +1402,7 @@ function openBuilder(){
     builderPick=$('#b-agent').value;builderTest=$('#b-test').checked;
     submit.disabled=true;submit.textContent=builderTest?'Drafting and testing...':'Drafting...';$('#form-error').textContent='';
     // While it works: how long, and which test run is going.
-    const began=Date.now(),line=$('#b-progress'),tick=()=>{if(!line.isConnected)return clearInterval(timer);const s=Math.round((Date.now()-began)/1000),run=builderTest&&state.runs.find(x=>x.trigger==='test'&&x.started>=began-1000&&x.status==='running');line.hidden=false;line.textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')} · ${run?`Testing ${run.name}: step ${Math.min(run.total,(run.at??run.steps.length)+1)} of ${run.total}`:'Writing the draft'}`;},timer=setInterval(tick,1000);tick();
+    const began=Date.now(),line=$('#b-progress'),tick=()=>{if(!line.isConnected)return clearInterval(timer);const s=Math.round((Date.now()-began)/1000),run=builderTest&&state.runs.find(x=>x.trigger==='test'&&String(x.workflowId).startsWith('draft-')&&x.started>=began-1000&&x.status==='running');line.hidden=false;line.textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')} · ${run?`Testing ${run.name}: step ${Math.min(run.total,(run.at??run.steps.length)+1)} of ${run.total}`:'Writing the draft'}`;},timer=setInterval(tick,1000);tick();
     try{
       const r=await api('/workflows/draft',{method:'POST',body:{text:$('#b-text').value.trim(),agentId:builderPick,test:builderTest,...($('#b-change')?.checked&&{current:lastDraft})},signal:ctl.signal});
       clearInterval(timer);modal.removeEventListener('close',stop);if(!modal.open||modalKind!=='builder')return;

@@ -11,6 +11,11 @@ test('turns a web page into readable text',()=>{
 test('knows which addresses are local',()=>{
   for(const ip of ['127.0.0.1','10.1.2.3','192.168.0.5','172.20.1.1','169.254.1.1','::1','fd00::1','::ffff:127.0.0.1','::ffff:7f00:1','[::ffff:7f00:1]','::ffff:a9fe:a9fe','64:ff9b::7f00:1','0.0.0.0'])assert.ok(privateAddress(ip),ip);
   for(const ip of ['8.8.8.8','1.1.1.1','2606:4700::1111','::ffff:808:808'])assert.ok(!privateAddress(ip),ip);
+  // Other ways to write an address on this computer or a private network: the old IPv4-compatible form (as URL writes
+  // it too), every zero written out, site-local, a zone, 6to4 around a private address, and nothing that parses.
+  for(const ip of ['::7f00:1','::127.0.0.1','0:0:0:0:0:0:0:1','0000::0001','fec0::1','fe80::1%eth0','ff02::1','64:ff9b:1::1','2002:7f00:1::1','2001:db8::1','192.0.0.8','1:2:3:4:5:6:7:8:9','nonsense'])assert.ok(privateAddress(ip),ip);
+  for(const ip of ['64:ff9b::8.8.8.8','2002:808:808::1','2001:4860:4860::8888','::ffff:8.8.8.8'])assert.ok(!privateAddress(ip),ip);
+  assert.ok(privateAddress(new URL('http://[::127.0.0.1]/').hostname),'as a URL writes it');
 });
 test('reads a page, follows redirects and refuses local addresses',async t=>{
   const server=http.createServer((req,res)=>{

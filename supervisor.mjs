@@ -52,7 +52,8 @@ function start() {
   child = spawn(process.execPath, [SERVER], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true });
   writePid();
   log(`Starting SILO (process ${child.pid}).`);
-  const lines = (stream, onLine) => { let buf = ''; stream.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); } }); };
+  // As text: a letter cut between two chunks is put back together, not written as two broken bytes.
+  const lines = (stream, onLine) => { let buf = ''; stream.setEncoding('utf8'); stream.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); } }); };
   lines(child.stdout, l => {
     log(l);
     if (!ready && l.includes('SILO is ready')) {

@@ -46,8 +46,16 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // Every piece of personal data in a text: {kind, value, index}, in order, without overlaps. terms are words the owner
 // wants hidden as they are (client names, project names), found whole and without case.
 export function findPii(text, kinds = Object.keys(PII_KINDS), terms = []) {
+  // found stays sorted and never overlaps, so a new match only has to be checked against its two neighbours.
   const t = String(text ?? ''), found = [];
-  const take = (kind, value, index) => { if (!found.some(f => index < f.index + f.value.length && f.index < index + value.length)) found.push({kind, value, index}); };
+  const take = (kind, value, index) => {
+    let lo = 0, hi = found.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (found[mid].index < index) lo = mid + 1; else hi = mid; }
+    const before = found[lo - 1], after = found[lo];
+    if (before && before.index + before.value.length > index) return;
+    if (after && after.index < index + value.length) return;
+    found.splice(lo, 0, {kind, value, index});
+  };
   for (const [kind, re, ok] of FINDERS) {
     if (!kinds.includes(kind)) continue;
     for (const m of t.matchAll(re)) if (!ok || ok(m[0])) take(kind, m[0], m.index);
@@ -57,7 +65,7 @@ export function findPii(text, kinds = Object.keys(PII_KINDS), terms = []) {
     const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.map(escapeRe).sort((a, b) => b.length - a.length).join('|')})(?![\\p{L}\\p{N}])`, 'giu');
     for (const m of t.matchAll(re)) take('term', m[0], m.index);
   }
-  return found.sort((a, b) => a.index - b.index);
+  return found;
 }
 
 const SALT = randomBytes(16);
@@ -87,10 +95,12 @@ export class Masker {
     for (const s of this.secrets) if (t.includes(s)) t = t.split(s).join(this.token('secret', s));
     const found = findPii(t, this.kinds, this.terms);
     if (!found.length) return t;
+    // Placeholders already in the text (a key hidden above, or one the model wrote back) are left whole: a word to
+    // hide like "Secret" must not cut into [SECRET_3fa9c1].
+    const held = [...t.matchAll(TOKEN)].map(m => [m.index, m.index + m[0].length]);
     let out = '', at = 0;
     for (const f of found) {
-      // A placeholder already in the text (the model wrote it back earlier) is left alone.
-      if (/^\[[A-Z]+_[0-9a-f]{6}\]$/.test(f.value)) continue;
+      if (held.some(([a, b]) => f.index < b && a < f.index + f.value.length)) continue;
       out += t.slice(at, f.index) + this.token(f.kind, f.value); at = f.index + f.value.length;
     }
     return out + t.slice(at);
