@@ -403,7 +403,7 @@ async function startSaved(run,undo,{since,also=[]}={}){
   startDrive(run);
 }
 // The audit log keeps only the title of an event: details can quote what someone wrote to a resident.
-function event(title,detail='',type='system'){auditNote({action:'event.'+type,actor:'SILO',target:title});stateRev++;state.events.unshift({id:id(),time:Date.now(),title,detail,type});state.events=state.events.slice(0,300);}
+function event(title,detail='',type='system'){auditNote({action:'event.'+type,actor:'SILO',target:title});stateRev++;state.events.unshift({id:id(),time:Date.now(),title,detail,type});if(state.events.length>300)state.events.length=300;}
 // Guardrails at work: what they stopped or flagged is kept (the last 40) and goes to the audit log. Hidden personal
 // data is only counted, since it happens on every call.
 const guardTally={calls:0};
@@ -3717,6 +3717,7 @@ function knowledgeDeps(){
 // One sync of a source at a time; asking again while it runs gets the same one.
 function syncKnowledge(src){
   if(knowledgeBusy.has(src.id))return knowledgeBusy.get(src.id);
+  const ref=src.ref;
   const run=(async()=>{
     const started=Date.now(),svc=SOURCE_KINDS[src.kind].service;stateRev++;
     try{
@@ -3733,6 +3734,8 @@ function syncKnowledge(src){
       src.last={at:Date.now(),ms:Date.now()-started,ok:false,error:String(e.message).slice(0,300),docs:src.last?.docs||0};
       event(`Knowledge sync failed: ${src.name}`,e.message,'error');
     }finally{knowledgeBusy.delete(src.id);stateRev++;await persist().catch(()=>{});}
+    // Its address changed while it synced: that sync read the old one, so the new one is read now.
+    if(src.ref!==ref&&state.knowledge.sources.includes(src))return syncKnowledge(src);
     return src.last;
   })();
   knowledgeBusy.set(src.id,run);return run;
@@ -7136,7 +7139,7 @@ const server=http.createServer(async(req,res)=>{
         return send(res,200,{url:st.url});
       }
       if(route==='/api/audit'&&req.method==='GET'){
-        const q=url.searchParams,from=Date.parse(q.get('from')||'')||Date.now()-30*86400000,to=Date.parse(q.get('to')||'')||Date.now();
+        const q=url.searchParams,from=Date.parse(q.get('from')||'')||Date.now()-30*86400000,to=Date.parse(q.get('to')||'')||undefined;
         const records=await audit.read({from,to,filter:string(q.get('q')||'',100),limit:Math.min(500,Number(q.get('limit'))||100)});
         return send(res,200,{records:records.reverse(),months:state.settings.audit.months,size:audit.size(),error:audit.error,keyed:!!secrets.get('audit')});
       }

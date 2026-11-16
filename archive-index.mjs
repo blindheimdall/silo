@@ -64,8 +64,11 @@ export class ArchiveIndex{
     if(this.embed){
       const missing=Object.entries(data.files).flatMap(([name,f])=>f.chunks.filter(c=>!c.vq).map(c=>({name,c}))).slice(0,2000);
       const batches=[];for(let i=0;i<missing.length;i+=64)batches.push(missing.slice(i,i+64));
+      // An embedding model that cannot be reached leaves the vectors for the next update: the text read so far is kept
+      // and searching goes on by keywords.
       for(let i=0;i<batches.length;i+=3){
-        const group=batches.slice(i,i+3),results=await Promise.all(group.map(b=>this.embed(b.map(m=>m.name+'\n'+m.c.text))));
+        const group=batches.slice(i,i+3);let results;
+        try{results=await Promise.all(group.map(b=>this.embed(b.map(m=>m.name+'\n'+m.c.text))));}catch{break;}
         group.forEach((batch,g)=>{const vecs=results[g]||[];batch.forEach((m,k)=>{if(Array.isArray(vecs[k])&&vecs[k].length)m.c.vq=packVector(vecs[k]);});});changed=true;
       }
     }
@@ -77,13 +80,16 @@ export class ArchiveIndex{
     const data=await this.update(),q=[...new Set(words(query).filter(w=>!STOP.has(w)))];
     const all=Object.entries(data.files).flatMap(([name,f])=>f.chunks.map(c=>({name,meta:f.meta,...c})));if(!all.length)return [];
     // BM25 over the pieces.
-    const N=all.length,avg=all.reduce((n,c)=>n+c.terms.__len,0)/N,df=Object.fromEntries(q.map(w=>[w,all.filter(c=>Object.hasOwn(c.terms,w)).length]));
+    const N=all.length,df=Object.fromEntries(q.map(w=>[w,0]));let len=0;
+    for(const c of all){len+=c.terms.__len;for(const w of q)if(Object.hasOwn(c.terms,w))df[w]++;}
+    const avg=len/N;
     let qvec=null;if(this.embed&&all.some(c=>c.vq)){try{qvec=(await this.embed([query]))[0];}catch{qvec=null;}}
     const scored=all.map(c=>{
       let bm=0;for(const w of q){const tf=Object.hasOwn(c.terms,w)?c.terms[w]:0;if(!tf)continue;const idf=Math.log(1+(N-df[w]+.5)/(df[w]+.5));bm+=idf*tf*2.2/(tf+1.2*(.25+.75*c.terms.__len/avg));}
       const v=qvec&&vectorOf(c);return {c,bm,sim:v?cosine(qvec,v):0};
     });
-    const top=Math.max(...scored.map(s=>s.bm),1e-9);
+    // A loop, not Math.max(...list): a large Archive has more pieces than a call can take arguments.
+    let top=1e-9;for(const s of scored)if(s.bm>top)top=s.bm;
     for(const s of scored)s.score=qvec?.45*(s.bm/top)+.55*Math.max(0,s.sim):s.bm/top;
     return scored.filter(s=>s.score>0.05).sort((a,b)=>b.score-a.score).slice(0,k).map(s=>({name:s.c.name,start:s.c.start,end:s.c.end,text:s.c.text,score:Math.round(s.score*100)/100,meaning:!!qvec,...(s.c.meta?.title&&{title:s.c.meta.title}),...(s.c.meta?.source&&{source:s.c.meta.source})}));
   }

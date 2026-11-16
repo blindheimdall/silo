@@ -19,13 +19,15 @@ const one = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 
 export const slugOf = t => String(t || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 48).replace(/-+$/, '');
 // A file name from a title: readable, safe on every system, and never the same as another one of the source.
-// Windows keeps some names for devices, so a document called Con or Aux gets a mark in front.
-export function fileNameFor(title, used, max = 80) {
+// Windows keeps some names for devices, so a document called Con or Aux gets a mark in front. used holds whole paths
+// under the source (lower case), so dir is the folder the name goes in, like "policies/" or "".
+export function fileNameFor(title, used, max = 80, dir = '') {
   let base = String(title || 'untitled').normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').slice(0, max).replace(/^[.\s]+|[.\s]+$/g, '') || 'untitled';
   if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(base)) base = '_' + base;
+  const key = n => (dir + n).toLowerCase();
   let name = base + '.md', n = 2;
-  while (used.has(name.toLowerCase())) name = `${base} ${n++}.md`;
-  used.add(name.toLowerCase());
+  while (used.has(key(name))) name = `${base} ${n++}.md`;
+  used.add(key(name));
   return name;
 }
 
@@ -170,7 +172,9 @@ export async function listDocs(src, deps) {
     }
   } else {
     let list = src.ref.split('\n').map(url => ({ url, modified: '' }));
-    if (list.length === 1 && /\.xml(\?|$)/i.test(list[0].url)) list = sitemapUrls((await deps.readPage(list[0].url, { raw: true, maxChars: 2_000_000 })).text).slice(0, MAX_WEB);
+    // A sitemap is written by the site: an entry that is not an http or https address is left out, not a failed sync.
+    const web = u => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && !x.username && !x.password; } catch { return false; } };
+    if (list.length === 1 && /\.xml(\?|$)/i.test(list[0].url)) list = sitemapUrls((await deps.readPage(list[0].url, { raw: true, maxChars: 2_000_000 })).text).filter(x => web(x.url)).slice(0, MAX_WEB);
     for (const { url, modified } of list) {
       // A web page has no reliable date, so what it says decides: read() is cheap to compare by its hash.
       let got = null;
@@ -200,7 +204,7 @@ export async function syncSource(src, manifest, deps) {
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
       // The folders under the source stay, as long as the whole path fits the 180 characters a workspace path may have.
       const sub = d.path.map(p => fileNameFor(p, new Set(), 40).slice(0, -3)).join('/'), room = 175 - root.length - 1;
-      const file = was?.file || (sub && sub.length + 50 <= room ? sub + '/' + fileNameFor(title, used, Math.min(80, room - sub.length - 5)) : fileNameFor(title, used, Math.min(80, room - 4)));
+      const file = was?.file || (sub && sub.length + 50 <= room ? sub + '/' + fileNameFor(title, used, Math.min(80, room - sub.length - 5), sub + '/') : fileNameFor(title, used, Math.min(80, room - 4)));
       if (was && was.hash === hash && await deps.exists(`${root}/${was.file}`)) { next[d.id] = { ...was, modified: d.modified || was.modified }; out.kept++; continue; }
       await deps.write(`${root}/${file}`, withHeader({ title, url: d.url, modified: d.modified }, text));
       next[d.id] = { file, modified: d.modified, hash };

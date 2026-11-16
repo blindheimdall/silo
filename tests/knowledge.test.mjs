@@ -74,6 +74,35 @@ test('OneDrive folders are walked, pages followed, and only documents kept',asyn
   assert.ok(!asked.some(u=>/items\/(2|3)\/content/.test(u)),'pictures and files too big are not read');
 });
 
+test('a new document in a folder never takes the file of another, and a bad sitemap entry is left out',async()=>{
+  const files=new Map();
+  let list=[{id:'1',name:'Rules.md',file:{},lastModifiedDateTime:'t1',size:5}];
+  const deps={base:()=>'G',extract:async b=>b.toString(),write:async(p,t)=>{files.set(p,t);},remove:async p=>{files.delete(p);},exists:async p=>files.has(p),
+    request:async(svc,url,o={})=>o.raw?{buf:Buffer.from('text of '+url.match(/items\/(\w+)\/content/)[1])}:url.includes('/items/9/')?{value:list}:{value:[{id:'9',name:'Team',folder:{}}]}};
+  const src={kind:'onedrive',folder:'od',ref:'/'};
+  let r=await syncSource(src,{},deps);
+  assert.equal(r.manifest['1'].file,'Team/Rules.md');
+  list=[...list,{id:'2',name:'Rules.txt',file:{},lastModifiedDateTime:'t1',size:5}];
+  r=await syncSource(src,r.manifest,deps);
+  assert.equal(r.manifest['1'].file,'Team/Rules.md');assert.equal(r.manifest['2'].file,'Team/Rules 2.md');
+  assert.equal(files.get('knowledge/od/Team/Rules.md').trim().split('\n').at(-1),'text of 1','the first copy is not written over');
+  const xml='<urlset><url><loc>javascript:alert(1)</loc></url><url><loc>not an address</loc></url><url><loc>https://a.example/ok</loc></url></urlset>';
+  const web={...deps,readPage:async(url,o)=>o?.raw?{text:xml}:{title:'Ok',text:'page '+url}};
+  r=await syncSource({kind:'web',folder:'w',ref:'https://a.example/sitemap.xml'},{},web);
+  assert.equal(r.docs,1);assert.equal(r.added,1);
+});
+
+test('search goes on by keywords when the embedding model cannot be reached',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-archive-'));
+  try{
+    const docs={'a.md':'The office opens at nine.'};
+    const idx=new ArchiveIndex(path.join(dir,'index.json'),{list:async()=>[{name:'a.md',size:1,mtime:1}],read:async n=>docs[n],embed:async()=>{throw Error('connect ECONNREFUSED');},model:'m'});
+    const hits=await idx.search('office opens');
+    assert.equal(hits[0]?.name,'a.md');assert.equal(hits[0].meaning,false);
+    assert.ok(existsSync(path.join(dir,'index.json')),'what was read is kept');
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
 test('small vectors give the same order',()=>{
   // The same numbers every time, so a near tie cannot make the test flaky.
   let seed=7;const next=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648*2-1;

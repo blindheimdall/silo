@@ -36,9 +36,10 @@ export class AuditLog {
   }
   // Adds a record. Returns it once it is on disk.
   record(r) {
+    // The time is when it happened, not when the write behind others gets its turn.
+    const time = Date.now();
     const job = this.queue.then(async () => {
       await this.ready;
-      const time = Date.now();
       const body = {
         seq: this.seq + 1, time: new Date(time).toISOString(), action: clip(r.action, 80) || 'unknown', outcome: ['ok', 'denied', 'failed'].includes(r.outcome) ? r.outcome : 'ok',
         actor: clip(r.actor, 120) || 'system', role: clip(r.role, 20), ip: clip(r.ip, 64), via: clip(r.via, 20), target: clip(r.target, 200), detail: clip(r.detail, 500), status: Number.isInteger(r.status) ? r.status : undefined, prev: this.prev,
@@ -54,8 +55,9 @@ export class AuditLog {
     return job;
   }
   // Records from..to (ms), newest last. filter is matched against action, actor, target and detail.
-  async read({ from = 0, to = Date.now(), filter = '', limit = 100000 } = {}) {
-    await this.queue; const out = [], f = String(filter || '').toLowerCase();
+  // With no end given it reads up to now, once the records still being written are in.
+  async read({ from = 0, to, filter = '', limit = 100000 } = {}) {
+    await this.queue; to ??= Date.now(); const out = [], f = String(filter || '').toLowerCase();
     const first = monthOf(from), last = monthOf(to);
     for (const n of await this.files()) {
       const m = n.slice(6, 13); if (m < first || m > last) continue;
@@ -63,10 +65,11 @@ export class AuditLog {
         if (!line) continue; let r; try { r = JSON.parse(line); } catch { continue; }
         const t = Date.parse(r.time); if (t < from || t > to) continue;
         if (f && ![r.action, r.actor, r.target, r.detail, r.ip].some(x => String(x || '').toLowerCase().includes(f))) continue;
-        out.push(r); if (out.length > limit) out.shift();
+        // The oldest go in batches, not one shift (a move of the whole list) per record.
+        out.push(r); if (out.length >= limit * 2) out.splice(0, out.length - limit);
       }
     }
-    return out;
+    return out.length > limit ? out.slice(-limit) : out;
   }
   async recent(n = 50) { return (await this.read({ from: Date.now() - 62 * 86400000 })).slice(-n).reverse(); }
   // Walks the whole chain. The first record kept may point at an older one that was removed by the keep period.

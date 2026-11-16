@@ -117,8 +117,9 @@ class Space extends EventEmitter {
       this.host.log(this.tag + l);
     });
     lines(child.stderr, l => { this.host.log(this.tag + '! ' + l); if (/EADDRINUSE/.test(l)) busy = true; if (l.trim()) this.error = l.trim().slice(0, 300); });
-    child.once('error', e => { if (child.exitCode === null && !child.pid) this.down(1, null, false, e.message); });
-    child.once('exit', (code, signal) => this.down(code, signal, busy));
+    // Node may send both error and exit for one child: it counts once.
+    child.once('error', e => { if (this.proc === child && child.exitCode === null && !child.pid) this.down(1, null, false, e.message); });
+    child.once('exit', (code, signal) => { if (this.proc === child) this.down(code, signal, busy); });
   }
   down(code, signal, busy, why = '') {
     if (why) this.error = why;
