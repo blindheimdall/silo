@@ -1198,7 +1198,7 @@ export class SiloWorld3D{
       bridge(end,6.2,pose.radius);arc(end,pose.radius,Math.PI,Math.PI+wrapAngle(pose.angle-Math.PI));
     }
     legs.push({kind:'hand',level:end,time:1.8});if(delay>0)legs.unshift({kind:'wait',level:start,time:delay});
-    const entry={id,sprite,material,map,folder,tag,ghost,toId,fromId,legs,leg:0,t:0,walked:0,frame:-1,flip:null,level:start,pose:null,courier:true,finalArc:legs.map(l=>l.kind).lastIndexOf('arc')};
+    const entry={id,sprite,material,map,folder,tag,ghost,toId,fromId,label:label||('Folder for '+to.agent.name),legs,leg:0,t:0,walked:0,frame:-1,flip:null,level:start,pose:null,courier:true,finalArc:legs.map(l=>l.kind).lastIndexOf('arc')};
     this.couriers.set(id,entry);this.placeCourier(entry);return id;
   }
   removeCourier(id){
