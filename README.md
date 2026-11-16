@@ -45,6 +45,8 @@ Open [`docs/product/index.html`](docs/product/index.html) from a checkout to ste
 | :--- | :--- |
 | **Residents** | Configure agents with a role, instructions, model, home level and tool permissions. Try demo residents without an API key. |
 | **Workflows** | Combine residents, reviews, app actions, waits and approvals. Run steps in parallel, branch on prior results or repeat for every item in a list. |
+| **Canvas** | Draw a workflow as a graph and drag steps to reorder them or run them at the same time. References between steps follow every move, and the canvas says what would be refused before you save. |
+| **Gallery** | Adopt procedures other SILOs share in one step, from a catalog checked by fingerprint, or point SILO at a catalog of your company. |
 | **Triggers** | Run on a schedule, a file change, an incoming email, a feed update, an app event or a webhook. |
 | **Guardrails** | Send personal data and keys to models as placeholders and get the real values back in answers and tool calls. Catch tool results that try to give orders, in English and Romanian, and hold the changes that follow for your approval. Hide words in answers, or block or hold tool calls with your own rules. |
 | **Caching** | Ask Anthropic and OpenAI to cache the parts of a request that repeat, so tool loops and long conversations read them at a lower price. Price cached input separately and see what caching saved each month. Optionally answer the same question again without a model call. |

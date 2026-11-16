@@ -1,6 +1,7 @@
 import './world-3d.js';
 import { SECTORS, sectorForLevel } from './world-geometry.js';
 import { TEMPLATES, materialize, procedureTables, needName, hasNeed } from './flow-templates.js';
+import { FlowCanvas, remapRefs, refsOf } from './flow-canvas.js';
 import { applyPatch } from './live-patch.js';
 import { localAI, AI_LANGS, langName } from './local-ai.js';
 import { MCP_CATALOG, MCP_GROUPS } from './mcp-catalog.js';
@@ -1359,7 +1360,83 @@ function catchUpLine(w){
   if(!opts.some(o=>o[0]===cur))opts.splice(3,0,[cur,`run it once if it is at most ${w.catchUpHours} hours late`]);
   return `<div class="trigger-line"><label>A time missed while SILO was off: <select class="select" name="catchUp" aria-label="A time missed while SILO was off">${opts.map(([v,t])=>`<option value="${v}" ${v===cur?'selected':''}>${t}</option>`).join('')}</select></label></div>`;
 }
-function openWorkflowEditor(w){const fresh=!w?.id;w={name:'',description:'',brief:'',enabled:false,interval:60,mode:'interval',at:'09:00',days:[1,2,3,4,5],hook:null,watch:null,budget:0,steps:[{type:'agent'}],...(w||{})};if(!state.agents.length){toast('Add a resident before creating a workflow.',true);return;}showModal(`${modalHead(fresh?'New workflow':'Edit workflow','Resident steps do the work, reviews check it, approvals wait for you.')}<form id="workflow-form"><div class="modal-body">${w.draftNotes?`<div class="info-banner draft-note">${icon('spark')}<span><strong>Draft, not saved yet.</strong> ${esc(w.draftNotes)}</span></div>`:''}<div class="form-group"><label for="w-name">Workflow name</label><input class="field" id="w-name" name="name" required maxlength="100" value="${esc(w.name)}" placeholder="e.g. Weekly report"></div><div class="form-group"><label for="w-description">A short description</label><input class="field" id="w-description" name="description" maxlength="300" value="${esc(w.description)}" placeholder="Optional"></div><div class="form-group"><label for="w-brief">Saved brief</label><textarea class="field" id="w-brief" name="brief" maxlength="15000" placeholder="Optional. Used for scheduled runs and filled in when you run it by hand.">${esc(w.brief||'')}</textarea></div><div id="step-editors">${w.steps.map(stepEditor).join('')}</div><button type="button" class="btn small" data-action="add-step">${icon('plus')} Add another step</button>${triggerEditor(w)}${shapeEditor(w)}${errEl()}</div><div class="modal-footer">${fresh?'':`<button type="button" class="btn danger" data-action="delete-workflow" data-id="${w.id}">Delete workflow</button>`}<button type="button" class="btn" data-action="close-modal">Cancel</button><button type="submit" class="btn primary">Save workflow</button></div></form>`,'workflow');
+// The canvas (flow-canvas.js) draws the same step editors as a graph and changes them, so saving is the same in both
+// views. In the canvas view, only the picked step's editor shows under it.
+let flowView=(()=>{try{return localStorage.getItem('silo.flowView')==='canvas'?'canvas':'list';}catch{return 'list';}})(),flowCanvas=null;
+const stepEds=()=>$$('#step-editors .flow-step-editor');
+// One step editor as plain values, for the canvas and for the references between steps.
+function stepOf(el,i=stepEds().indexOf(el)){
+  const q=x=>el.querySelector(x),type=q('.step-type').value,box=q('.step-action'),a=getAgent(q('.step-agent').value);
+  let fields={};try{fields=box?.querySelector('.act-input')?actionValues(box):JSON.parse(box?.dataset.fields||'{}');}catch{}
+  const app=q('.step-app')?.value||box?.dataset.app||'',op=q('.step-op')?.value||box?.dataset.op||'',wm=q('.step-when-mode').value;
+  const st={el,type,agentId:a?.id||'',prompt:q('.step-prompt').value,parallel:type==='agent'&&i>0&&q('.step-parallel').checked,
+    when:wm?{op:wm,step:Number(q('.step-when-src').value)||0,text:q('.step-when-text').value}:null,target:Number(q('.step-target').value)||0,rounds:Number(q('.step-rounds').value)||2,
+    each:['agent','action','code'].includes(type)&&q('.step-each-on').checked?q('.step-each').value.trim():'',app,op,fields,code:q('.step-code-text').value,workflowId:q('.step-workflow').value,
+    unit:q('.step-wait-unit').value,amount:Number(q('.step-wait-amount').value)||1,time:q('.step-wait-time').value,day:Number(q('.step-wait-day').value)};
+  const f=Object.entries(fields).filter(([,v])=>String(v).trim());
+  return Object.assign(st,type==='agent'?{title:a?.name||'No resident',sub:a?`${a.role} / ${a.provider==='demo'?'demo':a.model||a.provider}`:'',text:st.prompt}
+    :type==='review'?{title:a?.name||'No resident',sub:st.target?`checks step ${pad2(st.target)}`:'checks the work',text:st.prompt}
+    :type==='approval'?{title:'You',sub:'waits for your OK',text:st.prompt||'Waits for your OK.'}
+    :type==='action'?{title:app?appNameOf(app):'Pick an app',sub:op.replace(/_/g,' '),text:f.map(([k,v])=>k.replace(/^body\./,'')+': '+v).join(', ')||'Nothing filled in.'}
+    :type==='code'?{title:'Code',sub:'no model',text:st.code}
+    :type==='wait'?{title:'Wait',sub:waitText(st.unit==='until'?{unit:'until',time:st.time,day:st.day}:{unit:st.unit,amount:st.amount}),text:''}
+    :{title:state.workflows.find(x=>x.id===st.workflowId)?.name||'Pick a workflow',sub:'runs as one step',text:st.prompt});
+}
+const readsStep=(el,n)=>{const st=stepOf(el);return refsOf(st).has(n)||(st.type==='review'&&st.target===n);};
+// Step numbers follow a step that moves: in instructions, app fields, code, lists to repeat over, reviews and conditions.
+function remapEditors(eds,map){
+  for(const el of eds){
+    const t=el.querySelector('.step-target'),w=el.querySelector('.step-when-src'),tn=Number(t.value),wn=Number(w.value);
+    el.dataset.target=String(map.get(tn)??t.value);el.dataset.when=String(wn?map.get(wn)??wn:0);
+    for(const f of el.querySelectorAll('.step-prompt,input.act-input,textarea.act-input,.step-each'))f.value=remapRefs(f.value,map);
+    const c=el.querySelector('.step-code-text');c.value=remapRefs(c.value,map,true);
+    const box=el.querySelector('.step-action');if(box?.dataset.fields){try{box.dataset.fields=JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(box.dataset.fields)).map(([k,v])=>[k,remapRefs(String(v),map)])));}catch{}}
+  }
+}
+function arrangeSteps(order,parallel){
+  const box=$('#step-editors'),eds=stepEds();
+  remapEditors(eds,new Map(order.map((old,n)=>[old+1,n+1])));
+  order.forEach((old,n)=>{const el=eds[old];box.append(el);el.querySelector('.step-parallel').checked=!!parallel[n];});
+  renumber();
+}
+// A new step after a given one (or at the end). The steps after it move one down, and what reads them follows.
+function addStepAt(type,after){
+  const eds=stepEds();if(eds.length>=12){toast('A workflow can contain up to 12 steps.',true);return null;}
+  const at=after?eds.indexOf(after)+1:eds.length;
+  remapEditors(eds,new Map(eds.map((_,k)=>[k+1,k<at?k+1:k+2])));
+  const tpl=document.createElement('template');tpl.innerHTML=stepEditor({type},at);const el=tpl.content.firstElementChild;
+  if(eds[at]){eds[at].before(el);eds[at].querySelector('.step-parallel').checked=false;}else $('#step-editors').append(el);
+  if(type==='action')fillActionEditor(el);
+  renumber();return el;
+}
+function selectStep(el,focus=false){
+  for(const x of $$('#step-editors .fc-selected'))x.classList.remove('fc-selected');
+  el?.classList.add('fc-selected');
+  if(el&&focus){el.scrollIntoView({block:'nearest',behavior:'smooth'});(el.querySelector('.step-prompt:not([hidden])')||el.querySelector('.step-type')).focus({preventScroll:true});}
+}
+function setFlowView(v){
+  flowView=v;try{localStorage.setItem('silo.flowView',v);}catch{}
+  const form=$('#workflow-form');if(!form)return;
+  form.classList.toggle('canvas-mode',v==='canvas');$('#flow-canvas').hidden=v!=='canvas';
+  for(const b of $$('[data-action="flow-view"]'))b.setAttribute('aria-pressed',String(b.dataset.view===v));
+  if(v==='canvas'){flowCanvas.size='';flowCanvas.render();selectStep(flowCanvas.sel);}
+}
+function mountFlowCanvas(){
+  flowCanvas?.destroy();
+  const form=$('#workflow-form'),root=$('#flow-canvas'),box=$('#step-editors');
+  flowCanvas=new FlowCanvas(root,{read:()=>stepEds().map((el,i)=>stepOf(el,i)),arrange:arrangeSteps,select:selectStep,add:addStepAt,
+    writes:st=>st.type==='action'&&!!st.app&&!!st.op&&opChanges(st.app,st.op),
+    kinds:[['agent','Resident'],['review','Review'],['approval','Approval'],['action','App'],...(ownerHere()?[['code','Code']]:[]),['wait','Wait'],['workflow','Workflow']]});
+  const redraw=()=>{if(form.classList.contains('canvas-mode'))flowCanvas?.later();};
+  box.addEventListener('input',redraw);box.addEventListener('change',redraw);
+  new MutationObserver(()=>{redraw();if(form.classList.contains('canvas-mode')&&!box.querySelector('.fc-selected'))requestAnimationFrame(()=>{if(flowCanvas)selectStep(flowCanvas.sel);});}).observe(box,{childList:true});
+  // A field that is not right in a hidden step is shown, so the browser can point at it.
+  form.addEventListener('invalid',e=>{const ed=e.target.closest?.('.flow-step-editor');if(ed&&form.classList.contains('canvas-mode')&&!ed.classList.contains('fc-selected')){flowCanvas.sel=ed;selectStep(ed);flowCanvas.render();}},true);
+  modal.addEventListener('close',()=>{flowCanvas?.destroy();flowCanvas=null;},{once:true});
+  setFlowView(flowView);
+}
+function openWorkflowEditor(w){const fresh=!w?.id;w={name:'',description:'',brief:'',enabled:false,interval:60,mode:'interval',at:'09:00',days:[1,2,3,4,5],hook:null,watch:null,budget:0,steps:[{type:'agent'}],...(w||{})};if(!state.agents.length){toast('Add a resident before creating a workflow.',true);return;}showModal(`${modalHead(fresh?'New workflow':'Edit workflow','Resident steps do the work, reviews check it, approvals wait for you.')}<form id="workflow-form"><div class="modal-body">${w.draftNotes?`<div class="info-banner draft-note">${icon('spark')}<span><strong>Draft, not saved yet.</strong> ${esc(w.draftNotes)}</span></div>`:''}<div class="form-group"><label for="w-name">Workflow name</label><input class="field" id="w-name" name="name" required maxlength="100" value="${esc(w.name)}" placeholder="e.g. Weekly report"></div><div class="form-group"><label for="w-description">A short description</label><input class="field" id="w-description" name="description" maxlength="300" value="${esc(w.description)}" placeholder="Optional"></div><div class="form-group"><label for="w-brief">Saved brief</label><textarea class="field" id="w-brief" name="brief" maxlength="15000" placeholder="Optional. Used for scheduled runs and filled in when you run it by hand.">${esc(w.brief||'')}</textarea></div><div class="flow-view"><span class="flow-view-label">STEPS</span><div class="flow-view-switch" role="group" aria-label="Show the steps as">${['list','canvas'].map(v=>`<button type="button" class="chip" data-action="flow-view" data-view="${v}" aria-pressed="${flowView===v}">${v.toUpperCase()}</button>`).join('')}</div></div><div class="flow-canvas" id="flow-canvas" hidden></div><div id="step-editors">${w.steps.map(stepEditor).join('')}</div><button type="button" class="btn small add-step-btn" data-action="add-step">${icon('plus')} Add another step</button>${triggerEditor(w)}${shapeEditor(w)}${errEl()}</div><div class="modal-footer">${fresh?'':`<button type="button" class="btn danger" data-action="delete-workflow" data-id="${w.id}">Delete workflow</button>`}<button type="button" class="btn" data-action="close-modal">Cancel</button><button type="submit" class="btn primary">Save workflow</button></div></form>`,'workflow');
+  mountFlowCanvas();
   $('#workflow-form [name=appKind]')?.addEventListener('change',e=>{const box=e.target.closest('.app-line').querySelector('.app-fields');box.innerHTML=appFields(e.target.value,{},w);});
   $('#workflow-form')?.addEventListener('change',e=>{if(e.target.name!=='app_app')return;const o=e.target.selectedOptions[0],box=e.target.closest('.app-fields');box.querySelector('.hook-hint').textContent=o.dataset.setup||'';const sg=box.querySelector('[name=app_signing]');if(sg&&!(w.app?.app===o.value))sg.placeholder=o.dataset.hint||'';box.querySelector('.app-hook-info')?.classList.toggle('stale',w.app?.app!==o.value);});
   $('#step-editors').addEventListener('change',e=>{
@@ -1386,13 +1463,54 @@ const ORDER_CHAPTERS=[['Knowledge','How the silo finds out what is true.',['rese
 // Procedures from files: the one being read, and the ones kept in the Order.
 let importedProcedure=null;
 const sharedProcedures=()=>[...(importedProcedure?[importedProcedure]:[]),...(state.templates||[]).map(t=>({...t,key:'u:'+t.id,shared:true,mine:true}))];
-const procedureByKey=key=>TEMPLATES.find(t=>t.key===key)||sharedProcedures().find(t=>t.key===key);
+const procedureByKey=key=>TEMPLATES.find(t=>t.key===key)||sharedProcedures().find(t=>t.key===key)||galleryList().find(t=>t.key===key&&!t.pending);
 let orderPage=null;
+// The gallery (gallery.mjs on the server): procedures other SILOs share, listed from its catalog when the Order opens,
+// and each read, checked against its fingerprint and against the rules of this SILO, when it is opened.
+const gallery={data:null,error:'',loading:null,procs:new Map(),reading:new Map(),failed:new Map()};
+const galleryKey=file=>'g:'+file;
+function galleryList(){
+  return (gallery.data?.procedures||[]).map(e=>{const p=gallery.procs.get(e.file),full=p?.sha===e.sha256&&p.procedure;return full?{...full,key:galleryKey(e.file),shared:true,gallery:e}:{key:galleryKey(e.file),name:e.name,description:e.description,steps:e.steps,gallery:e,shared:true,pending:true};});
+}
+function loadGallery(fresh=false){
+  if(gallery.loading)return gallery.loading;
+  gallery.loading=api('/gallery'+(fresh?'?fresh=1':'')).then(d=>{gallery.data=d;gallery.error='';}).catch(e=>{gallery.error=e.message;})
+    .finally(()=>{gallery.loading=null;if(modal.open&&modalKind==='templates')refreshGallery();});
+  return gallery.loading;
+}
+const galleryHost=d=>{if(!d?.feed)return 'none';if(d.official)return 'SILO repository';try{return new URL(d.feed).host;}catch{return d.feed;}};
+function galleryStatus(){
+  const d=gallery.data,n=d?.procedures.length||0;
+  if(!d&&!gallery.error)return '<small class="gallery-status loading">Reading the gallery<span class="cursor">_</span></small>';
+  if(!d)return `<small class="gallery-status bad">The gallery could not be read: ${esc(gallery.error)}</small>`;
+  const when=d.checked?` Checked ${age(d.checked)}.`:'';
+  return `<small class="gallery-status">${n?`${n} procedure${n===1?'':'s'} shared by other SILOs.`:'No procedures yet.'}${d.error?` <span class="bad">The feed could not be read (${esc(d.error)}), so these are the ones that came with this SILO.</span>`:!d.feed?' Only the ones that came with this SILO; no feed is read.':when}</small>`;
+}
+function gallerySource(){
+  const d=gallery.data;
+  return `<div class="gallery-source" id="gallery-source"><span>SOURCE <b>${esc(galleryHost(d)).toUpperCase()}</b></span><span class="gallery-keys"><button type="button" class="chip" data-action="gallery-refresh"${gallery.loading?' disabled':''}>Refresh</button>${ownerHere()&&me?.role!=='viewer'?'<button type="button" class="chip" data-action="gallery-source">Change</button>':''}</span></div>`;
+}
+function refreshGallery(){
+  const box=$('#order-gallery');if(!box)return;
+  const index=orderIndex(),ci=index.findIndex(c=>c.gallery);box.outerHTML=orderChapter(index[ci],ci);orderFilter();
+  // The page of a gallery procedure that was waiting for the list is drawn now.
+  if(String(orderPage).startsWith('g:')&&$('#order-page')?.dataset.pending)actions['order-page']({dataset:{key:orderPage}});
+}
+// One procedure, read when its page opens. A second click while it loads waits for the same read.
+// A procedure is kept with the fingerprint it was read for, so a newer catalog reads it again.
+function openGalleryProcedure(entry){
+  const file=entry.file,had=gallery.procs.get(file);
+  if(had?.sha===entry.sha256)return Promise.resolve(had.procedure);
+  if(gallery.reading.has(file))return gallery.reading.get(file);
+  const p=api('/gallery/procedures/'+encodeURIComponent(file)).then(r=>{gallery.procs.set(file,{sha:r.entry.sha256,procedure:r.procedure});gallery.failed.delete(file);return r.procedure;}).finally(()=>gallery.reading.delete(file));
+  gallery.reading.set(file,p);return p;
+}
 function orderIndex(){
   const seen=new Set(),chapters=ORDER_CHAPTERS.map(([title,line,keys])=>({title,line,list:keys.map(k=>TEMPLATES.find(t=>t.key===k)).filter(Boolean)}));
   for(const c of chapters)for(const t of c.list)seen.add(t.key);
   const rest=TEMPLATES.filter(t=>!seen.has(t.key));if(rest.length)chapters.push({title:'Further procedures',line:'Added later.',list:rest});
   const shared=sharedProcedures();if(shared.length)chapters.push({title:'Your procedures',line:'Kept here from your workflows and from files.',list:shared});
+  chapters.push({title:'The gallery',line:'Procedures other SILOs share. Read one, then adopt it in one step.',list:galleryList(),gallery:true});
   return chapters.map((c,ci)=>({...c,list:c.list.map((t,ti)=>({t,num:(ci+1)+'.'+(ti+1)}))}));
 }
 // What an app step would change, known even before the app list is loaded, so a procedure from a file shows it.
@@ -1427,8 +1545,9 @@ function orderProcedure(entry){
     :[t.mode?`Starts by itself ${t.days?.length===5&&!t.days.includes(0)&&!t.days.includes(6)?'every weekday':'every '+dayNames(t.days)} at ${t.at}.`:'',t.watch?`Starts by itself for every file dropped in workspace/${esc(t.watch)}/.`:'','Can be started by hand from Flows.'].filter(Boolean).join(' ');
   const ready=procedureReadiness(t),check=ready.length?`<ul class="order-ready">${ready.map(x=>`<li class="${x.made?'made':x.ok?'ok':'todo'}"><b>${x.made?'NEW':x.ok?'READY':'TO DO'}</b> ${esc(x.text)}</li>`).join('')}</ul>`:'';
   const extra=[t.form?`Comes with a public form: ${t.form.fields.map(f=>esc(f.name)).join(', ')}.`:'',t.shape?`Returns ${t.shape.many?'a list of items with ':''}the fields ${t.shape.fields.map(f=>esc(f.name)).join(', ')}, checked at the end of every run.`:'',t.tests?.length?`Comes with ${t.tests.length} test case${t.tests.length===1?'':'s'}.`:''].filter(Boolean).join(' ');
-  const from=t.imported?`<p class="info-banner"><span><strong>From a file.</strong> Read every step before you adopt it: its words become instructions for your residents. Adopting gives no resident a new permission.${t.made?' Made on '+esc(t.made)+'.':''}</span></p>`:t.mine?`<p class="mono-line">Kept by ${esc(t.addedBy||'you')} on ${new Date(t.added).toLocaleDateString()}.</p>`:'';
-  const actions=[t.imported&&me?.role!=='viewer'?button('Keep in the Order','keep-procedure'):'',t.mine&&me?.role!=='viewer'?button('Remove from the Order','remove-procedure',false,`data-id="${t.id}"`):'',t.shared?button('Download','download-procedure',false,`data-key="${t.key}"`):''].join('');
+  const g=t.gallery,tags=g?.tags?.length?`<div class="order-tags">${g.tags.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:'';
+  const from=g?`<p class="info-banner"><span><strong>From the gallery${g.author?', by '+esc(g.author):''}.</strong> Its fingerprint matches the catalog${g.from==='feed'?' of '+esc(galleryHost(gallery.data)):' that came with this SILO'}. Read every step before you adopt it: its words become instructions for your residents. Adopting gives no resident a new permission.${g.made?' Made on '+esc(g.made)+'.':''}</span></p>${tags}`:t.imported?`<p class="info-banner"><span><strong>From a file.</strong> Read every step before you adopt it: its words become instructions for your residents. Adopting gives no resident a new permission.${t.made?' Made on '+esc(t.made)+'.':''}</span></p>`:t.mine?`<p class="mono-line">Kept by ${esc(t.addedBy||'you')} on ${new Date(t.added).toLocaleDateString()}.</p>`:'';
+  const actions=[(t.imported||g)&&me?.role!=='viewer'?button('Keep in the Order','keep-procedure',false,`data-key="${t.key}"`):'',t.mine&&me?.role!=='viewer'?button('Remove from the Order','remove-procedure',false,`data-id="${t.id}"`):'',t.shared?button('Download','download-procedure',false,`data-key="${t.key}"`):''].join('');
   return `<div class="order-num">PROCEDURE ${num}</div><h3>${esc(t.name)}</h3><p class="order-purpose">${esc(t.description)}</p>${from}<div class="order-rule">${starts}${extra?' '+extra:''}</div>${check}<ol class="order-steps">${steps}</ol><div class="order-foot"><span class="order-seal" aria-hidden="true">S18</span><span>${ownerOnlySteps(w)&&!ownerHere()?'Only an owner can adopt this procedure, because its app steps use the accounts of this SILO directly.':'Residents are chosen from the silo as it is now. Every line can be changed before the procedure is filed under Flows.'}</span>${actions}${me?.role==='viewer'?'':ownerOnlySteps(w)&&!ownerHere()?`<button class="btn primary" disabled title="Only an owner can adopt a procedure with app steps.">Adopt procedure ${num}</button>`:`<button class="btn primary" data-action="use-template" data-key="${t.key}">Adopt procedure ${num}</button>`}</div>`;
 }
 function openImportProcedure(){
@@ -1444,11 +1563,11 @@ function openImportProcedure(){
 const slugName=n=>String(n||'procedure').toLowerCase().normalize('NFKD').replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'-').slice(0,60)||'procedure';
 function saveJson(obj,name){const url=URL.createObjectURL(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);}
 // A connector is found by its name in another SILO, so an app step carries the name with it.
-function cleanProcedure(t){const {key,shared,mine,imported,id,added,addedBy,...rest}=t;return {...rest,steps:(rest.steps||[]).map(s=>s.type==='action'&&String(s.app||'').startsWith('mcp:')&&!s.connector?{...s,connector:state.mcp?.find(c=>'mcp:'+c.id===s.app)?.name||''}:s)};}
+function cleanProcedure(t){const {key,shared,mine,imported,id,added,addedBy,gallery:g,pending,...rest}=t;return {...rest,steps:(rest.steps||[]).map(s=>s.type==='action'&&String(s.app||'').startsWith('mcp:')&&!s.connector?{...s,connector:state.mcp?.find(c=>'mcp:'+c.id===s.app)?.name||''}:s)};}
 async function openShare(w){
   if(!w)return;let t;try{t=await api('/workflows/'+w.id+'/template');}catch(e){toast(e.message,true);return;}
   const holds=[`${t.steps.length} step${t.steps.length===1?'':'s'} with their instructions`,'the name, role and sector of each resident',t.tests?.length?`${t.tests.length} test case${t.tests.length===1?'':'s'} with their briefs`:'',t.shape?'the result shape':'',t.brief?'the saved brief':'',t.steps.some(s=>s.type==='action')?'the values its app steps fill in (addresses, channels or sheet links)':''].filter(Boolean),appFields=t.steps.some(s=>s.type==='action');
-  showModal(`${modalHead('Share / '+esc(w.name),'As a procedure file another SILO can import, or kept in your Order.')}<div class="modal-body"><p>The file holds ${esc(holds.join(', '))}. It holds no keys, webhook or mail settings, runs or files, and residents keep their permissions where they are. Read the brief${appFields?', the app steps':''} and the tests before you send it: they may hold private text.</p><textarea class="field" id="share-text" rows="10" readonly spellcheck="false">${esc(JSON.stringify(t,null,2))}</textarea></div><div class="modal-footer"><button type="button" class="btn" data-action="close-modal">Close</button><button type="button" class="btn" id="share-copy">Copy text</button>${me?.role!=='viewer'?'<button type="button" class="btn" id="share-keep">Keep in the Order</button>':''}<button type="button" class="btn primary" id="share-save">Download file</button></div>`,'share');
+  showModal(`${modalHead('Share / '+esc(w.name),'As a procedure file another SILO can import, or kept in your Order.')}<div class="modal-body"><p>The file holds ${esc(holds.join(', '))}. It holds no keys, webhook or mail settings, runs or files, and residents keep their permissions where they are. Read the brief${appFields?', the app steps':''} and the tests before you send it: they may hold private text.</p><textarea class="field" id="share-text" rows="10" readonly spellcheck="false">${esc(JSON.stringify(t,null,2))}</textarea><p class="mono-line">For every SILO: add the file to gallery/ in the SILO repository with a pull request ("The gallery" in the handbook).</p></div><div class="modal-footer"><button type="button" class="btn" data-action="close-modal">Close</button><button type="button" class="btn" id="share-copy">Copy text</button>${me?.role!=='viewer'?'<button type="button" class="btn" id="share-keep">Keep in the Order</button>':''}<button type="button" class="btn primary" id="share-save">Download file</button></div>`,'share');
   $('#share-save').onclick=()=>saveJson(t,slugName(t.name)+'.silo.json');
   $('#share-copy').onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(t,null,2));toast('Copied.');}catch{$('#share-text').select();toast('Select the text and copy it.',true);}};
   if($('#share-keep'))$('#share-keep').onclick=async()=>{try{await post('/templates',{workflowId:w.id});await refresh();toast(w.name+' is kept in the Order.');}catch(e){toast(e.message,true);}};
@@ -1456,15 +1575,20 @@ async function openShare(w){
 function openTemplates(key){
   const index=orderIndex(),all=index.flatMap(c=>c.list);orderPage=all.find(e=>e.t.key===(key||orderPage))?.t.key||all[0]?.t.key;
   // Numbers like 3.2 are the place in the book.
-  const toc=index.map((c,ci)=>`<div class="order-chapter"><div class="order-ch">CHAPTER ${ci+1} / ${esc(c.title).toUpperCase()}</div><small>${esc(c.line)}</small>${c.list.map(e=>{const ok=procedureReady(e.t);return `<button class="order-entry${e.t.key===orderPage?' active':''}" data-action="order-page" data-key="${e.t.key}" data-ready="${ok?1:0}" data-text="${esc((e.t.name+' '+(e.t.description||'')).toLowerCase())}" aria-pressed="${e.t.key===orderPage}"><b class="order-dot ${ok?'ok':'todo'}" title="${ok?'Ready to run':'Needs something set up first'}"></b><span>${e.num}</span><span class="order-title">${esc(e.t.name)}</span><i></i><span>${e.t.steps.length} STEP${e.t.steps.length===1?'':'S'}</span></button>`;}).join('')}</div>`).join('');
+  const toc=index.map(orderChapter).join('');
   showModal(`${modalHead('The Order','The book of procedures of Silo 18. Pick a procedure, read it, adopt it as a workflow.')}<div class="modal-body order-book"><nav class="order-toc" aria-label="Contents"><div class="order-cover">THE ORDER<small>BOOK OF PROCEDURES / SILO 18</small></div><div class="order-find"><input class="field" type="search" id="order-search" placeholder="Find a procedure" aria-label="Find a procedure" autocomplete="off"><label class="check-label"><input type="checkbox" id="order-ready"> Only the ones ready to run</label><small id="order-none" hidden>No procedure matches.</small></div>${toc}${me?.role!=='viewer'?`<div class="order-chapter">${button('Import a procedure','import-procedure')}</div>`:''}</nav><article class="order-page" id="order-page">${orderProcedure(all.find(e=>e.t.key===orderPage))}</article></div>`,'templates');
-  // Every word must be in the name or the description.
-  const filter=()=>{
-    const words=$('#order-search').value.toLowerCase().split(/\s+/).filter(Boolean),onlyReady=$('#order-ready').checked;let shown=0;
-    for(const ch of $$('.order-toc .order-chapter')){const list=[...ch.querySelectorAll('.order-entry')];if(!list.length)continue;let any=false;for(const b of list){const on=words.every(w=>b.dataset.text.includes(w))&&(!onlyReady||b.dataset.ready==='1');b.hidden=!on;any||=on;if(on)shown++;}ch.hidden=!any;}
-    $('#order-none').hidden=shown>0;
-  };
-  $('#order-search').oninput=filter;$('#order-ready').onchange=filter;
+  $('#order-search').oninput=orderFilter;$('#order-ready').onchange=orderFilter;
+  loadGallery();
+}
+// Every word must be in the name, the description, the tags or the author. The gallery chapter stays, with its status.
+function orderFilter(){
+  const words=($('#order-search')?.value||'').toLowerCase().split(/\s+/).filter(Boolean),onlyReady=!!$('#order-ready')?.checked;let shown=0;
+  for(const ch of $$('.order-toc .order-chapter')){const list=[...ch.querySelectorAll('.order-entry')];if(!list.length&&!ch.id)continue;let any=false;for(const b of list){const on=words.every(w=>b.dataset.text.includes(w))&&(!onlyReady||b.dataset.ready==='1');b.hidden=!on;any||=on;if(on)shown++;}ch.hidden=!any&&!ch.id;}
+  if($('#order-none'))$('#order-none').hidden=shown>0;
+}
+function orderChapter(c,ci){
+  const entries=c.list.map(e=>{const ok=procedureReady(e.t),g=e.t.gallery;return `<button class="order-entry${e.t.key===orderPage?' active':''}" data-action="order-page" data-key="${e.t.key}" data-ready="${ok?1:0}" data-text="${esc((e.t.name+' '+(e.t.description||'')+(g?' '+g.tags.join(' ')+' '+g.author:'')).toLowerCase())}" aria-pressed="${e.t.key===orderPage}"><b class="order-dot ${ok?'ok':'todo'}" title="${ok?'Ready to run':'Needs something set up first'}"></b><span>${e.num}</span><span class="order-title">${esc(e.t.name)}</span><i></i><span>${e.t.steps.length} STEP${e.t.steps.length===1?'':'S'}</span></button>`;}).join('');
+  return `<div class="order-chapter${c.gallery?' gallery-chapter':''}"${c.gallery?' id="order-gallery"':''}><div class="order-ch">CHAPTER ${ci+1} / ${esc(c.title).toUpperCase()}</div><small>${esc(c.line)}</small>${c.gallery?galleryStatus():''}${entries}${c.gallery?gallerySource():''}</div>`;
 }
 // Adopting a procedure makes the tables it describes and does not have yet, after you say so, then opens the editor.
 async function adoptProcedure(key){
@@ -2034,9 +2158,32 @@ const actions={
   'open-trace':el=>openTrace(el.dataset.id),
   'stop-run':async el=>{el.disabled=true;try{await post('/runs/'+el.dataset.id+'/stop',{});toast('Stopping the run.');await refresh();const r=state.runs.find(r=>r.id===el.dataset.id);if(r&&modalKind==='trace'&&modal.open&&openRunId===r.id)updateTrace(r);}catch(e){toast(e.message,true);el.disabled=false;}},
   'resume-run':async el=>{el.disabled=true;try{await post('/runs/'+el.dataset.id+'/resume',{});await refresh();toast('Run resumed.');const r=state.runs.find(r=>r.id===el.dataset.id);if(r&&modalKind==='trace'&&modal.open&&openRunId===r.id)updateTrace(r);if(view==='workflows')$('#run-history').innerHTML=runHistory();}catch(e){toast(e.message,true);el.disabled=false;}},
-  templates:()=>openTemplates(),'order-page':el=>{orderPage=el.dataset.key;const e=orderIndex().flatMap(c=>c.list).find(e=>e.t.key===orderPage);if(!e)return;$('#order-page').innerHTML=orderProcedure(e);$('#order-page').scrollTop=0;$$('.order-entry').forEach(b=>{const on=b.dataset.key===orderPage;b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));});},'use-template':el=>adoptProcedure(el.dataset.key),
+  templates:()=>openTemplates(),'order-page':el=>{orderPage=el.dataset.key;const e=orderIndex().flatMap(c=>c.list).find(e=>e.t.key===orderPage),page=$('#order-page');if(!e||!page)return;
+    delete page.dataset.pending;
+    if(e.t.pending){
+      // Read once; when it fails, the page says why and waits for "Try again".
+      const file=e.t.gallery.file,key=orderPage;
+      if(el.dataset.retry)gallery.failed.delete(file);
+      const fail=gallery.failed.get(file);
+      page.dataset.pending='1';
+      page.innerHTML=`<div class="order-num">PROCEDURE ${e.num} / FROM THE GALLERY</div><h3>${esc(e.t.name)}</h3><p class="order-purpose">${esc(e.t.description)}</p>${fail?`<p class="form-error">${esc(fail)}</p><button type="button" class="btn" data-action="order-page" data-key="${key}" data-retry="1">Try again</button>`:'<p class="gallery-status loading">Reading the procedure and checking its fingerprint<span class="cursor">_</span></p>'}`;
+      if(!fail)openGalleryProcedure(e.t.gallery).catch(err=>{gallery.failed.set(file,err.message);}).finally(()=>{if(orderPage===key&&modal.open&&modalKind==='templates')refreshGallery();});
+    }else page.innerHTML=orderProcedure(e);
+    page.scrollTop=0;$$('.order-entry').forEach(b=>{const on=b.dataset.key===orderPage;b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));});},'use-template':el=>adoptProcedure(el.dataset.key),
   'import-procedure':()=>openImportProcedure(),
-  'keep-procedure':async()=>{if(!importedProcedure)return;try{const kept=await post('/templates',{template:cleanProcedure(importedProcedure)});importedProcedure=null;await refresh();toast(kept.name+' is kept in the Order.');openTemplates('u:'+kept.id);}catch(e){toast(e.message,true);}},
+  'gallery-refresh':async el=>{el.disabled=true;gallery.failed.clear();await loadGallery(true);},
+  'gallery-source':()=>{
+    const box=$('#gallery-source');if(!box)return;const d=gallery.data;
+    box.innerHTML=`<label class="gallery-feed"><small>The address of a gallery's index.json, over https. Empty: only the procedures that came with this SILO.</small><input class="field" id="gallery-feed" maxlength="500" spellcheck="false" value="${esc(d?.feed||'')}" placeholder="https://example.com/gallery/index.json"></label><span class="gallery-keys"><button type="button" class="chip" data-action="gallery-feed-save">Save</button><button type="button" class="chip" data-action="gallery-feed-save" data-default="1">SILO repository</button><button type="button" class="chip" data-action="gallery-feed-cancel">Cancel</button></span>`;
+    $('#gallery-feed').focus();$('#gallery-feed').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();actions['gallery-feed-save']({dataset:{}});}};
+  },
+  'gallery-feed-cancel':()=>refreshGallery(),
+  'gallery-feed-save':async el=>{
+    const feed=el.dataset.default?'default':($('#gallery-feed')?.value||'').trim();
+    try{await post('/gallery/feed',{feed});gallery.data=null;gallery.error='';gallery.procs.clear();gallery.failed.clear();if(String(orderPage).startsWith('g:'))orderPage=null;refreshGallery();await loadGallery(true);toast('The gallery source is saved.');}
+    catch(e){toast(e.message,true);}
+  },
+  'keep-procedure':async el=>{const t=el?.dataset?.key?procedureByKey(el.dataset.key):importedProcedure;if(!t)return;try{const kept=await post('/templates',{template:cleanProcedure(t)});if(t===importedProcedure||t.key==='import')importedProcedure=null;await refresh();toast(kept.name+' is kept in the Order.');openTemplates('u:'+kept.id);}catch(e){toast(e.message,true);}},
   'remove-procedure':async el=>{if(!confirm('Remove this procedure from the Order? Workflows made from it stay.'))return;try{await api('/templates/'+el.dataset.id,{method:'DELETE'});await refresh();openTemplates();toast('Removed from the Order.');}catch(e){toast(e.message,true);}},
   'download-procedure':el=>{const t=procedureByKey(el.dataset.key);if(t)saveJson(cleanProcedure(t),slugName(t.name)+'.silo.json');},
   'share-workflow':el=>openShare(state.workflows.find(w=>w.id===el.dataset.id)),
@@ -2209,11 +2356,22 @@ const actions={
   'add-form-field':()=>{if($$('.form-field').length>=12){toast('A form asks at most 12 things.',true);return;}$('#form-fields').insertAdjacentHTML('beforeend',formFieldRow({}));$$('.form-field .ff-name').at(-1).focus();},
   'remove-form-field':el=>{if($$('.form-field').length>1)el.closest('.form-field').remove();else el.closest('.form-field').querySelectorAll('input.field').forEach(x=>{x.value='';});},
   'remove-shape-field':el=>{if($$('.shape-field').length>1)el.closest('.shape-field').remove();else el.closest('.shape-field').querySelector('.sf-name').value='';},
-  'add-step':()=>{if($$('.flow-step-editor').length>=12){toast('A workflow can contain up to 12 steps.',true);return;}$('#step-editors').insertAdjacentHTML('beforeend',stepEditor({type:'agent'},$$('.flow-step-editor').length));},'remove-step':el=>{el.closest('.flow-step-editor').remove();renumber();},'step-up':el=>{const s=el.closest('.flow-step-editor');if(s.previousElementSibling)s.parentNode.insertBefore(s,s.previousElementSibling);renumber();},'step-down':el=>{const s=el.closest('.flow-step-editor');if(s.nextElementSibling)s.parentNode.insertBefore(s.nextElementSibling,s);renumber();},
+  'add-step':()=>{const el=addStepAt('agent',null);if(el&&flowView==='canvas'&&flowCanvas){flowCanvas.sel=el;selectStep(el,true);}},
+  'remove-step':el=>{
+    const ed=el.closest('.flow-step-editor'),eds=stepEds(),at=eds.indexOf(ed),gone=at+1;
+    const readers=eds.map((x,k)=>x!==ed&&readsStep(x,gone)?pad2(k<at?k+1:k):'').filter(Boolean);
+    if(flowCanvas?.sel===ed)flowCanvas.sel=eds[at+1]||eds[at-1]||null;
+    remapEditors(eds.filter(x=>x!==ed),new Map(eds.map((_,k)=>k+1).filter(n=>n!==gone).map(n=>[n,n<gone?n:n-1])));
+    ed.remove();renumber();
+    if(readers.length)toast(`Step ${readers.join(', ')} used the step you removed. Check ${readers.length===1?'its':'their'} instructions.`,true);
+  },
+  'step-up':el=>{const s=el.closest('.flow-step-editor'),eds=stepEds(),i=eds.indexOf(s);if(i<1)return;remapEditors(eds,new Map([[i+1,i],[i,i+1]]));s.parentNode.insertBefore(s,eds[i-1]);renumber();},
+  'step-down':el=>{const s=el.closest('.flow-step-editor'),eds=stepEds(),i=eds.indexOf(s);if(i<0||i>=eds.length-1)return;remapEditors(eds,new Map([[i+1,i+2],[i+2,i+1]]));s.parentNode.insertBefore(eds[i+1],s);renumber();},
+  'flow-view':el=>setFlowView(el.dataset.view==='canvas'?'canvas':'list'),
   'open-app':async el=>{await post('/apps/open',{app:el.dataset.app});toast('Opening app.');},'new-file':()=>{showFileInEditor('',{content:''});$('#file-name').focus();},'save-file':saveFile,'open-file':async el=>{try{const f=await api('/file?name='+encodeURIComponent(el.dataset.name));showFileInEditor(el.dataset.name,f);}catch(e){toast(e.message,true);}},'upload-file':()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.onchange=()=>uploadFiles([...i.files]);i.click();},'app-connect':el=>openAppConnect(el.dataset.id),'app-disconnect':async el=>{if(!confirm('Disconnect this app? Residents can no longer use it.'))return;try{await post('/services/'+el.dataset.id,{disconnect:true});toast('Disconnected.');loadApps();}catch(e){toast(e.message,true);}},
   export:async()=>{const data=await api('/export');const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='silo-workspace-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(url);toast('Workspace exported without API keys.');}
 };
-function renumber(){$$('.flow-step-editor').forEach((el,i)=>{el.querySelector('.step-n').textContent=pad2(i+1);const t=el.querySelector('.step-target'),cur=Number(t.value)||i;t.innerHTML=targetOptions(i,Math.min(cur,i));const w=el.querySelector('.step-when-src'),wc=Number(w.value)||0;w.innerHTML=whenOptions(i,wc<=i?wc:0);});}
+function renumber(){$$('.flow-step-editor').forEach((el,i)=>{el.querySelector('.step-n').textContent=pad2(i+1);const t=el.querySelector('.step-target'),cur=Number(el.dataset.target??t.value)||i;t.innerHTML=targetOptions(i,Math.min(cur,i));const w=el.querySelector('.step-when-src'),wc=Number(el.dataset.when??w.value)||0;w.innerHTML=whenOptions(i,wc<=i?wc:0);delete el.dataset.target;delete el.dataset.when;});}
 document.addEventListener('change',async e=>{
   if(e.target.id==='ai-lang'){aiPrefs.lang=e.target.value;saveAiPrefs();for(const n of aiNotes.values())n.abort?.abort();aiNotes.clear();checkAi();return;}
   if(e.target.id==='ai-auto'){aiPrefs.auto=e.target.checked;saveAiPrefs();toast(aiPrefs.auto?'New answers in another language are translated by themselves.':'Answers are translated only when you ask.');return;}

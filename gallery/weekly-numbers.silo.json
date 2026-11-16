@@ -1,0 +1,23 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "{\"this\": {\"signups\": 120, \"revenue\": 5400, \"churned\": 3}, \"last\": {\"signups\": 98, \"revenue\": 5100, \"churned\": 5}}",
+  "name": "Weekly numbers note",
+  "description": "Works out the change in each number with a few lines of code, no model, then a resident writes what matters in it.",
+  "steps": [
+    {
+      "type": "code",
+      "code": "const d = json(input) || {}, now = d.this || {}, was = d.last || {};\nreturn Object.keys(now).map(k => {\n  const a = Number(now[k]), b = Number(was[k]);\n  const change = Number.isFinite(b) && b !== 0 ? ((a - b) / Math.abs(b) * 100).toFixed(1) + '%' : 'no figure last week';\n  return k + ': ' + a + ' (last week ' + (Number.isFinite(b) ? b : '-') + ', ' + change + ')';\n}).join('\\n') || 'No numbers in the brief.';"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Analyst",
+        "role": "Analyst",
+        "floor": 1
+      },
+      "prompt": "These are this week's numbers against last week's:\n{{step 1}}\n\nWrite a short note for the team: the two or three moves that matter, and a likely reason for each, marked as a guess when it is one. Do not repeat every number."
+    }
+  ],
+  "made": "2026-11-16"
+}

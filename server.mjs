@@ -59,6 +59,7 @@ import { Inbox } from './talk-inbox.mjs';
 import { GitSync, ENVIRONMENTS, SYNC_FORMAT, checkRemote, checkBranch, slug as syncSlug } from './git-sync.mjs';
 import { matchResident } from './public/flow-templates.js';
 import { modelDetail, buildReport, reportMarkdown } from './compliance.mjs';
+import { Gallery, GALLERY_FEED, checkFeed } from './gallery.mjs';
 import { Masker, scanInjection, describeInjection, applyAnswerRules, toolRule, cleanGuardrails, DEFAULT_GUARDRAILS } from './guardrails.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -150,7 +151,12 @@ if(state.version===3){
 }
 for(const agent of state.agents) agent.status='idle';
 const DEFAULT_PACT='1. Never invent file contents, web addresses or numbers.\n2. Never expose secrets, keys or passwords.\n3. Propose files to the Archive; never claim a file is saved before the operator approves it.';
-state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};state.settings.caching={prompt:true,...(state.settings.caching||{}),answers:{enabled:false,minutes:60,...(state.settings.caching?.answers||{})}};try{state.settings.guardrails=cleanGuardrails({},state.settings.guardrails);}catch{state.settings.guardrails=cleanGuardrails({},DEFAULT_GUARDRAILS);}state.guardEvents=Array.isArray(state.guardEvents)?state.guardEvents.slice(0,40):[];state.usage||={days:{}};state.usage.warned||={};state.prices||={};state.limits||={};state.channels||=[];
+state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};state.settings.caching={prompt:true,...(state.settings.caching||{}),answers:{enabled:false,minutes:60,...(state.settings.caching?.answers||{})}};
+// The gallery (gallery.mjs): the procedures that came with SILO, and the newest catalog from a feed, read only when
+// someone opens it. An empty feed reads none. SILO_GALLERY_FEED sets the first one, like a catalog of your company.
+{const env=process.env.SILO_GALLERY_FEED,first=env===undefined?GALLERY_FEED:env;state.settings.gallery={feed:first,...(state.settings.gallery||{})};
+  try{state.settings.gallery.feed=checkFeed(state.settings.gallery.feed);}catch{state.settings.gallery.feed=checkFeed(first);}}
+const gallery=new Gallery({dir:path.join(ROOT,'gallery')});try{state.settings.guardrails=cleanGuardrails({},state.settings.guardrails);}catch{state.settings.guardrails=cleanGuardrails({},DEFAULT_GUARDRAILS);}state.guardEvents=Array.isArray(state.guardEvents)?state.guardEvents.slice(0,40):[];state.usage||={days:{}};state.usage.warned||={};state.prices||={};state.limits||={};state.channels||=[];
 for(const o of [...state.workflows,...state.agents]){for(const e of o.evals||[])if(e.status==='running'||e.status==='waiting'){e.status='interrupted';e.error='The server restarted during the tests.';}if(o.candidate?.status==='testing')Object.assign(o.candidate,{status:'error',error:'The server restarted during the tests. Test it again.'});}
 state.settings.expose={mcp:false,a2a:false,residents:[],workflows:[],front:'',description:'',...(state.settings.expose||{})};
 for(const k of ['residents','workflows'])if(!Array.isArray(state.settings.expose[k]))state.settings.expose[k]=[];
@@ -6746,6 +6752,15 @@ const server=http.createServer(async(req,res)=>{
       const tw=route.match(/^\/api\/workflows\/([^/]+)\/template$/);
       if(tw&&req.method==='GET'){const w=state.workflows.find(w=>w.id===tw[1]);if(!w)fail('Workflow not found.',404);return send(res,200,templateFromWorkflow(w));}
       if(route==='/api/templates/check'&&req.method==='POST')return send(res,200,validateTemplate(b.template));
+      if(route==='/api/gallery'&&req.method==='GET'){const feed=state.settings.gallery.feed,l=await gallery.list(feed,{fresh:url.searchParams.get('fresh')==='1'});return send(res,200,{...l,official:feed===GALLERY_FEED});}
+      // A procedure from the gallery is checked like one from a file: its fingerprint, then the rules of a workflow.
+      const gp=route.match(/^\/api\/gallery\/procedures\/([a-z0-9.-]{1,80})$/);
+      if(gp&&req.method==='GET'){const {entry,template}=await gallery.procedure(state.settings.gallery.feed,gp[1]);return send(res,200,{entry,procedure:validateTemplate(template)});}
+      if(route==='/api/gallery/feed'&&req.method==='POST'){
+        const feed=b.feed==='default'?GALLERY_FEED:checkFeed(b.feed);
+        if(feed!==state.settings.gallery.feed){state.settings.gallery.feed=feed;await persist();event('Gallery source changed',feed||'Only the procedures that came with SILO','system');}
+        return send(res,200,{feed,official:feed===GALLERY_FEED});
+      }
       if(route==='/api/templates'&&req.method==='POST'){
         let t;
         if(b.workflowId){const w=state.workflows.find(w=>w.id===b.workflowId);if(!w)fail('Workflow not found.',404);t=templateFromWorkflow(w);}

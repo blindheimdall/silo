@@ -1,0 +1,39 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the text, then say the language and who will read it.",
+  "name": "Translation with a second reader",
+  "description": "A translation, a second reader who compares it with the original, and a short glossary for next time.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Translator",
+        "role": "Translator",
+        "floor": 2
+      },
+      "prompt": "Translate the text in the brief into the language it asks for, or into English when it names none. Keep the meaning, the tone and the formatting. Keep names, numbers and product terms as they are.\n\n{{brief}}"
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 1,
+      "rounds": 2,
+      "prompt": "Compare it with the original. Is anything left out, added, or changed in meaning? Is each term translated the same way every time? Does it read as if it was written in that language?"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "prompt": "Give the final translation below as it is. After it, add a short glossary of the words you kept or chose on purpose: the term, its translation, and why.\n\nOriginal:\n{{brief}}\n\nTranslation:\n{{step 1}}"
+    }
+  ],
+  "made": "2026-11-16"
+}

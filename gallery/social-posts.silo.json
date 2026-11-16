@@ -1,0 +1,53 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the article.",
+  "name": "Posts from an article",
+  "description": "Picks the ideas worth sharing, writes a LinkedIn post and short posts at the same time, checks them against the article, then waits for your OK.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Copywriter",
+        "role": "Copywriter",
+        "floor": 2
+      },
+      "prompt": "Read this article and pick the three ideas a reader would want to share, each in one sentence, with the line of the article it comes from:\n{{brief}}"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Copywriter",
+        "role": "Copywriter",
+        "floor": 2
+      },
+      "prompt": "Write a LinkedIn post from these ideas: at most 1,200 characters, a first line that makes people stop, three hashtags at most.\n\n{{step 1}}"
+    },
+    {
+      "type": "agent",
+      "parallel": true,
+      "resident": {
+        "name": "Creative",
+        "role": "Creative director",
+        "floor": 2
+      },
+      "prompt": "Write three short posts for X or Bluesky from these ideas, each under 280 characters, each one clear on its own.\n\n{{step 1}}"
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Is every post true to the article? Is anything claimed that the article does not say? Is each one clear without the article?"
+    },
+    {
+      "type": "approval",
+      "prompt": "Read the posts before they are used."
+    }
+  ],
+  "made": "2026-11-16"
+}

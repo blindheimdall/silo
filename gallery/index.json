@@ -1,0 +1,289 @@
+{
+  "silo": "gallery",
+  "format": 1,
+  "name": "SILO gallery",
+  "procedures": [
+    {
+      "file": "customer-reply.silo.json",
+      "name": "Customer reply",
+      "description": "Reads what the customer wants and how they feel, drafts an answer, checks it, and holds urgent ones for your OK.",
+      "author": "SILO",
+      "tags": [
+        "support",
+        "email"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "4191531d3520dc65e1c3e356db9d8f5500e2c561e98508b5179fa8543954e88c"
+    },
+    {
+      "file": "dpa-check.silo.json",
+      "name": "Data processing agreement check",
+      "description": "Checks a processor agreement against GDPR Article 28, lists the business risks at the same time, and writes a sign or do-not-sign memo.",
+      "author": "SILO",
+      "tags": [
+        "gdpr",
+        "legal",
+        "compliance"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "8b72f8dd5efa493c659c6bc99d286694062fede12f71b19e08bf3f0f054a49e6"
+    },
+    {
+      "file": "data-request.silo.json",
+      "name": "Data subject request",
+      "description": "Reads a GDPR request, answers that it arrived with the due date, waits for your OK, then reminds the team a week before the month is up.",
+      "author": "SILO",
+      "tags": [
+        "gdpr",
+        "privacy",
+        "support"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "approval"
+        },
+        {
+          "type": "wait"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "c493c0e721314523f8b614859733a2090aeb8906d7af095b625221fa5d6782a9"
+    },
+    {
+      "file": "incident-postmortem.silo.json",
+      "name": "Incident postmortem",
+      "description": "A timeline and the causes worked out at the same time, actions that prevent a repeat, a blameless review, then the write-up.",
+      "author": "SILO",
+      "tags": [
+        "engineering",
+        "operations"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "27e5992cafbf16392f61f7dc8dbbe31457ad6f510e9fb7b26b23c82a2f416a67"
+    },
+    {
+      "file": "bug-triage.silo.json",
+      "name": "Bug report triage",
+      "description": "Rates a bug report, writes first steps for whoever is on call when it is critical, and turns it into a clean issue.",
+      "author": "SILO",
+      "tags": [
+        "engineering",
+        "support"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "130af3c7b78ff7573dd0efaa21441c2f07860c7bd46e749f98e1dac7b98ae82f"
+    },
+    {
+      "file": "release-notes.silo.json",
+      "name": "Release notes",
+      "description": "Sorts a list of changes into new, fixed and breaking, writes notes for users, checks them against the list, then waits for your OK.",
+      "author": "SILO",
+      "tags": [
+        "engineering",
+        "writing"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "eb60a7fa82279143021e19268e1526d37884a6d97dfceaa154611c21d5f75ae0"
+    },
+    {
+      "file": "competitor-watch.silo.json",
+      "name": "Competitor watch",
+      "description": "Every Monday morning: what changed at your competitors last week, what it means for you, and what to act on.",
+      "author": "SILO",
+      "tags": [
+        "research",
+        "market"
+      ],
+      "made": "2026-11-16",
+      "needs": [
+        "web"
+      ],
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "bf1dd86555b6673e75170eb561c37d53f89c32fd7279ec43803f613d85a2c7ad"
+    },
+    {
+      "file": "weekly-numbers.silo.json",
+      "name": "Weekly numbers note",
+      "description": "Works out the change in each number with a few lines of code, no model, then a resident writes what matters in it.",
+      "author": "SILO",
+      "tags": [
+        "reports",
+        "data"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "code"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "4768a01141362eda2d62762f861220a6befa10b09a03ae1569d29e332b748f41"
+    },
+    {
+      "file": "social-posts.silo.json",
+      "name": "Posts from an article",
+      "description": "Picks the ideas worth sharing, writes a LinkedIn post and short posts at the same time, checks them against the article, then waits for your OK.",
+      "author": "SILO",
+      "tags": [
+        "marketing",
+        "writing"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "c4115b1ba5e00c720304896fe355f8f7ef45b78b7773544cc21f2749e1e4b334"
+    },
+    {
+      "file": "translation.silo.json",
+      "name": "Translation with a second reader",
+      "description": "A translation, a second reader who compares it with the original, and a short glossary for next time.",
+      "author": "SILO",
+      "tags": [
+        "writing",
+        "languages"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "agent"
+        }
+      ],
+      "sha256": "2ce7ab1a88551569b923aba8ab784f2e38ba801db652edc0987521b538b22550"
+    },
+    {
+      "file": "job-posting.silo.json",
+      "name": "Job posting and interview plan",
+      "description": "Writes the posting and the interview plan at the same time, then checks the posting for words that put good people off.",
+      "author": "SILO",
+      "tags": [
+        "hiring",
+        "people"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        }
+      ],
+      "sha256": "c9e204677e483455722c50cb9083eff7a17c0d1c8bb7efaf95f2fafde885b431"
+    }
+  ]
+}

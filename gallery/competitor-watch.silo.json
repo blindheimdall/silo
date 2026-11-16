@@ -1,0 +1,47 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Acme Corp, Globex. We sell project management software for design agencies.",
+  "name": "Competitor watch",
+  "description": "Every Monday morning: what changed at your competitors last week, what it means for you, and what to act on.",
+  "start": {
+    "mode": "daily",
+    "at": "08:00",
+    "days": [
+      1
+    ]
+  },
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Researcher",
+        "role": "Researcher",
+        "floor": 1
+      },
+      "needs": [
+        "web"
+      ],
+      "prompt": "Find what changed in the last seven days at the companies named here: {{brief}}\n\nLook for prices, new features and launches, people joining or leaving the top, funding and outages. Give the source address of each item. Say so when you found nothing."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Analyst",
+        "role": "Analyst",
+        "floor": 1
+      },
+      "prompt": "We are described here: {{brief}}\n\nFor each change below, say in one line what it means for us. Mark the ones we should act on with ACT.\n\n{{step 1}}"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write the weekly note: the ACT items first, then the rest in one short list per company, with the sources. If nothing changed, say that in one line.\n\n{{step 2}}"
+    }
+  ],
+  "made": "2026-11-16"
+}

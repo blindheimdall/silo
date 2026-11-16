@@ -1,0 +1,43 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the merged pull requests or the commit messages since the last release.",
+  "name": "Release notes",
+  "description": "Sorts a list of changes into new, fixed and breaking, writes notes for users, checks them against the list, then waits for your OK.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Lead",
+        "role": "Lead engineer",
+        "floor": 3
+      },
+      "prompt": "Sort these changes into NEW, IMPROVED, FIXED and BREAKING. Leave out changes users never notice, like refactoring, tests and build changes. For each BREAKING one, say what users must do.\n\n{{brief}}"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write the release notes for users: a two-line summary, then the sections, each item one line that says what they can do now, not how it was built. BREAKING first, with the steps to take.\n\n{{step 1}}"
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "QA",
+        "role": "QA engineer",
+        "floor": 3
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Is every item in the notes backed by a change in the list? Is a breaking change missing or played down?"
+    },
+    {
+      "type": "approval",
+      "prompt": "Read the notes before they are published."
+    }
+  ],
+  "made": "2026-11-16"
+}

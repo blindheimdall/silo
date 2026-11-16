@@ -1,0 +1,48 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the customer's message here.",
+  "name": "Customer reply",
+  "description": "Reads what the customer wants and how they feel, drafts an answer, checks it, and holds urgent ones for your OK.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "Read the customer's message:\n{{brief}}\n\nStart your answer with one word: URGENT if money is lost, a service is down or something is due today, else ROUTINE. Then say in one line what they want, and how they feel: calm, annoyed or angry."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write a reply to this customer message:\n{{brief}}\n\nWhat it is about: {{step 1}}\n\nAnswer every question they ask, and say what happens next and by when. Warm and plain, no promises the message or the brief do not support, at most 150 words."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Is every question answered? Does the tone fit how the customer feels? Is anything promised that is not backed by the message?"
+    },
+    {
+      "type": "approval",
+      "when": {
+        "step": 1,
+        "op": "contains",
+        "text": "URGENT"
+      },
+      "prompt": "An urgent reply. Read it before it goes out."
+    }
+  ],
+  "made": "2026-11-16"
+}

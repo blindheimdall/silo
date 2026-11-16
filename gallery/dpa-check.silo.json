@@ -1,0 +1,49 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the data processing agreement here.",
+  "name": "Data processing agreement check",
+  "description": "Checks a processor agreement against GDPR Article 28, lists the business risks at the same time, and writes a sign or do-not-sign memo.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Auditor",
+        "role": "Auditor",
+        "floor": 0
+      },
+      "prompt": "Read this data processing agreement:\n{{brief}}\n\nCheck it against GDPR Article 28(3). For each point say PRESENT, WEAK or MISSING, with the clause number: processing only on documented instructions; confidentiality of staff; security measures (Article 32); rules for sub-processors; help with requests from data subjects; help with security, breach notices and impact assessments; deletion or return at the end; audits and information. Then list any transfer outside the EEA and the safeguard it names."
+    },
+    {
+      "type": "agent",
+      "parallel": true,
+      "resident": {
+        "name": "Analyst",
+        "role": "Analyst",
+        "floor": 1
+      },
+      "prompt": "Read the same agreement:\n{{brief}}\n\nList the business risks: limits of liability, who pays for audits, how many hours the processor has to report a breach, and anything that lets the processor change the terms alone."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Auditor",
+        "role": "Auditor",
+        "floor": 0
+      },
+      "target": 1,
+      "rounds": 2,
+      "prompt": "Every finding names or quotes the clause it comes from. Anything that is not in the text is marked as an assumption."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write a one-page memo for the person who signs. The verdict first: sign, sign after changes, or do not sign. Then the changes to ask for, the most important first, each with a suggested wording.\n\nArticle 28 check:\n{{step 1}}\n\nBusiness risks:\n{{step 2}}"
+    }
+  ],
+  "made": "2026-11-16"
+}

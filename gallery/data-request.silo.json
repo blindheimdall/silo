@@ -1,0 +1,46 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the request, with the date it arrived.",
+  "name": "Data subject request",
+  "description": "Reads a GDPR request, answers that it arrived with the due date, waits for your OK, then reminds the team a week before the month is up.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "Read this request:\n{{brief}}\n\nSay what the person asks for: access, correction, deletion, objection, a copy to take elsewhere, or something else. Say whether what they sent shows who they are, and what we must ask for if it does not. The answer is due one month after the day it arrived; give that date."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write the first reply: we have the request, the date we will answer by, and what we still need to confirm who they are, if anything. Plain and friendly, no legal Latin.\n\n{{step 1}}"
+    },
+    {
+      "type": "approval",
+      "prompt": "Read the first reply before it is sent."
+    },
+    {
+      "type": "wait",
+      "unit": "days",
+      "amount": 21
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "Three weeks have passed since this request arrived:\n{{step 1}}\n\nWrite a reminder for the team: what has to be done before the due date, and a draft of the final answer with the places to fill in."
+    }
+  ],
+  "made": "2026-11-16"
+}

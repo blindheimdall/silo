@@ -1,0 +1,58 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the notes, logs and chat messages from the incident.",
+  "name": "Incident postmortem",
+  "description": "A timeline and the causes worked out at the same time, actions that prevent a repeat, a blameless review, then the write-up.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Lead",
+        "role": "Lead engineer",
+        "floor": 3
+      },
+      "prompt": "From these notes, logs and messages, write the timeline of the incident in UTC, one line per event, from the first sign to full recovery:\n{{brief}}"
+    },
+    {
+      "type": "agent",
+      "parallel": true,
+      "resident": {
+        "name": "Backend",
+        "role": "Backend engineer",
+        "floor": 3
+      },
+      "prompt": "From the same material, find the causes: what set it off, why it was not caught earlier, and what made it last longer. Ask why five times. Blame no person; name systems and decisions.\n{{brief}}"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Lead",
+        "role": "Lead engineer",
+        "floor": 3
+      },
+      "prompt": "Turn this into actions: for each, what to change, which role owns it, and how we will know it worked. At most seven, the ones that prevent a repeat first.\n\nTimeline:\n{{step 1}}\n\nCauses:\n{{step 2}}"
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Reviewer",
+        "role": "Code reviewer",
+        "floor": 3
+      },
+      "target": 3,
+      "rounds": 2,
+      "prompt": "Is it blameless? Is every action specific and checkable? Is there an action that the causes do not explain?"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "Write the postmortem: a summary in three sentences, the impact, the timeline, the causes, the actions, and what went well.\n\n{{step 1}}\n\n{{step 2}}\n\n{{step 3}}"
+    }
+  ],
+  "made": "2026-11-16"
+}

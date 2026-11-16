@@ -1,0 +1,40 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Describe the role: the team, what the person will do, and what they need to know.",
+  "name": "Job posting and interview plan",
+  "description": "Writes the posting and the interview plan at the same time, then checks the posting for words that put good people off.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Coordinator",
+        "role": "Coordinator",
+        "floor": 0
+      },
+      "prompt": "From this description, write the job posting: what the person will do in the first six months, what they need to know, what is nice to have, and how the team works. No buzzwords.\n\n{{brief}}"
+    },
+    {
+      "type": "agent",
+      "parallel": true,
+      "resident": {
+        "name": "Lead",
+        "role": "Lead engineer",
+        "floor": 3
+      },
+      "prompt": "For the same role, write an interview plan: four rounds at most, what each round checks, and three questions per round with what a good answer shows.\n\n{{brief}}"
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Auditor",
+        "role": "Auditor",
+        "floor": 0
+      },
+      "target": 1,
+      "rounds": 2,
+      "prompt": "Is there anything in the posting that would put qualified people off for no reason: gendered words, years of experience where a skill is meant, needs that are really nice to have?"
+    }
+  ],
+  "made": "2026-11-16"
+}

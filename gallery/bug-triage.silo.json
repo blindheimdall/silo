@@ -1,0 +1,42 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the bug report.",
+  "name": "Bug report triage",
+  "description": "Rates a bug report, writes first steps for whoever is on call when it is critical, and turns it into a clean issue.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "QA",
+        "role": "QA engineer",
+        "floor": 3
+      },
+      "prompt": "Read this bug report:\n{{brief}}\n\nStart your answer with one word: CRITICAL (data lost, a security hole, or everyone blocked), MAJOR or MINOR. Then say which part of the product it is in and whether the report shows how to make it happen again."
+    },
+    {
+      "type": "agent",
+      "when": {
+        "step": 1,
+        "op": "contains",
+        "text": "CRITICAL"
+      },
+      "resident": {
+        "name": "Lead",
+        "role": "Lead engineer",
+        "floor": 3
+      },
+      "prompt": "This bug was rated critical:\n{{step 1}}\n\nReport:\n{{brief}}\n\nWrite the first steps for whoever is on call: how to confirm it, how to limit the damage now (turn something off, roll back, block), and who must be told."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "QA",
+        "role": "QA engineer",
+        "floor": 3
+      },
+      "prompt": "Write the issue for the tracker: a title under 80 characters, the steps to make it happen, what should happen and what happens, the severity and the part of the product. Mark what the report leaves out as QUESTION FOR THE REPORTER.\n\nTriage:\n{{step 1}}\n\nReport:\n{{brief}}"
+    }
+  ],
+  "made": "2026-11-16"
+}
