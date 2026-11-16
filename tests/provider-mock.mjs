@@ -127,7 +127,16 @@ globalThis.fetch=async (url,options)=>{
     // resident that is not there, and the fixed one comes after the refusal. With NEVER RIGHT it never passes.
     const all=messages.map(plain).join('\n'),table=(all.match(/table:[0-9a-f-]{36}/)||[])[0],agent=(all.match(/- ([0-9a-f-]{36}): Builder Fixture,/)||[])[1];
     const refused=last.startsWith('That workflow was refused'),changing=/The workflow as it is now:/.test(all);
-    if(/NEVER RIGHT/.test(all)||(/BROKEN FIRST/.test(all)&&!refused))text=JSON.stringify({name:'Broken',steps:[{type:'agent',agentId:'not-a-resident',prompt:'x'}]});
+    // WITH TESTS: a greeter whose code says Hi until its tests fail, then Hello; NEVER PASSES keeps saying Hi;
+    // NO TESTS leaves its tests out.
+    const repaired=last.startsWith('Your workflow was run on its tests');
+    if(/WITH TESTS|NEVER PASSES|NO TESTS/.test(all)){
+      const word=repaired&&!/NEVER PASSES/.test(all)?'Hello':'Hi';
+      text=JSON.stringify({name:'Greeter',description:'Greets a person.',brief:'Ana',notes:repaired?'Fixed the greeting.':'',
+        steps:[{type:'approval',prompt:'Greet them?'},{type:'code',code:`return '${word} ' + input.trim();`}],
+        ...(!/NO TESTS/.test(all)&&{tests:[{name:'Greets Ana',input:'Ana',checks:[{op:'contains',text:'Hello Ana'}]},{name:'Greets Bob',input:'Bob',checks:[{op:'regex',text:'^Hello Bob$'},{op:'missing',text:'Hi '}]}]})});
+    }
+    else if(/NEVER RIGHT/.test(all)||(/BROKEN FIRST/.test(all)&&!refused))text=JSON.stringify({name:'Broken',steps:[{type:'agent',agentId:'not-a-resident',prompt:'x'}]});
     else text='Here it is:\n```json\n'+JSON.stringify({name:changing?'Visitor log, daily':'Visitor log',description:'Keeps who came, and greets them.',brief:'',notes:'Fill the table first.',start:changing?{mode:'daily',at:'08:30',days:[1,2,3,4,5]}:null,
       form:{title:'Sign in',fields:[{name:'email',label:'Your email',type:'email',required:true}]},
       steps:[{type:'action',app:table,op:'upsert_row',fields:{match_on:'email',email:'{{brief.email}}',nope:'left out'}},{type:'agent',agentId:agent,prompt:'Write a welcome for {{brief.email}}.'}]})+'\n```';

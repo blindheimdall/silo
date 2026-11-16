@@ -45,7 +45,7 @@ Open [`docs/product/index.html`](docs/product/index.html) from a checkout to ste
 | :--- | :--- |
 | **Residents** | Configure agents with a role, instructions, model, home level and tool permissions. Try demo residents without an API key. |
 | **Knowledge** | Keep Google Drive and OneDrive folders, Notion pages and websites as searchable copies that sync on their own, reading only what changed. Residents answer from them with citations that open the exact lines, and each passage links back to its source. |
-| **Workflows** | Combine residents, reviews, app actions, waits and approvals. Run steps in parallel, branch on prior results or repeat for every item in a list. |
+| **Workflows** | Combine residents, reviews, app actions, waits and approvals. Run steps in parallel, branch on prior results or repeat for every item in a list. Or describe one in your own words: a resident drafts it with its own test cases, SILO runs the draft on them without changing anything, and a draft that fails is fixed before you see it. |
 | **Canvas** | Draw a workflow as a graph and drag steps to reorder them or run them at the same time. References between steps follow every move, and the canvas says what would be refused before you save. |
 | **Gallery** | Adopt procedures other SILOs share in one step, from a catalog checked by fingerprint, or point SILO at a catalog of your company. Ready-made ones for accounting, real estate, e-commerce and clinics: invoice checks, payment reminders, listings, lead replies, product pages, returns, patient triage and visit summaries. |
 | **Triggers** | Run on a schedule, a file change, an incoming email, a feed update, an app event or a webhook. |

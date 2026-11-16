@@ -36,9 +36,9 @@ test('the workflow builder drafts, fixes and changes workflows without saving th
     builder = (await request('/agents', { name: 'Builder Fixture', role: 'Designs workflows', floor: 2, provider: 'compatible', model: 'builder', instructions: 'Fixture.' })).data;
     table = (await request('/tables', { name: 'Visitors', columns: [{ name: 'email', type: 'text', unique: true }] })).data;
     const before = (await request('/state')).data.workflows.length;
-    const r = await draft({ text: 'Keep every visitor who signs in, and greet them.' });
+    const r = await draft({ text: 'Keep every visitor who signs in, and greet them.', test: false });
     assert.equal(r.status, 200, JSON.stringify(r.data));
-    assert.equal(r.data.agent, 'Builder Fixture'); assert.equal(r.data.tries, 1); assert.equal(r.data.notes, 'Fill the table first.');
+    assert.equal(r.data.agent, 'Builder Fixture'); assert.equal(r.data.tries, 1); assert.equal(r.data.tested, undefined, 'not tested when asked not to'); assert.equal(r.data.notes, 'Fill the table first.');
     const d = r.data.draft; made = d;
     assert.equal(d.name, 'Visitor log'); assert.equal(d.enabled, false);
     assert.deepEqual(d.steps[0], { type: 'action', app: 'table:' + table.id, op: 'upsert_row', fields: { match_on: 'email', email: '{{brief.email}}' } }, 'a field the operation does not have is left out');
@@ -48,14 +48,14 @@ test('the workflow builder drafts, fixes and changes workflows without saving th
   });
 
   await t.test('a refused draft goes back with the reason; one that never passes says why', async () => {
-    const fixed = await draft({ text: 'BROKEN FIRST: keep visitors.', agentId: builder.id });
+    const fixed = await draft({ text: 'BROKEN FIRST: keep visitors.', agentId: builder.id, test: false });
     assert.equal(fixed.status, 200, JSON.stringify(fixed.data)); assert.equal(fixed.data.tries, 2);
-    const never = await draft({ text: 'NEVER RIGHT', agentId: builder.id });
+    const never = await draft({ text: 'NEVER RIGHT', agentId: builder.id, test: false });
     assert.equal(never.status, 422); assert.match(never.data.error, /Builder Fixture could not make a workflow that passes the checks\. The last reason: Step 1: there is no resident with the id "not-a-resident"/);
   });
 
   await t.test('a draft is changed as asked, then saved and run like any workflow', async () => {
-    const changed = await draft({ text: 'Run it every weekday at 8:30.', current: made });
+    const changed = await draft({ text: 'Run it every weekday at 8:30.', current: made, test: false });
     assert.equal(changed.status, 200, JSON.stringify(changed.data));
     const d = changed.data.draft;
     assert.equal(d.name, 'Visitor log, daily'); assert.equal(d.enabled, true); assert.equal(d.mode, 'daily'); assert.equal(d.at, '08:30'); assert.deepEqual(d.days, [1, 2, 3, 4, 5]);
@@ -67,5 +67,33 @@ test('the workflow builder drafts, fixes and changes workflows without saving th
     for (let i = 0; i < 150 && !(run && !['running', 'queued', 'retrying'].includes(run.status)); i++) { await wait(100); run = (await request('/state')).data.runs.find(x => x.id === start.data.id); }
     assert.equal(run.status, 'completed', run.error);
     assert.equal((await request('/tables/Visitors/rows')).data.rows[0].email, 'ana@example.com');
+  });
+
+  await t.test('a draft is run on its own tests, fixed once when one fails, and keeps its tests', async () => {
+    const runsBefore = (await request('/state')).data.runs.length, before = (await request('/state')).data.workflows.length;
+    const r = await draft({ text: 'WITH TESTS: greet the person named in the brief.', agentId: builder.id });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.tested, true); assert.equal(r.data.repaired, true); assert.equal(r.data.tries, 2); assert.equal(r.data.notes, 'Fixed the greeting.');
+    assert.deepEqual(r.data.results.map(x => [x.name, x.pass, x.output]), [['Greets Ana', true, 'Hello Ana'], ['Greets Bob', true, 'Hello Bob']]);
+    assert.match(r.data.draft.steps[1].code, /Hello/); assert.equal(r.data.draft.tests.length, 2);
+    const st = (await request('/state')).data, runs = st.runs.slice(0, st.runs.length - runsBefore);
+    assert.equal(runs.length, 4, 'two tests, run twice'); assert.ok(runs.every(x => x.trigger === 'test' && x.status === 'completed'), 'test runs: the approval given');
+    assert.equal(st.workflows.length, before, 'still not saved');
+    // The tests go with the workflow when it is saved.
+    const saved = await request('/workflows', { ...r.data.draft, tests: undefined });
+    assert.equal(saved.status, 201, JSON.stringify(saved.data));
+    assert.equal((await request('/workflows/' + saved.data.id + '/tests', { tests: r.data.draft.tests })).status, 200);
+    assert.equal((await request('/state')).data.workflows.find(w => w.id === saved.data.id).tests.length, 2);
+  });
+
+  await t.test('a draft that still fails after its fix is shown with what failed; one without tests is refused', async () => {
+    const r = await draft({ text: 'NEVER PASSES: greet them.', agentId: builder.id });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.repaired, true); assert.equal(r.data.tries, 2);
+    const ana = r.data.results.find(x => x.name === 'Greets Ana'), bob = r.data.results.find(x => x.name === 'Greets Bob');
+    assert.equal(ana.pass, false); assert.match(ana.failures[0], /does not contain "Hello Ana"/); assert.equal(ana.output, 'Hi Ana');
+    assert.deepEqual(bob.checks.map(c => c.pass), [false, false]);
+    const none = await draft({ text: 'NO TESTS: greet them.', agentId: builder.id });
+    assert.equal(none.status, 422); assert.match(none.data.error, /The last reason: Add "tests"/);
   });
 });

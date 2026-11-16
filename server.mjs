@@ -1203,8 +1203,9 @@ async function builderCatalog(me){
   const text=lines.join('\n');
   return text.length>CATALOG_MAX?text.slice(0,CATALOG_MAX)+'\n(the list goes on, cut here)':text;
 }
-const BUILDER_GUIDE=`Answer with one JSON object only: {"name", "description", "brief", "steps", "start", "form", "notes"}.
+const BUILDER_GUIDE=`Answer with one JSON object only: {"name", "description", "brief", "steps", "start", "form", "tests", "notes"}.
 "brief" is the input used when it runs on a schedule or by hand. "notes" says in one or two sentences what the person must set up or check before using it (an app to connect, a table to fill), or is empty.
+"tests" is 1 to 3 test cases the workflow must pass: [{"name":"short name","input":"a realistic brief, different in each test","checks":[{"op":"contains"|"missing"|"regex"|"judge","text":"..."}]}]. "contains" and "missing" look for a word or phrase in the final answer, case ignored; "regex" matches it; "judge" is one requirement a reviewer checks, like "Names the overdue invoice and its amount". Use checks the final answer can really meet, one to four each, and cover a case where the workflow should hold back or say no when there is one. Tests run with approvals given, waits skipped and app changes not made.
 Steps run in order, 1 to 12. Kinds:
 - {"type":"agent","agentId":"<id>","prompt":"what to do"}: a resident works on it. Texts can use {{brief}}, {{previous}}, {{step 2}}, {{step 2.field}}, {{brief.field}} for a form answer, and {{item}} or {{item.field}} in a step that repeats.
 - {"type":"action","app":"<app id>","op":"<operation>","fields":{"<field>":"text or {{...}}"}}: calls an app directly, with no model. Use only the fields listed for that operation.
@@ -1223,17 +1224,51 @@ function draftBody(x){
   const st=x.start&&typeof x.start==='object'?x.start:null;
   return {name:x.name,description:x.description||'',brief:typeof x.brief==='string'?x.brief:'',steps:x.steps,enabled:!!st,mode:st?.mode==='daily'?'daily':'interval',interval:st?.interval,at:st?.at,days:st?.days,hook:false,watch:null,...(x.form?{form:x.form}:{})};
 }
+// The tests of a draft: the checks a run's answer can be held to, at most three cases.
+const DRAFT_CHECKS=['contains','missing','regex','judge'],DRAFT_REPAIRS=1;
+function draftTests(list){
+  if(!Array.isArray(list)||!list.length)fail('Add "tests": one to three test cases with a brief and checks.');
+  const tests=validateTests(list.slice(0,3));
+  for(const t of tests)for(const c of t.checks)if(!DRAFT_CHECKS.includes(c.op))fail(`Test "${t.name}": use only contains, missing, regex and judge checks.`);
+  return tests;
+}
+// Runs a draft on its tests as a test run: approvals given, waits skipped, app changes not made. A closed page stops
+// the run that is going, so nothing goes on spending.
+async function tryDraft(draft,tests,signal){
+  const def={...structuredClone(draft),id:'draft-'+id(),version:1},judge=tests.some(t=>t.checks.some(c=>c.op==='judge'))?judgeFor({id:def.id},'workflow',def)?.agent:null,out=[];
+  for(const t of tests){
+    if(signal?.aborted)throw signal.reason;
+    let run;
+    try{run=await executeWorkflow(def,t.input,'test',{test:true});}
+    catch(e){out.push({name:t.name,pass:false,status:'failed',failures:[`it did not start: ${e.message}`],output:'',tokens:0});continue;}
+    const stop=()=>controllers.get(run.id)?.abort(new Error('The page was closed.'));signal?.addEventListener('abort',stop,{once:true});
+    try{while(drives.has(run.id))await drives.get(run.id).catch(()=>{});}finally{signal?.removeEventListener('abort',stop);}
+    if(signal?.aborted)throw signal.reason;
+    const chk=await checkAttempt({status:run.status,error:run.error,output:run.output,data:run.data},t.checks,{kind:'workflow',label:{kind:'workflow',name:`Builder test / ${draft.name} / ${t.name}`},judge,reference:''});
+    out.push({name:t.name,pass:!chk.failures.length,status:run.status,failures:chk.failures,checks:chk.checks.map(c=>({op:c.op,text:c.text,pass:c.pass})),output:String(run.output??'').slice(0,2000),error:String(run.error||'').slice(0,300),runId:run.id,tokens:(run.tokens||0)+chk.judgeTokens});
+  }
+  return out;
+}
+// What the model is told when its draft failed a test: each failure, and what the run answered.
+const failedTests=results=>results.filter(r=>!r.pass).map(r=>`Test "${r.name}" failed: ${r.failures.join('; ')}.${r.output?`\nThe final answer was:\n${r.output.slice(0,1200)}`:''}`).join('\n\n');
 async function draftWorkflow(b,me,signal){
   const request=string(String(b.text||''),4000);if(!request)fail('Say what the workflow should do.');
+  const testing=b.test!==false;
   const agent=b.agentId?findAgent(String(b.agentId)):state.agents.find(modelReady);
   if(!agent)fail('The builder needs a resident with a model. Connect a model in IT / Uplink and give it to a resident.');
   if(agent.provider==='demo')fail(`${agent.name} gives scripted answers only. Pick a resident with a real model.`);
   let current=null;
-  if(b.current&&typeof b.current==='object'){current=JSON.stringify({name:b.current.name,description:b.current.description,brief:b.current.brief,steps:b.current.steps,form:b.current.form||null},null,1);if(current.length>30000)fail('That draft is too large to change here.');}
+  if(b.current&&typeof b.current==='object'){current=JSON.stringify({name:b.current.name,description:b.current.description,brief:b.current.brief,steps:b.current.steps,form:b.current.form||null,...(testing&&Array.isArray(b.current.tests)&&{tests:b.current.tests.slice(0,3).map(t=>({name:t?.name,input:t?.input,checks:t?.checks}))})},null,1);if(current.length>30000)fail('That draft is too large to change here.');}
   const prompt=`You design workflows for SILO.\n\n${BUILDER_GUIDE}\n\n${await builderCatalog(me)}\n\n${current?`The workflow as it is now:\n${current}\n\nChange it as the person asks, and keep the rest:\n`:'What the workflow should do:\n'}<request>\n${request}\n</request>`;
-  const messages=[{role:'user',content:prompt}];let tokens=0,last='';
-  for(let n=1;n<=DRAFT_TRIES;n++){
-    if(signal?.aborted)throw signal.reason;
+  // A draft that passes the checks of a workflow is run on its tests; when one fails, the model gets the failures and
+  // fixes it once. The draft that passed the most tests is the one shown, the later one when they pass as many.
+  const messages=[{role:'user',content:prompt}];let tokens=0,testTokens=0,last='',refused=0,repairs=0,best=null,n=0;
+  const result=(d,n)=>{
+    event('Workflow drafted',`${d.draft.name} / ${d.draft.steps.length} step${d.draft.steps.length===1?'':'s'} by ${agent.name}${n>1?` after ${n} tries`:''}${d.results?`, ${d.results.filter(r=>r.pass).length} of ${d.results.length} tests passed`:''}`,'workflow');
+    return {draft:d.draft,notes:d.notes,agent:agent.name,tries:n,tokens,...(d.results&&{tested:true,results:d.results,repaired:repairs>0,testTokens})};
+  };
+  while(refused<DRAFT_TRIES){
+    n++;if(signal?.aborted)throw signal.reason;let made;
     let r;try{r=await answer(agent,messages,signal,{},`Workflow builder (${agent.name})`,0,[],{noTools:true});}
     catch(e){if(signal?.aborted)throw e;fail(`${agent.name} could not answer: ${String(e.message).slice(0,300)}`,502);}
     tokens+=r.tokens||0;messages.push({role:'assistant',content:r.text||''});
@@ -1244,14 +1279,23 @@ async function draftWorkflow(b,me,signal){
       if(Array.isArray(body.steps))body.steps.forEach((s,i)=>{if(s&&typeof s==='object'&&s.agentId!==undefined&&!state.agents.some(a=>a.id===s.agentId))fail(`Step ${i+1}: there is no resident with the id "${String(s.agentId).slice(0,60)}". Use an agentId from the list.`);});
       const w=validateWorkflow(body);
       if(me&&me.role!=='owner')guardAppSteps(me,w);
-      const draft={name:w.name,description:w.description,brief:w.brief,steps:w.steps,enabled:w.enabled,mode:w.mode,interval:w.interval,at:w.at,days:w.days,...(w.form&&{form:w.form})};
-      event('Workflow drafted',`${w.name} / ${w.steps.length} step${w.steps.length===1?'':'s'} by ${agent.name}${n>1?` after ${n} tries`:''}`,'workflow');
-      return {draft,notes:string(String(x.notes||''),500),agent:agent.name,tries:n,tokens};
+      const draft={name:w.name,description:w.description,brief:w.brief,steps:w.steps,enabled:w.enabled,mode:w.mode,interval:w.interval,at:w.at,days:w.days,...(w.form&&{form:w.form}),...(testing&&{tests:draftTests(x.tests)})};
+      made={draft,notes:string(String(x.notes||''),500)};
     }catch(e){
-      last=String(e.message).slice(0,500);
+      refused++;last=String(e.message).slice(0,500);
       messages.push({role:'user',content:`That workflow was refused: ${last}\nAnswer with the whole JSON object again, fixed.`});
+      continue;
     }
+    if(!testing)return result(made,n);
+    const results=await tryDraft(made.draft,made.draft.tests,signal),passed=results.filter(r=>r.pass).length;
+    testTokens+=results.reduce((s,r)=>s+(r.tokens||0),0);
+    if(!best||passed>=best.passed)best={...made,results,passed};
+    if(passed===results.length||repairs>=DRAFT_REPAIRS)return result(best,n);
+    repairs++;
+    messages.push({role:'user',content:`Your workflow was run on its tests, as a test run.\n\n${failedTests(results)}\n\nFix the workflow so it passes them. Change a test only when the test itself is wrong, and say why in "notes". Answer with the whole JSON object again.`});
   }
+  // A repair that never passed the checks leaves the draft that was tested.
+  if(best)return result(best,n);
   fail(`${agent.name} could not make a workflow that passes the checks. The last reason: ${last}`,422);
 }
 // A fixed result: the fields a workflow promises to return, as JSON. SILO checks it at the end of every run.
@@ -6904,7 +6948,8 @@ const server=http.createServer(async(req,res)=>{
       if(route==='/api/workflows/draft'&&req.method==='POST'){
         // A closed page stops the builder, so it does not go on spending for nobody.
         const ctl=new AbortController(),gone=()=>{if(!res.writableEnded)ctl.abort(new Error('The page was closed.'));};res.on('close',gone);
-        const timer=setTimeout(()=>ctl.abort(new Error('The builder took longer than 3 minutes.')),180000);
+        // Testing the draft runs it up to six times, so it gets longer.
+        const mins=b.test===false?3:10,timer=setTimeout(()=>ctl.abort(new Error(`The builder took longer than ${mins} minutes.`)),mins*60000);
         try{return send(res,200,await draftWorkflow(b,me,ctl.signal));}
         catch(e){if(ctl.signal.aborted&&!e.status)fail(String(ctl.signal.reason?.message||'Stopped.'),504);throw e;}
         finally{clearTimeout(timer);res.off('close',gone);}

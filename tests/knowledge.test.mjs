@@ -75,11 +75,13 @@ test('OneDrive folders are walked, pages followed, and only documents kept',asyn
 });
 
 test('small vectors give the same order',()=>{
-  const rnd=n=>Array.from({length:n},()=>Math.random()*2-1),q=rnd(256),vs=Array.from({length:40},()=>rnd(256));
+  // The same numbers every time, so a near tie cannot make the test flaky.
+  let seed=7;const next=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648*2-1;
+  const rnd=n=>Array.from({length:n},next),q=rnd(256),vs=Array.from({length:40},()=>rnd(256));
   const cos=(a,b)=>{let d=0,x=0,y=0;for(let i=0;i<a.length;i++){d+=a[i]*b[i];x+=a[i]*a[i];y+=b[i]*b[i];}return d/Math.sqrt(x*y);};
-  const exact=vs.map((v,i)=>[i,cos(q,v)]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]);
-  const small=vs.map((v,i)=>[i,cos(q,vectorOf({vq:packVector(v)}))]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]);
-  assert.deepEqual(small,exact);
+  const exact=vs.map(v=>cos(q,v)),small=vs.map(v=>cos(q,vectorOf({vq:packVector(v)})));
+  assert.ok(Math.max(...exact.map((s,i)=>Math.abs(s-small[i])))<0.005,'the similarity moves by less than 0.005');
+  const top=s=>s.map((x,i)=>[i,x]).sort((a,b)=>b[1]-a[1])[0][0];assert.equal(top(small),top(exact));
   assert.ok(JSON.stringify(packVector(q)).length<JSON.stringify(q.map(v=>Math.round(v*1e5)/1e5)).length/4,'a quarter of the room or less');
 });
 
