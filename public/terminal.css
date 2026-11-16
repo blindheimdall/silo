@@ -980,3 +980,29 @@ dialog:has(#workflow-form.canvas-mode){width:min(1080px,calc(100vw - 32px))}
 .fc-problems button,.fc-problems b{background:none;border:1px solid #8a3a2a;color:var(--red);font:400 8px var(--term);letter-spacing:1px;padding:1px 5px;margin-right:6px;cursor:pointer}
 .fc-problems button:hover,.fc-problems button:focus-visible{background:var(--red);color:#170300;outline:0}
 @media(max-width:700px){.fc-viewport{height:300px}.fc-hint{display:none}}
+
+/* ---------- workspaces (System) ---------- */
+.ws-list{display:grid;gap:8px;margin:12px 0 4px}
+.ws-row{border:1px solid var(--ph-low);background:#010401b0;padding:10px 12px;display:grid;gap:5px;min-width:0;transition:opacity .2s}
+.ws-row.main{border-style:dashed}
+.ws-row.busy{opacity:.55;pointer-events:none}
+.ws-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}
+.ws-head strong{font:400 13px/1.3 var(--term);letter-spacing:1px;color:var(--amb-hi);text-shadow:var(--amb-glow);overflow-wrap:anywhere}
+.ws-state{font:9px var(--term);letter-spacing:2px;color:var(--ph-dim);border:1px solid var(--ph-low);padding:1px 6px}
+.ws-state.tag-ok{color:var(--ph-hi);border-color:var(--ph-dim)}.ws-state.tag-warn{color:var(--amb);border-color:var(--amb-dim)}
+.ws-state.busy::after{content:'_';margin-left:2px;animation:blink 1s steps(1) infinite}
+.ws-url{justify-self:start;max-width:100%;font:11px var(--term);color:var(--ph);text-shadow:var(--glow);text-decoration:none;border-bottom:1px dotted var(--ph-dim);overflow-wrap:anywhere}
+.ws-url:hover,.ws-url:focus-visible{color:var(--ph-hi);border-bottom-color:var(--ph-hi);outline:0}
+.ws-row>p{margin:0}
+.ws-meter{max-width:320px;margin:0}
+.ws-meter.full span{background:var(--red);box-shadow:0 0 8px var(--red)}
+.ws-error{color:var(--red)!important;text-shadow:0 0 4px #ff6a4d55;overflow-wrap:anywhere}
+.ws-setup{border-left:2px solid var(--amb-dim);padding:4px 0 4px 10px}
+.ws-setup p{margin:0 0 6px;color:var(--amb)!important}
+.ws-copy{display:flex;gap:6px}.ws-copy .field{flex:1;min-width:0;font-size:10px;padding:5px 7px}
+.ws-row .heading-actions{margin-top:2px}
+.ws-change{border-top:1px dotted var(--ph-low);padding-top:8px}
+#ws-form{margin-top:12px;border-top:3px double var(--ph-low);padding-top:12px}
+#ws-preview{margin:6px 0 0}
+@media(max-width:520px){.ws-copy{flex-direction:column}}
+@media(prefers-reduced-motion:reduce){.ws-state.busy::after{animation:none}.ws-row{transition:none}}

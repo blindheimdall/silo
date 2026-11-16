@@ -51,6 +51,7 @@ Open [`docs/product/index.html`](docs/product/index.html) from a checkout to ste
 | **Guardrails** | Send personal data and keys to models as placeholders and get the real values back in answers and tool calls. Catch tool results that try to give orders, in English and Romanian, and hold the changes that follow for your approval. Hide words in answers, or block or hold tool calls with your own rules. |
 | **Caching** | Ask Anthropic and OpenAI to cache the parts of a request that repeat, so tool loops and long conversations read them at a lower price. Price cached input separately and see what caching saved each month. Optionally answer the same question again without a model call. |
 | **Compliance report** | For a period, show which models got data and where they run, what was hidden, who approved or refused what, what the guardrails caught and who changed settings. The report is built from the chained audit log and downloads as PDF, Markdown or JSON, with findings first. |
+| **Workspaces** | Host separate teams on one server, for agencies and service providers: each its own SILO with its own people, keys, residents, files and monthly budget, at its own address, unable to see the others or reach the server. |
 | **Approvals and traces** | Pause a workflow for a human decision. Inspect model calls, tool use, timings, tokens and estimated costs. Replay from a selected step. |
 | **Evaluation and versions** | Test residents and workflows against reference cases, compare changes and restore earlier workflow versions. |
 | **Spatial interface** | Navigate 144 levels, locate a resident or follow workflow activity from the live camera room. |
@@ -120,6 +121,8 @@ See "Running without anyone signed in" in [docs/handbook.md](docs/handbook.md).
 | **Railway** | Make a project from the repository. `railway.json` builds the Dockerfile; attach a volume at `/data`. |
 
 The first start prints a setup address in the service's log. Open it once to make the owner account. SILO finds the service's HTTPS proxy by itself; behind your own, set `SILO_PROXY=1`. See "Deploy to the cloud" in the [handbook](docs/handbook.md#deploy-to-the-cloud).
+
+For several teams on one server, start SILO with `SILO_WORKSPACES=1` and set `SILO_WORKSPACE_DOMAIN` to a domain with a wildcard DNS record (`*.silo.example.com`). Each workspace opens at `<name>.silo.example.com`; this SILO becomes the main workspace, whose owners make, pause, budget and remove the others in System. See "Workspaces" in the [handbook](docs/handbook.md#workspaces).
 
 For development, testing and production, run one SILO for each and move workflows between them through a Git repository: push from development, read what a pull would change, and pull into a protected production SILO (System, Environments and Git). See "Development, testing and production" in the handbook.
 

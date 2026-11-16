@@ -17,7 +17,8 @@ if (!env.SILO_DATA_DIR && launch.dataDir) env.SILO_DATA_DIR = launch.dataDir;
 if (!env.SILO_WORK_DIR && launch.workDir) env.SILO_WORK_DIR = launch.workDir;
 if (!env.PORT && launch.port) env.PORT = String(launch.port);
 const DATA = path.resolve(ROOT, env.SILO_DATA_DIR || 'data'), PORT = Number(env.PORT || 3000), URL_ = `http://127.0.0.1:${PORT}`;
-const OPEN = process.argv.includes('--open'), SERVER = process.env.SILO_SERVER_SCRIPT || 'server.mjs';
+// SILO_WORKSPACES=1: the workspace host (workspaces.mjs) runs in front of one SILO for each team.
+const OPEN = process.argv.includes('--open'), SERVER = process.env.SILO_SERVER_SCRIPT || (env.SILO_WORKSPACES === '1' ? 'workspaces.mjs' : 'server.mjs');
 const LOGS = path.join(DATA, 'logs'), LOG = path.join(LOGS, 'silo.log'), PID = path.join(DATA, 'silo.pid.json');
 fs.mkdirSync(LOGS, { recursive: true });
 

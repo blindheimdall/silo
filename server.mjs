@@ -1,3 +1,4 @@
+import { TENANT, NO_PROGRAMS } from './tenant-guard.mjs';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -151,7 +152,7 @@ if(state.version===3){
 }
 for(const agent of state.agents) agent.status='idle';
 const DEFAULT_PACT='1. Never invent file contents, web addresses or numbers.\n2. Never expose secrets, keys or passwords.\n3. Propose files to the Archive; never claim a file is saved before the operator approves it.';
-state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};state.settings.caching={prompt:true,...(state.settings.caching||{}),answers:{enabled:false,minutes:60,...(state.settings.caching?.answers||{})}};
+state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';if(TENANT)state.settings.sandbox='off';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};state.settings.caching={prompt:true,...(state.settings.caching||{}),answers:{enabled:false,minutes:60,...(state.settings.caching?.answers||{})}};
 // The gallery (gallery.mjs): the procedures that came with SILO, and the newest catalog from a feed, read only when
 // someone opens it. An empty feed reads none. SILO_GALLERY_FEED sets the first one, like a catalog of your company.
 {const env=process.env.SILO_GALLERY_FEED,first=env===undefined?GALLERY_FEED:env;state.settings.gallery={feed:first,...(state.settings.gallery||{})};
@@ -221,7 +222,7 @@ function residentActivity(){
   const out={},now=Date.now(),byId=new Map(state.agents.map(a=>[a.id,a]));
   // Standing conditions first: a connected resident that cannot work right now.
   // What blocks a provider is worked out once for each provider, not once for each of its residents.
-  const blockedBy=new Map(),providerBlock=p=>{if(!blockedBy.has(p))blockedBy.set(p,p!=='ollama'&&!secrets.has(p)?`No key for ${p}. Add it in IT.`:limitRatios(p).some(([,r])=>r>=1)?`The spending limit for ${p} is reached.`:'');return blockedBy.get(p);};
+  const blockedBy=new Map(),providerBlock=p=>{if(!blockedBy.has(p))blockedBy.set(p,p!=='ollama'&&!secrets.has(p)?`No key for ${p}. Add it in IT.`:limitRatios(p).some(([,r])=>r>=1)?`The spending limit for ${p} is reached.`:hostedBudget&&workspaceSpent(true)>=hostedBudget?'The workspace budget for the month is reached.':'');return blockedBy.get(p);};
   for(const a of state.agents){
     if(a.provider==='demo')continue;
     let why=providerBlock(a.provider);
@@ -309,7 +310,16 @@ const PROXY_ENV=String(process.env.SILO_PROXY||'').trim(),ON_FLY=!!process.env.F
 const TRUST_PROXY=PROXY_ENV==='1'||(PROXY_ENV!=='0'&&!!(process.env.RENDER_EXTERNAL_URL||ON_FLY||process.env.RAILWAY_PUBLIC_DOMAIN));
 const PUBLIC_URL=(()=>{const e=process.env,u=e.SILO_PUBLIC_URL||e.RENDER_EXTERNAL_URL||(ON_FLY&&`https://${e.FLY_APP_NAME}.fly.dev`)||(e.RAILWAY_PUBLIC_DOMAIN&&`https://${e.RAILWAY_PUBLIC_DOMAIN}`)||'';
   try{const x=new URL(String(u).trim());return /^https?:$/.test(x.protocol)?x.origin:'';}catch{return '';}})();
-const LISTEN=HOST_ENV||(NETWORK?'0.0.0.0':'127.0.0.1'),WIDE=NETWORK||!/^(127\.|localhost$|::1$)/.test(LISTEN);
+// Under workspaces.mjs, the host in front of every workspace: requests come only through it, each with the token it
+// gave this workspace at start, and the visitor's address in its own headers. Only the host itself knows the control
+// token, for the status of the workspace and its budget.
+const HOSTED=String(process.env.SILO_HOSTED_TOKEN||''),HOSTED_CONTROL=String(process.env.SILO_HOSTED_CONTROL||'');
+const sameSecret=(a,b)=>!!b&&a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
+// What the host lets this workspace spend in a month, in dollars, all providers together. 0 is no budget.
+let hostedBudget=Math.max(0,Number(process.env.SILO_WORKSPACE_BUDGET)||0);
+// The owner of the workspaces, in the main one: the host's control address.
+const HOST_CONTROL=String(process.env.SILO_HOST_CONTROL||''),HOST_CONTROL_TOKEN=String(process.env.SILO_HOST_CONTROL_TOKEN||'');
+const LISTEN=HOSTED?'127.0.0.1':HOST_ENV||(NETWORK?'0.0.0.0':'127.0.0.1'),WIDE=NETWORK||!!HOSTED||!/^(127\.|localhost$|::1$)/.test(LISTEN);
 const SETUP_CODE=WIDE&&!state.users.length?randomBytes(16).toString('hex'):'';
 const setupOk=c=>!!SETUP_CODE&&typeof c==='string'&&c.length===32&&timingSafeEqual(Buffer.from(c),Buffer.from(SETUP_CODE));
 // Remote access through a Cloudflare Tunnel (tunnel.mjs). SILO stays on 127.0.0.1 and it always needs an account.
@@ -538,8 +548,33 @@ setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
 setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,guardrails:{...state.settings.guardrails,pii:{...state.settings.guardrails.pii,terms:[]}},sync:{environment:state.settings.sync.environment,protect:state.settings.sync.protect},radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),guardMasked:{...guardTally},remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,guardrails:{...state.settings.guardrails,pii:{...state.settings.guardrails.pii,terms:[]}},sync:{environment:state.settings.sync.environment,protect:state.settings.sync.protect},radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,hosted:hostedView(),tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),guardMasked:{...guardTally},remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
+// Hosted workspaces: what the page shows of the workspace, what the host reads, and the parts that would run programs
+// on the server or reach its network (the guard in tenant-guard.mjs refuses those anyway; this says so plainly).
+const TENANT_OFF=/^\/api\/(desktop|browser|apps\/open|remote|services|sync|python-tools|system\/(update|startup))(\/|$)/;
+const cents=n=>Math.round(n*1e6)/1e6;
+function hostedView(){return HOSTED||HOST_CONTROL?{tenant:TENANT,host:!!HOST_CONTROL,budget:hostedBudget,month:cents(workspaceSpent())}:null;}
+async function hostedControl(req,res){
+  if(!sameSecret(String(req.headers['x-silo-control']||''),HOSTED_CONTROL))return send(res,404,{error:'Not found.'});
+  const route=new URL(req.url,'http://x').pathname;
+  if(route==='/api/hosted/status'&&req.method==='GET')
+    return send(res,200,{version:APP_VERSION,accounts:state.users.length,owners:state.users.filter(u=>u.role==='owner').length,residents:state.agents.length,working:state.agents.filter(a=>a.status==='working').length,month:cents(workspaceSpent()),budget:hostedBudget,setup:!state.users.length?SETUP_CODE:''});
+  if(route==='/api/hosted/plan'&&req.method==='POST'){
+    const b=JSON.parse(await readText(req,2000)||'{}'),budget=Number(b.budget);
+    if(!(budget>=0&&budget<=1e6))fail('A budget is dollars a month, from 0 to 1000000.');
+    if(budget!==hostedBudget){hostedBudget=budget;limitFull.clear();stateRev++;event(budget?'Workspace budget set':'Workspace budget removed',budget?`${money(budget)} a month, for all providers together.`:'','system');}
+    return send(res,200,{budget:hostedBudget});
+  }
+  return send(res,404,{error:'Not found.'});
+}
+// The main workspace asks the host to make, pause, start, restart and remove workspaces.
+async function hostControl(method,p,body){
+  if(!HOST_CONTROL)fail('This SILO does not host workspaces. Start it with SILO_WORKSPACES=1.',409);
+  let r;try{r=await fetch(HOST_CONTROL+p,{method,headers:{authorization:'Bearer '+HOST_CONTROL_TOKEN,'content-type':'application/json'},body:body&&JSON.stringify(body),signal:AbortSignal.timeout(30000)});}
+  catch(e){fail('The workspace host does not answer: '+(e.cause?.message||e.message),502);}
+  const d=await r.json().catch(()=>({}));if(!r.ok)fail(d.error||`The workspace host answered ${r.status}.`,r.status>=500?502:r.status);return d;
+}
 function string(v,max=10000){if(typeof v!=='string'||v.length>max)fail('Invalid or oversized text.');return v.trim();}
 function findAgent(agentId){const a=state.agents.find(a=>a.id===agentId);if(!a)fail('Agent not found.',404);return a;}
 const PERMISSIONS=['read_files','write_files','web','memory','run_code','delegate','browser','desktop','google','microsoft','slack','github','notion','tables'];
@@ -1323,7 +1358,10 @@ function limitRatios(provider,includeInflight=false){
   for(const x of out)if(isFull(provider,x[0],x[3]))x[1]=Math.max(1,x[1]);
   return out;
 }
-function budgetRatio(){let r=0;for(const p of PROVIDERS)for(const x of limitRatios(p,true))r=Math.max(r,x[1]);return Math.min(1.5,r);}
+function budgetRatio(){let r=hostedBudget?workspaceSpent(true)/hostedBudget:0;for(const p of PROVIDERS)for(const x of limitRatios(p,true))r=Math.max(r,x[1]);return Math.min(1.5,r);}
+// All providers together this month, for the workspace budget; with held, what calls running now hold too.
+function workspaceSpent(held=false){let c=0;for(const p of PROVIDERS)c+=spent(p,'month').cost+(held?inflightSpend.get(p)?.cost||0:0);return c;}
+const budgetFull=used=>`This workspace has spent its budget for the month (${money(used)} of ${money(hostedBudget)}). Whoever hosts it sets the budget; it starts again on the 1st.`;
 const money=n=>'$'+(n<1?n.toFixed(4):n.toFixed(2));
 // What a call cost. Input read from a provider's cache costs its own price when you set one, otherwise a share of the
 // input price (a tenth at Anthropic; half at OpenAI, the least it takes off, so savings are never overstated). Anthropic
@@ -1350,6 +1388,7 @@ function recordUsage(provider,model,input,output,{cached=0,written=0}={}){
   for(const [kind,ratio,used,limit] of limitRatios(provider)){
     const level=ratio>=1?'reached':ratio>=.8?'near':null;if(level)warnLimit(provider,kind,level,kind==='token'?`${used} of ${limit} tokens`:`${money(used)} of ${money(limit)}`);
   }
+  if(hostedBudget){const used=workspaceSpent(),r=used/hostedBudget,level=r>=1?'reached':r>=.8?'near':null;if(level)warnLimit('workspace','budget',level,`${money(used)} of ${money(hostedBudget)} this month`);}
 }
 // An answer given again from the answer cache: no call, and what the first one cost counts as saved.
 function recordReuse(provider,model,was){
@@ -1382,6 +1421,7 @@ function warnLimit(provider,kind,level,show){
 const limitFull=new Map(),limitPeriod=kind=>kind==='monthly'?today().slice(0,7):today();
 const isFull=(provider,kind,limit)=>{const m=limitFull.get(provider+':'+kind);return !!m&&m.period===limitPeriod(kind)&&m.limit===limit;};
 function checkSpending(provider){
+  if(hostedBudget){const used=workspaceSpent(true);if(used>=hostedBudget)fail(budgetFull(used),402);}
   for(const [kind,ratio,used,limit] of limitRatios(provider,true))if(ratio>=1)
     fail(`The ${kind} limit for ${provider} is reached (${kind==='token'?used+' of '+limit+' tokens':money(used)+' of '+money(limit)}). Raise it in IT, or wait for the next ${kind==='monthly'?'month':'day'}.`,402);
 }
@@ -1412,6 +1452,14 @@ function reserveSpending(provider,model,estInput=5,estOutput=7,{minOutput}={}){
       fail(`The ${kind} limit for ${provider} is reached: there is no room left for this call (${show}). Raise it in IT, or wait for the next ${kind==='monthly'?'month':'day'}.`,402);
     }
     if(kind&&minOutput!==undefined)out=Math.max(need,Math.min(estOutput,fit));
+  }
+  // The workspace budget, kept the same way: no call it cannot pay for, and an answer made shorter when it may be.
+  if(hostedBudget){
+    if(!price)fail(`This workspace has a monthly budget, but no price is set for ${model||'the default model of '+provider}, so what the call costs is unknown. Set its price (or ${provider}:*) in IT under Spending.`,402);
+    const left=hostedBudget-workspaceSpent(true)-estInput*price.input/1e6,fit=price.output>0?Math.floor(left*1e6/price.output):left>=0?Infinity:-1;
+    const need=minOutput===undefined?estOutput:Math.min(minOutput,estOutput);
+    if(fit<need)fail(budgetFull(workspaceSpent(true)),402);
+    if(minOutput!==undefined)out=Math.max(need,Math.min(out,fit));
   }
   const estCost=price?(estInput*price.input+out*price.output)/1e6:0,estTokens=estInput+out;
   cur.cost+=estCost;cur.tokens+=estTokens;cur.calls++;inflightSpend.set(provider,cur);
@@ -1775,7 +1823,7 @@ async function startOAuthFlow(b){
   }
   const clientSecret=typeof b.clientSecret==='string'?string(b.clientSecret,400):(secrets.get(oauthSecretKey(targetId))?.clientSecret||'');
   const scopes=Array.isArray(b.scopes)?b.scopes.map(s=>string(String(s),80)).filter(Boolean):String(b.scopes||'').split(/\s+/).filter(Boolean);
-  const redirectUri=string(String(b.redirectUri||`http://127.0.0.1:${PORT}/api/oauth/callback`),300);
+  const redirectUri=string(String(b.redirectUri||`${PUBLIC_URL||'http://127.0.0.1:'+PORT}/api/oauth/callback`),300);
   const codeVerifier=randomBytes(32).toString('base64url');
   const codeChallenge=createHash('sha256').update(codeVerifier).digest('base64url');
   const oauthState=randomBytes(16).toString('hex');
@@ -5643,18 +5691,22 @@ const rawBodyOk=(p,type='')=>((p==='/api/upload'||p==='/api/voice/transcribe')&&
 async function readBody(req){const body=await readText(req,300000);try{return JSON.parse(body||'{}');}catch{fail('Invalid JSON.');}}
 const server=http.createServer(async(req,res)=>{
   try{
+    if(HOSTED&&!sameSecret(String(req.headers['x-silo-hosted']||''),HOSTED)){res.writeHead(403,{'Content-Type':'text/plain; charset=utf-8'});return res.end('Open this workspace at its own address.');}
+    if(HOSTED&&req.url.startsWith('/api/hosted/'))return await hostedControl(req,res);
     // The hosting service checks that SILO answers before anyone has an account, from its own network.
     if(req.method==='GET'&&req.url==='/api/health')return send(res,200,{ok:true});
     const host=req.headers.host;
     // Requests from the tunnel come from cloudflared on this computer, with Cloudflare's headers. They never count as local.
-    const viaTunnel=loopback(req.socket.remoteAddress)&&(req.headers['cf-connecting-ip']!==undefined||req.headers['cf-ray']!==undefined||(!!tunnel.host()&&remoteHost(host)===tunnel.host()));
+    const viaTunnel=!HOSTED&&loopback(req.socket.remoteAddress)&&(req.headers['cf-connecting-ip']!==undefined||req.headers['cf-ray']!==undefined||(!!tunnel.host()&&remoteHost(host)===tunnel.host()));
     // Through a trusted proxy, a request carries its forwarding headers; the container's own health check does not.
     // Its visitor is never this computer, even when a header says 127.0.0.1.
     const fwd=h=>String(req.headers[h]||'').split(',').map(x=>x.trim()).filter(Boolean);
-    const proxied=TRUST_PROXY&&!viaTunnel&&(req.headers['x-forwarded-for']!==undefined||req.headers['x-forwarded-proto']!==undefined||(ON_FLY&&req.headers['fly-client-ip']!==undefined));
-    const proxyIp=proxied?[ON_FLY?String(req.headers['fly-client-ip']||'').trim():'',fwd('x-forwarded-for').at(-1)].find(x=>x&&isIP(x)&&!loopback(x))||'unknown':'';
+    // Through the workspace host, a request is local only when the host says it came from this computer.
+    const proxied=HOSTED?req.headers['x-silo-local']!=='1':TRUST_PROXY&&!viaTunnel&&(req.headers['x-forwarded-for']!==undefined||req.headers['x-forwarded-proto']!==undefined||(ON_FLY&&req.headers['fly-client-ip']!==undefined));
+    const hostedIp=HOSTED?String(req.headers['x-silo-client']||'').trim():'';
+    const proxyIp=!proxied?'':HOSTED?(isIP(hostedIp)&&!loopback(hostedIp)?hostedIp:'unknown'):[ON_FLY?String(req.headers['fly-client-ip']||'').trim():'',fwd('x-forwarded-for').at(-1)].find(x=>x&&isIP(x)&&!loopback(x))||'unknown';
     const clientIp=viaTunnel?String(req.headers['cf-connecting-ip']||'internet').slice(0,64):proxyIp||req.socket.remoteAddress;
-    const scheme=viaTunnel||(proxied&&fwd('x-forwarded-proto')[0]?.toLowerCase()==='https')?'https':'http';
+    const scheme=viaTunnel||(proxied&&String((HOSTED?req.headers['x-silo-proto']:fwd('x-forwarded-proto')[0])||'').toLowerCase()==='https')?'https':'http';
     const secure=scheme==='https'?'; Secure':'';
     if(viaTunnel){if(!tunnel.host()||remoteHost(host)!==tunnel.host())fail('Invalid host.',403);if(!state.users.length)fail('Remote access needs an account.',403);}
     else if(!WIDE){if(host!==`127.0.0.1:${PORT}`&&host!==`localhost:${PORT}`)fail('Invalid host.',403);}
@@ -6018,6 +6070,8 @@ const server=http.createServer(async(req,res)=>{
       }
       const b=req.method==='GET'||url.pathname==='/api/upload'||url.pathname==='/api/voice/transcribe'||TABLE_IMPORT.test(url.pathname)?{}:await readBody(req);const route=url.pathname;
       const via=viaTunnel?'internet':loopback(clientIp)?'local':'network';
+      if(TENANT&&TENANT_OFF.test(route))fail(NO_PROGRAMS+' This part of SILO is not in hosted workspaces.',403);
+      if(HOSTED&&/^\/api\/remote(\/|$)/.test(route))fail('With workspaces on, people reach SILO through the workspace host, so a tunnel to this workspace is off. Put the host behind your HTTPS proxy, or a tunnel to its port.',409);
       if((req.method!=='GET'&&route!=='/api/login'&&route!=='/api/logout')||/^\/api\/(export|audit\/export)$/.test(route))res.once('finish',()=>{
         const u=state.users.find(x=>x.id===(sess.token?sess.userId:sessions.get(cookies.silo_session)?.userId))||state.users.find(x=>x.id===sess.userId);
         auditNote({action:req.method+' '+route.replace(/\/[0-9a-f]{8}-[0-9a-f-]{27,}|\/[0-9a-f]{16,}|\/\d+(?=\/|$)/gi,'/:id'),actor:(u?.name||(state.users.length?'not signed in':'this computer'))+(sess.token?` (token ${sess.token.name})`:''),role:u?.role,ip:clientIp,via,target:route,status:res.statusCode,outcome:res.statusCode<400?'ok':res.statusCode===401||res.statusCode===403?'denied':'failed',detail:res.auditError});
@@ -6456,7 +6510,7 @@ const server=http.createServer(async(req,res)=>{
       if(route==='/api/archive'&&req.method==='GET'){syncEmbedder();let error='';await archive.update().catch(e=>{error=e.message;});return send(res,200,{...archive.stats(),error,searchKey:secrets.has('search')});}
       if(route==='/api/archive/search'&&req.method==='POST'){syncEmbedder();return send(res,200,{hits:await archive.search(string(b.query||'',400),8)});}
       if(route==='/api/search-test'&&req.method==='POST'){const results=await webSearch(string(b.query||'',400)||'silo',{engine:state.settings.search.engine,key:secrets.get('search')?.key||'',url:state.settings.search.url}).catch(e=>fail(e.message,502));return send(res,200,{results});}
-      if(route==='/api/sandbox'&&req.method==='GET')return send(res,200,await sandboxInfo(state.settings.sandbox));
+      if(route==='/api/sandbox'&&req.method==='GET')return send(res,200,TENANT?{mode:'off',docker:false,using:'off',local:{},hosted:true}:await sandboxInfo(state.settings.sandbox));
       // What the guardrails would do with a text, without a model: what is hidden, what reads like orders, which rules match.
       if(route==='/api/guardrails/check'&&req.method==='POST'){
         const text=string(String(b.text??''),20000),g=state.settings.guardrails;
@@ -6476,10 +6530,11 @@ const server=http.createServer(async(req,res)=>{
         }
         if(b.embeddings){const p=b.embeddings.provider;if(!['off','openai','ollama','compatible'].includes(p))fail('Unknown embedding provider.');state.settings.embeddings={provider:p,model:string(b.embeddings.model||'',100)};syncEmbedder();}
         if(b.network!==undefined){
+          if(HOSTED&&b.network===true)fail('This SILO is opened through its workspace host, which decides who can reach it.',409);
           if(b.network===true&&!state.users.some(u=>u.role==='owner'))fail('Add an owner account first. Network access always needs a password.');
           state.settings.network=b.network===true;event(state.settings.network?'Network access turned on':'Network access turned off','Restart SILO for this to take effect.','system');
         }
-        if(b.sandbox!==undefined){if(!['auto','docker','local','off'].includes(b.sandbox))fail('Choose auto, docker, local or off.');state.settings.sandbox=b.sandbox;event('Sandbox setting changed',b.sandbox,'system');}
+        if(b.sandbox!==undefined){if(!['auto','docker','local','off'].includes(b.sandbox))fail('Choose auto, docker, local or off.');if(TENANT&&b.sandbox!=='off')fail(NO_PROGRAMS+' Code runs only in code steps.',403);state.settings.sandbox=b.sandbox;event('Sandbox setting changed',b.sandbox,'system');}
         if(b.pact){const enabled=b.pact.enabled!==false,rules=string(String(b.pact.rules??state.settings.pact?.rules??DEFAULT_PACT),4000),maxChars=Math.max(0,Math.min(100000,Math.round(Number(b.pact.maxChars)||0)));state.settings.pact={enabled,rules,maxChars};event('The Pact updated',enabled?`${rules.split('\n').filter(Boolean).length} articles${maxChars?' · max '+maxChars+' chars':''}`:'Turned off','system');}
         if(b.guardrails){const g=cleanGuardrails(b.guardrails,state.settings.guardrails);state.settings.guardrails=g;event('Guardrails updated',`Personal data ${g.pii.mode==='mask'?'hidden from models':'sent as it is'} · orders in tool results: ${g.injection.mode} · ${g.rules.length} rule${g.rules.length===1?'':'s'}`,'system');}
         if(b.whispers!==undefined){state.settings.whispers=b.whispers!==false;event(state.settings.whispers?'Whisper network turned on':'Whisper network turned off','Notes shared on a gallery reach nearby residents.','system');}
@@ -7024,6 +7079,20 @@ const server=http.createServer(async(req,res)=>{
         return send(res,200,{...next,blocked:next.blocked.length,hasSecret:!!secrets.get('sso')?.clientSecret,on:ssoOn()});
       }
       if(route==='/api/sso/test'&&req.method==='POST'){clearSsoCache();const m=await discover(String(b.issuer||state.settings.sso.issuer||''));return send(res,200,{issuer:m.issuer,authorize:new URL(m.authorization_endpoint).host,methods:m.token_endpoint_auth_methods_supported||['client_secret_basic'],claims:(m.claims_supported||[]).slice(0,60)});}
+      if(route==='/api/workspaces'&&req.method==='GET')return send(res,200,HOST_CONTROL?{hosting:true,...await hostControl('GET','/workspaces')}:{hosting:false,hosted:!!HOSTED});
+      if(route==='/api/workspaces'&&req.method==='POST'){
+        const d=await hostControl('POST','/workspaces',{slug:b.slug,name:b.name,budget:b.budget});
+        event('Workspace made',`${d.workspace.name} at ${d.workspace.url}`,'system');await persist();return send(res,201,d);
+      }
+      const wsr=route.match(/^\/api\/workspaces\/([a-z0-9-]{1,40})$/);
+      if(wsr&&req.method==='POST'){
+        const act=['pause','resume','restart','remove','budget','rename'].includes(b.action)?b.action:fail('Choose pause, resume, restart, remove, budget or rename.');
+        const d=await hostControl('POST','/workspaces/'+wsr[1],{action:act,budget:b.budget,name:b.name});
+        const w=d.workspace||{name:wsr[1]};
+        event({pause:'Workspace paused',resume:'Workspace started',restart:'Workspace restarted',remove:'Workspace removed',budget:'Workspace budget changed',rename:'Workspace renamed'}[act],
+          act==='budget'?`${w.name}: ${w.budget?money(w.budget)+' a month':'no budget'}`:act==='remove'?`${w.name}. Its data was kept in ${d.keptIn||'the removed folder'}.`:w.name,'system');
+        await persist();return send(res,200,d);
+      }
       if(route==='/api/system/update'&&req.method==='GET')return send(res,200,await updateState());
       if(route==='/api/system/update'&&req.method==='POST'){
         if(b.feed!==undefined){const feed=string(String(b.feed||''),500);if(feed){try{feedUrl(feed);}catch{fail('Write the feed as an https address or a folder path.');}if(/^http:/i.test(feed)&&!ALLOW_HTTP_FEED)fail('The update feed needs an https address or a folder.');}state.settings.update.feed=feed;updater.available=null;updater.error='';}
@@ -7170,7 +7239,7 @@ await persist();server.listen(PORT,LISTEN,()=>{
   // Jobs cut off by a stop go on from their last checkpoint, unless the queue settings say to wait for you.
   if(state.settings.queue?.autoRecover!==false)recoverInterruptedJobs().catch(e=>event('Crash recovery failed',e.message,'error'));
   for(const run of state.runs.filter(r=>r.resumeWait)){delete run.resumeWait;resumeRun(run).catch(e=>{run.error=`The server restarted during a Wait step and the run could not go on: ${e.message}`;event(`Workflow not resumed: ${run.name}`,e.message,'error');});}
-  if(NETWORK)for(const list of Object.values(os.networkInterfaces()))for(const a of list||[])if(a.family==='IPv4'&&!a.internal)console.log(`On your network: http://${a.address}:${PORT} (sign-in required)`);
+  if(NETWORK&&!HOSTED)for(const list of Object.values(os.networkInterfaces()))for(const a of list||[])if(a.family==='IPv4'&&!a.internal)console.log(`On your network: http://${a.address}:${PORT} (sign-in required)`);
   if(vaultError)console.log('Saved secrets were not loaded: '+vaultError);
-  if(state.settings.remote.enabled){console.log('Starting remote access through Cloudflare...');startTunnel();}
+  if(state.settings.remote.enabled&&!HOSTED){console.log('Starting remote access through Cloudflare...');startTunnel();}
 });
