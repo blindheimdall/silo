@@ -1,0 +1,34 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the doctor's notes from the visit: findings, diagnosis, treatment, medication as prescribed, next visit, warning signs.",
+  "name": "Visit summary for the patient",
+  "description": "Turns a doctor's visit notes into a plain-language summary for the patient, with nothing added that the notes do not say, checked against them, and signed off by the doctor.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "A doctor's notes from a visit:\n{{brief}}\n\nWrite a summary for the patient in plain words, under these headings: What we found; What to do; Your medicines (name, how much, when and for how long, exactly as written in the notes); When to come back; Call us or 112 if (the warning signs in the notes). Explain medical words in brackets. Leave out a heading the notes say nothing about. Add nothing the notes do not say, no advice of your own. In the language of the notes."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 1,
+      "rounds": 2,
+      "prompt": "Compare it with the notes: is every medicine, dose, date and warning sign exactly as written? Is anything added, left out or softened? Is it plain enough for a patient?"
+    },
+    {
+      "type": "approval",
+      "prompt": "The doctor reads and signs off the summary before the patient gets it."
+    }
+  ],
+  "made": "2026-11-16"
+}

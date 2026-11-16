@@ -1,0 +1,43 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste your notes about the property: where it is, the rooms, the area, the floor, the year, the price, what is good and what needs work.",
+  "name": "Property listing",
+  "description": "Turns an agent's notes into the facts of a property, a listing for the portals and a short social post, checked for invented facts and unfair wording.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "The agent's notes about a property:\n{{brief}}\n\nList the facts as short lines: kind of property, location, rooms, usable area, floor and floors in the building, year built, heating, parking, price and currency, what is included, condition. Write \"not given\" for each one the notes do not have. Then list the questions to ask the owner before the listing goes out."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Copywriter",
+        "role": "Copywriter",
+        "floor": 2
+      },
+      "prompt": "The facts of the property:\n{{step 1}}\n\nWrite:\n1. A title for property portals, at most 70 characters, with the kind, the rooms and the area or neighbourhood.\n2. A description of 150 to 250 words: what it is, the rooms, light and view, the area and transport, the condition, the price. Concrete words, no exaggeration.\n3. A social post of at most 280 characters.\nUse only the facts given; leave out anything \"not given\". Write in the language of the notes."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Is every fact in the listing in the facts list, with nothing invented or made bigger? Is the title at most 70 characters? Is there any wording that prefers or excludes buyers or tenants by family, origin, religion, age or disability (it must not)?"
+    },
+    {
+      "type": "approval",
+      "prompt": "Read the listing before it is published."
+    }
+  ],
+  "made": "2026-11-16"
+}

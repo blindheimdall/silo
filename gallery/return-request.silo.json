@@ -1,0 +1,48 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the customer's message and the order: date ordered, date delivered, items and prices.",
+  "name": "Return or complaint",
+  "description": "Sorts a shop customer's message into a withdrawal, a defect, a wrong item or a late delivery, says what the customer is owed, and drafts the reply; refunds wait for your OK.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "A customer's message and their order:\n{{brief}}\n\nSay which it is: WITHDRAWAL (they changed their mind), DEFECT, WRONG ITEM, LATE or OTHER. Then what they are owed under EU consumer rules: a withdrawal within 14 days of delivery gets a refund of the price and the standard delivery cost, within 14 days of the cancellation, once the goods are back; a defect within the 2-year legal guarantee gets a repair or replacement, or a price cut or refund when that is not possible; a wrong item is replaced or refunded at our cost. Count the days from the dates given. Put the word REFUND on its own line when money goes back. Say what is unclear."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "The customer wrote:\n{{brief}}\n\nWhat applies: {{step 1}}\n\nWrite the reply: say sorry where we are at fault, say exactly what happens next (return address or label as [placeholder], replacement, refund and when), and ask for anything that is missing, like a photo of a defect. Plain and kind, at most 150 words, in the customer's language."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Does the reply match what the customer is owed, without giving less than the law gives or promising more than the order supports? Are the dates and amounts right?"
+    },
+    {
+      "type": "approval",
+      "when": {
+        "step": 1,
+        "op": "contains",
+        "text": "REFUND"
+      },
+      "prompt": "Money goes back to this customer. Check the amount and the reply."
+    }
+  ],
+  "made": "2026-11-16"
+}

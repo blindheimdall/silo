@@ -1,0 +1,48 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the inquiry from the portal, the website form or the email.",
+  "name": "Buyer lead reply",
+  "description": "Reads a buyer's or tenant's inquiry, marks it hot, warm or cold from budget, timing and financing, and drafts a reply that offers viewings and asks what is missing.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Analyst",
+        "role": "Analyst",
+        "floor": 1
+      },
+      "prompt": "An inquiry about a property:\n{{brief}}\n\nStart your answer with one word: HOT when they give a budget that fits, want to move within three months and have financing or cash; COLD when they are only browsing; else WARM. Then list: buying or renting, budget, area, rooms, when, financing, must-haves, and the questions to ask for what is missing."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "The inquiry:\n{{brief}}\n\nWhat we know: {{step 1}}\n\nWrite a reply from the agent: thank them by name, answer what they asked, offer two viewing times in the next three working days (as [day, time] placeholders the agent fills in), and ask at most three of the missing questions. Warm and short, at most 140 words, in the language of the inquiry."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 1,
+      "prompt": "Does it answer what they asked? Are the viewing times left as placeholders? Does it promise nothing about the property that the inquiry or the notes do not say?"
+    },
+    {
+      "type": "approval",
+      "when": {
+        "step": 1,
+        "op": "contains",
+        "text": "HOT"
+      },
+      "prompt": "A hot lead. Read the reply and fill in the viewing times before it goes out."
+    }
+  ],
+  "made": "2026-11-16"
+}

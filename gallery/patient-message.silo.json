@@ -1,0 +1,43 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the patient's message to the clinic.",
+  "name": "Patient message triage",
+  "description": "Sorts a message to the clinic, sends emergencies straight to 112, drafts a reply that gives no diagnosis or dose, and waits for the clinic staff every time.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Coordinator",
+        "role": "Coordinator",
+        "floor": 0
+      },
+      "prompt": "A message to the clinic from a patient:\n{{brief}}\n\nStart your answer with one word. EMERGENCY when it mentions chest pain, trouble breathing, signs of a stroke (face drooping, arm weakness, slurred speech), heavy bleeding, fainting, a severe allergic reaction, or thoughts of self-harm. Otherwise APPOINTMENT, RESULTS, PRESCRIPTION, BILLING or OTHER. Then say in one line what they need and who at the clinic should handle it. Do not give medical advice."
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "The patient wrote:\n{{brief}}\n\nHow it was sorted: {{step 1}}\n\nWrite the clinic's reply. If it is an EMERGENCY, the first line tells them to call 112 now, or go to the nearest emergency room, and the reply says nothing else medical. Otherwise answer the practical part (booking, results, a repeat prescription request, a bill) and say who will get back to them and by when. Never diagnose, never suggest a medicine or a dose, never repeat health details that are not needed. Kind and short, at most 120 words, in the patient's language."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Is there any diagnosis, medicine, dose or medical advice (there must not be)? Does an emergency start with calling 112? Does it share no more health data than needed?"
+    },
+    {
+      "type": "approval",
+      "prompt": "A reply to a patient. The clinic staff read it before it goes out."
+    }
+  ],
+  "made": "2026-11-16"
+}

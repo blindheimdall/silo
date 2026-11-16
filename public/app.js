@@ -1635,15 +1635,23 @@ function openTemplates(key){
   $('#order-search').oninput=orderFilter;$('#order-ready').onchange=orderFilter;
   loadGallery();
 }
+// Procedures for a trade, one click away: the trades that some shared procedure is tagged with.
+const TRADES=[['accounting','Accounting'],['real-estate','Real estate'],['e-commerce','E-commerce'],['clinic','Clinics']];
+function tradeChips(){
+  const has=new Set((gallery.data?.procedures||[]).flatMap(e=>e.tags||[])),list=TRADES.filter(([t])=>has.has(t));
+  if(!list.length)return '';const now=($('#order-search')?.value||'').trim().toLowerCase();
+  return `<div class="order-trades" role="group" aria-label="Procedures for a trade"><span>BY TRADE</span>${list.map(([t,l])=>`<button type="button" class="chip" data-action="order-trade" data-tag="${t}" aria-pressed="${now===t}">${l}</button>`).join('')}</div>`;
+}
 // Every word must be in the name, the description, the tags or the author. The gallery chapter stays, with its status.
 function orderFilter(){
   const words=($('#order-search')?.value||'').toLowerCase().split(/\s+/).filter(Boolean),onlyReady=!!$('#order-ready')?.checked;let shown=0;
   for(const ch of $$('.order-toc .order-chapter')){const list=[...ch.querySelectorAll('.order-entry')];if(!list.length&&!ch.id)continue;let any=false;for(const b of list){const on=words.every(w=>b.dataset.text.includes(w))&&(!onlyReady||b.dataset.ready==='1');b.hidden=!on;any||=on;if(on)shown++;}ch.hidden=!any&&!ch.id;}
   if($('#order-none'))$('#order-none').hidden=shown>0;
+  for(const c of $$('.order-trades .chip'))c.setAttribute('aria-pressed',String(words.join(' ')===c.dataset.tag));
 }
 function orderChapter(c,ci){
   const entries=c.list.map(e=>{const ok=procedureReady(e.t),g=e.t.gallery;return `<button class="order-entry${e.t.key===orderPage?' active':''}" data-action="order-page" data-key="${e.t.key}" data-ready="${ok?1:0}" data-text="${esc((e.t.name+' '+(e.t.description||'')+(g?' '+g.tags.join(' ')+' '+g.author:'')).toLowerCase())}" aria-pressed="${e.t.key===orderPage}"><b class="order-dot ${ok?'ok':'todo'}" title="${ok?'Ready to run':'Needs something set up first'}"></b><span>${e.num}</span><span class="order-title">${esc(e.t.name)}</span><i></i><span>${e.t.steps.length} STEP${e.t.steps.length===1?'':'S'}</span></button>`;}).join('');
-  return `<div class="order-chapter${c.gallery?' gallery-chapter':''}"${c.gallery?' id="order-gallery"':''}><div class="order-ch">CHAPTER ${ci+1} / ${esc(c.title).toUpperCase()}</div><small>${esc(c.line)}</small>${c.gallery?galleryStatus():''}${entries}${c.gallery?gallerySource():''}</div>`;
+  return `<div class="order-chapter${c.gallery?' gallery-chapter':''}"${c.gallery?' id="order-gallery"':''}><div class="order-ch">CHAPTER ${ci+1} / ${esc(c.title).toUpperCase()}</div><small>${esc(c.line)}</small>${c.gallery?galleryStatus()+tradeChips():''}${entries}${c.gallery?gallerySource():''}</div>`;
 }
 // Adopting a procedure makes the tables it describes and does not have yet, after you say so, then opens the editor.
 async function adoptProcedure(key){
@@ -2388,6 +2396,7 @@ const actions={
   'ws-resume':el=>workspaceAction(el,'resume',x=>`${x} is running.`),
   'ws-restart':el=>{const n=el.closest('.ws-row')?.dataset.name;if(!confirm(`Restart ${n}? Anything running in it stops, and its people sign in again.`))return;return workspaceAction(el,'restart',x=>`${x} restarted.`);},
   'ws-remove':el=>{const n=el.closest('.ws-row')?.dataset.name;if(!confirm(`Remove ${n}? Its address stops working and it no longer runs. Its data is moved aside on the server, not deleted: whoever runs the server can delete it, or bring it back.`))return;return workspaceAction(el,'remove',(x,r)=>`${x} is removed. Its data is kept in ${r.keptIn}.`);},
+  'order-trade':el=>{const f=$('#order-search');if(!f)return;f.value=f.value.trim().toLowerCase()===el.dataset.tag?'':el.dataset.tag;orderFilter();},
   'gallery-refresh':async el=>{el.disabled=true;gallery.failed.clear();await loadGallery(true);},
   'gallery-source':()=>{
     const box=$('#gallery-source');if(!box)return;const d=gallery.data;

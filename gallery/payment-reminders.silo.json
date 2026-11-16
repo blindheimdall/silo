@@ -1,0 +1,43 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "{\"today\": \"2026-11-16\", \"invoices\": [{\"customer\": \"Acme SRL\", \"email\": \"plati@acme.ro\", \"number\": \"F-1021\", \"due\": \"2026-11-05\", \"amount\": 4200, \"currency\": \"RON\"}, {\"customer\": \"Delta Trade\", \"email\": \"accounts@delta.example\", \"number\": \"F-0987\", \"due\": \"2026-09-20\", \"amount\": 1850.5, \"currency\": \"EUR\"}, {\"customer\": \"Nord Design\", \"email\": \"office@norddesign.ro\", \"number\": \"F-1040\", \"due\": \"2026-11-30\", \"amount\": 900, \"currency\": \"RON\"}]}",
+  "name": "Payment reminders",
+  "description": "Sorts unpaid invoices by how late they are with code, then writes a reminder for each customer in the right tone, checked and held for your OK.",
+  "steps": [
+    {
+      "type": "code",
+      "code": "const d = json(input) || {}, today = Date.parse(d.today) || Date.now(), day = 86400000;\nconst groups = { first: [], second: [], final: [] }, owed = {};\nif (!Array.isArray(d.invoices)) return 'NOTHING OVERDUE: the brief has no list of invoices. Give {\"invoices\": [{\"customer\", \"email\", \"number\", \"due\", \"amount\", \"currency\"}]}.';\nfor (const i of d.invoices) {\n  const due = Date.parse(i.due);\n  if (Number.isNaN(due)) continue;\n  const late = Math.floor((today - due) / day);\n  if (late < 1) continue;\n  (late <= 15 ? groups.first : late <= 45 ? groups.second : groups.final).push(i.customer + ' <' + (i.email || 'no email') + '>: invoice ' + i.number + ', ' + i.amount + ' ' + (i.currency || '') + ', ' + late + ' days late');\n  owed[i.currency || '?'] = (owed[i.currency || '?'] || 0) + Number(i.amount || 0);\n}\nconst part = (title, list) => list.length ? title + '\\n- ' + list.join('\\n- ') : '';\nconst text = [part('FIRST REMINDER (1 to 15 days late)', groups.first), part('SECOND REMINDER (16 to 45 days late)', groups.second), part('FINAL NOTICE (more than 45 days late)', groups.final)].filter(Boolean).join('\\n\\n');\nreturn text ? text + '\\n\\nOwed in all: ' + Object.entries(owed).map(([c, v]) => v.toFixed(2) + ' ' + c).join(', ') : 'NOTHING OVERDUE';"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Writer",
+        "role": "Writer",
+        "floor": 2
+      },
+      "prompt": "These invoices are unpaid and late, grouped by how late they are:\n{{step 1}}\n\nIf it says NOTHING OVERDUE, answer only: No reminders to send. Otherwise write one email for each customer, with its subject line. First reminder: friendly, assume it was missed. Second reminder: firm, ask for a payment date. Final notice: formal, say what happens next if it stays unpaid (we stop deliveries and pass it on for collection), without threats. Name the invoice, the amount and how late it is. At most 120 words each. Write in the language the customer's name or email suggests (Romanian for .ro), otherwise English."
+    },
+    {
+      "type": "review",
+      "resident": {
+        "name": "Editor",
+        "role": "Editor",
+        "floor": 2
+      },
+      "target": 2,
+      "rounds": 2,
+      "prompt": "Does every late invoice have an email? Are the amounts, numbers and days exactly as in the list? Does the tone match the group, polite and never threatening?"
+    },
+    {
+      "type": "approval",
+      "when": {
+        "step": 1,
+        "op": "missing",
+        "text": "NOTHING OVERDUE"
+      },
+      "prompt": "Read the reminders before they are sent."
+    }
+  ],
+  "made": "2026-11-16"
+}

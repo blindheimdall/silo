@@ -1071,3 +1071,8 @@ dialog:has(#workflow-form.canvas-mode){width:min(1080px,calc(100vw - 32px))}
 .cat-ops i{text-transform:none;letter-spacing:.5px}
 @media(max-width:520px){.cat-way{flex-direction:column}.cat-way>.btn{align-self:stretch}.cat-chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px 2px;scroll-padding:16px}.cat-chips::-webkit-scrollbar{display:none}.cat-chip{flex-shrink:0}}
 @media(prefers-reduced-motion:reduce){.cat-tile,.cat-mono{transition:none}}
+/* Trades in the gallery chapter of the Order. */
+.order-trades{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:6px 0 8px}
+.order-trades>span{font:8px var(--term);letter-spacing:2px;color:var(--ph-dim);margin-right:4px}
+.order-trades .chip{font-size:8px;padding:2px 6px;letter-spacing:1.5px;text-transform:uppercase}
+.order-trades .chip[aria-pressed=true]{background:var(--ph);border-color:var(--ph);color:var(--glass)}

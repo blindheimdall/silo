@@ -1,0 +1,41 @@
+{
+  "silo": "procedure",
+  "format": 1,
+  "brief": "Paste the text of the supplier invoice here (from a PDF or an email).",
+  "name": "Supplier invoice check",
+  "description": "Reads a supplier invoice, checks the sums, the IBAN and the Romanian tax ID with code, writes the booking note, and holds doubtful invoices for your OK.",
+  "steps": [
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Clerk",
+        "role": "Clerk",
+        "floor": 0
+      },
+      "prompt": "Read this supplier invoice:\n{{brief}}\n\nAnswer with JSON only, with these fields: supplier, supplier_tax_id, number, date (YYYY-MM-DD), due (YYYY-MM-DD), currency, net, vat, total (plain numbers with a dot for decimals), iban, lines (a list of {description, amount}). Use null for anything the invoice does not show. Never guess a number."
+    },
+    {
+      "type": "code",
+      "code": "const f = json(steps[1]) || {}, problems = [], notes = [];\nconst n = v => v === null || v === undefined || v === '' ? NaN : Number(v);\nconst net = n(f.net), vat = n(f.vat), total = n(f.total);\nif ([net, vat, total].some(Number.isNaN)) problems.push('The net, VAT or total amount could not be read.');\nelse {\n  if (Math.abs(net + vat - total) > 0.02) problems.push('Net ' + net + ' + VAT ' + vat + ' = ' + (net + vat).toFixed(2) + ', but the total says ' + total + '.');\n  if (net) notes.push('VAT is ' + (vat / net * 100).toFixed(1) + '% of the net amount.');\n}\nconst lines = Array.isArray(f.lines) ? f.lines : [];\nif (lines.length && !Number.isNaN(net)) {\n  const sum = lines.reduce((s, l) => s + n(l && l.amount), 0);\n  if (Number.isNaN(sum)) problems.push('A line of the invoice has no amount.');\n  else if (Math.abs(sum - net) > 0.02) problems.push('The lines add up to ' + sum.toFixed(2) + ', the net amount is ' + net + '.');\n}\nconst iban = String(f.iban || '').replace(/\\s/g, '').toUpperCase();\nif (iban) {\n  let m = 0;\n  for (const d of (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, c => String(c.charCodeAt(0) - 55))) m = (m * 10 + Number(d)) % 97;\n  if (!/^[A-Z]{2}\\d{2}[A-Z0-9]{10,30}$/.test(iban) || m !== 1) problems.push('The IBAN ' + iban + ' fails its check digits: confirm it with the supplier before paying.');\n} else notes.push('No IBAN on the invoice.');\n// A Romanian tax ID (CUI/CIF) has a check digit of its own.\nconst cui = String(f.supplier_tax_id || '').toUpperCase().replace(/\\s/g, '');\nif (/^(RO)?\\d{2,10}$/.test(cui)) {\n  const d = cui.replace('RO', ''), body = d.slice(0, -1).padStart(9, '0'), key = '753217532';\n  let s = 0;\n  for (let i = 0; i < 9; i++) s += Number(body[i]) * Number(key[i]);\n  if (s * 10 % 11 % 10 !== Number(d.slice(-1))) problems.push('The supplier tax ID ' + cui + ' fails its check digit.');\n}\nconst issued = Date.parse(f.date), due = Date.parse(f.due);\nif (!Number.isNaN(issued) && !Number.isNaN(due) && due < issued) problems.push('The due date is before the invoice date.');\nif (!Number.isNaN(due) && due < Date.now()) notes.push('The due date (' + f.due + ') has passed.');\nreturn (problems.length ? 'PROBLEMS:\\n- ' + problems.join('\\n- ') : 'CHECKS PASSED') + (notes.length ? '\\n\\nNotes:\\n- ' + notes.join('\\n- ') : '');"
+    },
+    {
+      "type": "agent",
+      "resident": {
+        "name": "Auditor",
+        "role": "Auditor",
+        "floor": 0
+      },
+      "prompt": "The invoice, as read:\n{{step 1}}\n\nThe checks:\n{{step 2}}\n\nWrite a short booking note for the accountant: supplier, number, dates, amounts and currency, what was bought, and the expense category it most likely belongs to (say it is a suggestion). End with what must be looked at before paying, or \"Nothing to look at\" when the checks passed."
+    },
+    {
+      "type": "approval",
+      "when": {
+        "step": 2,
+        "op": "contains",
+        "text": "PROBLEMS"
+      },
+      "prompt": "The checks found a problem with this invoice. Look at it before it is booked or paid."
+    }
+  ],
+  "made": "2026-11-16"
+}

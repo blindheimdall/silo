@@ -106,3 +106,25 @@ test('the gallery in a running SILO',async t=>{
     feedUp=true;
   });
 });
+
+// The code steps of the trade procedures work out what they say, without a model.
+test('the checks of the trade procedures',async()=>{
+  const {runCode}=await import('../code-step.mjs');
+  const code=async(file,i)=>JSON.parse(await fs.readFile(path.join(gdir,file),'utf8')).steps[i].code;
+  const run=(c,data)=>runCode(c,{input:'',steps:[],previous:'',item:null,...data});
+  const inv=await code('invoice-check.silo.json',1),read=o=>run(inv,{steps:['',JSON.stringify(o)]});
+  // A real Romanian tax ID and a well-formed IBAN pass; one digit off fails each.
+  assert.match(await read({supplier_tax_id:'RO14399840',date:'2026-11-01',due:'2099-12-01',net:100,vat:21,total:121,iban:'RO49 AAAA 1B31 0075 9384 0000',lines:[{amount:60},{amount:40}]}),/^CHECKS PASSED\n\nNotes:\n- VAT is 21\.0%/);
+  const bad=await read({supplier_tax_id:'14399841',date:'2026-11-10',due:'2026-11-01',net:100,vat:19,total:121,iban:'RO49AAAA1B31007593840001',lines:[{amount:50}]});
+  for(const m of [/^PROBLEMS:/,/119\.00, but the total says 121/,/lines add up to 50\.00/,/IBAN RO49AAAA1B31007593840001 fails/,/tax ID 14399841 fails/,/due date is before/])assert.match(bad,m);
+  assert.match(await run(inv,{steps:['','no JSON here']}),/^PROBLEMS:\n- The net, VAT or total amount could not be read/);
+  const rem=await code('payment-reminders.silo.json',0),brief=JSON.parse(await fs.readFile(path.join(gdir,'payment-reminders.silo.json'),'utf8')).brief;
+  const out=await run(rem,{input:brief});
+  assert.match(out,/FIRST REMINDER[^]*Acme SRL[^]*11 days late/);assert.match(out,/FINAL NOTICE[^]*Delta Trade[^]*57 days late/);assert.doesNotMatch(out,/Nord Design/,'not due yet');
+  assert.match(out,/Owed in all: 4200\.00 RON, 1850\.50 EUR$/);
+  assert.match(await run(rem,{input:'hello'}),/^NOTHING OVERDUE: the brief has no list/);
+  const page=await code('product-page.silo.json',2);
+  const p=await run(page,{steps:['',JSON.stringify({title:'x'.repeat(80),bullets:['a','b','c'],description:'D',meta_description:'m'.repeat(160)})]});
+  assert.match(p,/title has 80 characters/);assert.match(p,/meta description has 160 characters/);assert.match(p,/BULLETS\n- a\n- b\n- c/);
+  assert.match(await run(page,{steps:['','plain text']}),/did not come back as JSON[^]*plain text$/);
+});

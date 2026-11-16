@@ -284,6 +284,216 @@
         }
       ],
       "sha256": "c9e204677e483455722c50cb9083eff7a17c0d1c8bb7efaf95f2fafde885b431"
+    },
+    {
+      "file": "buyer-lead.silo.json",
+      "name": "Buyer lead reply",
+      "description": "Reads a buyer's or tenant's inquiry, marks it hot, warm or cold from budget, timing and financing, and drafts a reply that offers viewings and asks what is missing.",
+      "author": "SILO",
+      "tags": [
+        "real-estate",
+        "sales",
+        "leads"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "20f824f162fe6cf0066b3e813fedc31400a6c07dea1585f965d425df0a53bc5b"
+    },
+    {
+      "file": "invoice-check.silo.json",
+      "name": "Supplier invoice check",
+      "description": "Reads a supplier invoice, checks the sums, the IBAN and the Romanian tax ID with code, writes the booking note, and holds doubtful invoices for your OK.",
+      "author": "SILO",
+      "tags": [
+        "accounting",
+        "invoices",
+        "romania"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "code"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "31524015f894017c9bb91ea5c5a92f677c84a3886dfc6b9dfaa5b0f548ebd413"
+    },
+    {
+      "file": "patient-message.silo.json",
+      "name": "Patient message triage",
+      "description": "Sorts a message to the clinic, sends emergencies straight to 112, drafts a reply that gives no diagnosis or dose, and waits for the clinic staff every time.",
+      "author": "SILO",
+      "tags": [
+        "clinic",
+        "healthcare",
+        "triage"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "ecd9ea53e6c789b905be1b69fe1e02bac6192ccaa80deb7bed1f3fbaadfcdc2d"
+    },
+    {
+      "file": "payment-reminders.silo.json",
+      "name": "Payment reminders",
+      "description": "Sorts unpaid invoices by how late they are with code, then writes a reminder for each customer in the right tone, checked and held for your OK.",
+      "author": "SILO",
+      "tags": [
+        "accounting",
+        "invoices",
+        "email"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "code"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "46cad645148bfd282aea4d681b016fe0906add90e4fa2bb2905f342f7b355a4e"
+    },
+    {
+      "file": "product-page.silo.json",
+      "name": "Product page copy",
+      "description": "Writes the title, bullets, description and meta description of a product from its specs, checked for claims the specs do not back, with the lengths measured by code.",
+      "author": "SILO",
+      "tags": [
+        "e-commerce",
+        "writing",
+        "seo"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "code"
+        }
+      ],
+      "sha256": "7cb2c584797ab55adf23ffd27b1773e99f5cd577be792e8c162622c2fb0a4551"
+    },
+    {
+      "file": "property-listing.silo.json",
+      "name": "Property listing",
+      "description": "Turns an agent's notes into the facts of a property, a listing for the portals and a short social post, checked for invented facts and unfair wording.",
+      "author": "SILO",
+      "tags": [
+        "real-estate",
+        "listings",
+        "writing"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "0081cccfad83795066f57279d8ed4296aa51e6e5a10bbc404fe8dd188ddc8a71"
+    },
+    {
+      "file": "return-request.silo.json",
+      "name": "Return or complaint",
+      "description": "Sorts a shop customer's message into a withdrawal, a defect, a wrong item or a late delivery, says what the customer is owed, and drafts the reply; refunds wait for your OK.",
+      "author": "SILO",
+      "tags": [
+        "e-commerce",
+        "support",
+        "consumer-law"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "219331b32932bf9f990f3c189ecbeeebb37c0ecd9002ae9937c0ec1032ca7283"
+    },
+    {
+      "file": "visit-summary.silo.json",
+      "name": "Visit summary for the patient",
+      "description": "Turns a doctor's visit notes into a plain-language summary for the patient, with nothing added that the notes do not say, checked against them, and signed off by the doctor.",
+      "author": "SILO",
+      "tags": [
+        "clinic",
+        "healthcare",
+        "patients"
+      ],
+      "made": "2026-11-16",
+      "steps": [
+        {
+          "type": "agent"
+        },
+        {
+          "type": "review"
+        },
+        {
+          "type": "approval"
+        }
+      ],
+      "sha256": "eb73236a3e85e24b96d0564886a630db7c9378daf7fd94c0a1750ef39cadc24b"
     }
   ]
 }
