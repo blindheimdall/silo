@@ -30,6 +30,24 @@ test('Word, Excel and PDF files are made and read back, with Romanian letters', 
   assert.deepEqual(parseCsv('a;b\n1;"x;y"\n'), [['a', 'b'], ['1', 'x;y']]);
 });
 
+test('a small file that unpacks to too much is refused, and a PDF stops reading with a note', async () => {
+  const { zip } = await import('../documents.mjs');
+  const zlib = await import('node:zlib');
+  // Five slides of 2 MB of the same byte: a few KB on disk.
+  const slide = Buffer.alloc(2e6, 32), z = zip([['ppt/presentation.xml', '<p/>'], ...Array.from({ length: 5 }, (_, i) => [`ppt/slides/slide${i + 1}.xml`, slide])]);
+  assert.ok(z.length < 100000);
+  assert.throws(() => { const u = unzip(z, { budget: 5e6 }); for (let i = 1; i <= 5; i++) u.text(`ppt/slides/slide${i}.xml`); }, /unpacks to more than/);
+  assert.equal(unzip(z, { budget: 20e6 }).text('ppt/slides/slide5.xml').length, 2e6);
+  // Eight pages that all draw one stream of 60 MB: SILO reads the first pages and says it stopped.
+  const s = zlib.deflateSync(Buffer.concat([Buffer.from('BT /F1 12 Tf (hello) Tj ET\n'), Buffer.alloc(6e7, 32)]));
+  const kids = Array.from({ length: 8 }, (_, i) => `${i + 10} 0 R`).join(' ');
+  const head = `%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [${kids}] /Count 8 >> endobj\n3 0 obj << /Length ${s.length} /Filter /FlateDecode >> stream\n`;
+  const tail = Array.from({ length: 8 }, (_, i) => `${i + 10} 0 obj << /Type /Page /Parent 2 0 R /Contents 3 0 R >> endobj`).join('\n') + '\ntrailer << /Root 1 0 R >>\n%%EOF';
+  const text = extractText(Buffer.concat([Buffer.from(head, 'latin1'), s, Buffer.from('\nendstream endobj\n' + tail, 'latin1')]), 'x.pdf');
+  assert.match(text, /hello/); assert.match(text, /was not read/);
+  assert.ok((text.match(/hello/g) || []).length < 8);
+});
+
 test('residents use apps only as allowed, and writing waits for you', async t => {
   // A fake Google, Slack, GitHub and Notion.
   const seen = [];

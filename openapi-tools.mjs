@@ -207,7 +207,7 @@ export class OpenApiClient{
       // Two values in the address, like Trello's key and token: names "key,token", value "KEY:TOKEN".
       else if(a.kind==='query'&&a.name){const names=a.name.split(','),vals=names.length>1?a.value.split(':'):[a.value];names.forEach((n,i)=>{if(vals[i])url.searchParams.set(n.trim(),vals[i]);});}}
     let body;if(op.body&&args[op.body]!==undefined){
-      if(op.form){headers['Content-Type']='application/x-www-form-urlencoded';body=formBody(typeof args[op.body]==='string'?JSON.parse(args[op.body]):args[op.body]);}
+      if(op.form){let fields=args[op.body];if(typeof fields==='string'){try{fields=JSON.parse(fields);}catch{return {content:[{type:'text',text:`${op.body} must be a JSON object of the form fields.`}],isError:true};}}headers['Content-Type']='application/x-www-form-urlencoded';body=formBody(fields);}
       else{headers['Content-Type']=headers['Content-Type']||'application/json';body=JSON.stringify(args[op.body]);}}
     const timer=AbortSignal.timeout(this.timeout),both=signal?AbortSignal.any([signal,timer]):timer;
     let target=url,r,method=op.method;

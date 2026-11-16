@@ -9,8 +9,13 @@ export const READABLE = /\.(pdf|docx|xlsx|xlsm|pptx|odt|ods|odp)$/i;
 const MAX_TEXT = 200000;
 
 // ---------- ZIP ----------
-export function unzip(buf) {
-  let eocd = -1;
+// What one document may unpack to in all. Each part has its own cap too, but a file with many parts at that cap (or a
+// PDF whose pages all point at one big stream) would otherwise keep the server busy unpacking for minutes.
+export const UNPACK_MAX = 250e6;
+const tooBig = () => new Error('This file unpacks to more than SILO reads from one document.');
+export function unzip(buf, { budget = UNPACK_MAX } = {}) {
+  let eocd = -1, left = budget;
+  const take = data => { left -= data.length; if (left < 0) throw tooBig(); return data; };
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   if (eocd < 0) throw new Error('This is not a valid Office file (no zip directory).');
   const count = buf.readUInt16LE(eocd + 10), files = new Map();
@@ -23,7 +28,11 @@ export function unzip(buf) {
     files.set(name, () => {
       if (usize > 60e6) throw new Error('A part of this file is too large.');
       const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28), data = buf.subarray(start, start + csize);
-      return method === 0 ? Buffer.from(data) : method === 8 ? zlib.inflateRawSync(data, { maxOutputLength: 60e6 }) : (() => { throw new Error('Unsupported zip compression.'); })();
+      if (left <= 0) throw tooBig();
+      if (method === 0) return take(Buffer.from(data));
+      if (method !== 8) throw new Error('Unsupported zip compression.');
+      try { return take(zlib.inflateRawSync(data, { maxOutputLength: Math.min(60e6, left) })); }
+      catch (e) { if (e.code === 'ERR_BUFFER_TOO_LARGE' && left < 60e6) throw tooBig(); throw e; }
     });
     p += 46 + nlen + xlen + clen;
   }
@@ -117,13 +126,24 @@ function pdfObjects(buf) {
   }
   return objs;
 }
+// The PDF being read: how much it may still unpack, and each stream once unpacked (pages often share one).
+let pdfLeft = Infinity;
+const decoded = new WeakMap();
 function pdfDecode(o) {
+  if (decoded.has(o)) return decoded.get(o);
   let data = o.stream; const f = o.dict.match(/\/Filter\s*(\[[^\]]*\]|\/\w+)/)?.[1] || '';
   for (const name of f.match(/\/\w+/g) || []) {
-    if (name === '/FlateDecode') { try { data = zlib.inflateSync(data, { maxOutputLength: 80e6 }); } catch { data = zlib.inflateSync(data, { finishFlush: zlib.constants.Z_SYNC_FLUSH, maxOutputLength: 80e6 }); } }
+    if (name === '/FlateDecode') {
+      if (pdfLeft <= 0) throw tooBig();
+      const max = Math.min(80e6, pdfLeft);
+      try { data = zlib.inflateSync(data, { maxOutputLength: max }); }
+      catch (e) { if (e.code === 'ERR_BUFFER_TOO_LARGE') throw e; data = zlib.inflateSync(data, { finishFlush: zlib.constants.Z_SYNC_FLUSH, maxOutputLength: max }); }
+      pdfLeft -= data.length;
+    }
     else if (name === '/ASCIIHexDecode') data = Buffer.from(data.toString('latin1').replace(/[^0-9a-f]/gi, ''), 'hex');
     else throw new Error('unsupported filter ' + name);
   }
+  decoded.set(o, data);
   return data;
 }
 const ref = (dict, key) => { const m = dict.match(new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`)); return m ? +m[1] : null; };
@@ -151,6 +171,10 @@ function parseCmap(text) {
 }
 const WIN = { 0x80: '€', 0x82: '‚', 0x84: '„', 0x85: '…', 0x8a: 'Š', 0x8c: 'Œ', 0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '-', 0x97: '-', 0x99: '™', 0x9a: 'š', 0x9c: 'œ', 0x9f: 'Ÿ' };
 function pdfText(buf) {
+  pdfLeft = UNPACK_MAX;
+  try { return pdfTextOf(buf); } finally { pdfLeft = Infinity; }
+}
+function pdfTextOf(buf) {
   const head = buf.subarray(0, 1024).toString('latin1'); if (!head.includes('%PDF')) throw new Error('This is not a PDF file.');
   const objs = pdfObjects(buf);
   if ([...objs.values()].some(o => /\/Filter\s*\/Standard/.test(o.dict)) || /\/Encrypt\s+\d+\s+\d+\s+R/.test(buf.toString('latin1', Math.max(0, buf.length - 4096)))) throw new Error('This PDF is password protected or encrypted.');
@@ -183,13 +207,16 @@ function pdfText(buf) {
     // Form XObjects drawn on the page often hold the text.
     const xd = inlineDict(pg.res, 'XObject', objs);
     for (const m of xd.matchAll(/\/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R/g)) { const o = objs.get(+m[2]); if (o?.stream && /\/Subtype\s*\/Form/.test(o.dict)) { const r2 = inlineDict(o.dict, 'Resources', objs); for (const f of inlineDict(r2, 'Font', objs).matchAll(/\/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R/g)) fonts[f[1]] ??= +f[2]; try { content += pdfDecode(o).toString('latin1') + '\n'; } catch {} } }
+    // Reading the drawing commands counts too: pages that share one huge stream would each read it again.
+    pdfLeft -= content.length; if (pdfLeft < 0) { pdfLeft = 0; break; }
     const pageText = pdfOps(content, name => fonts[name] != null ? fontOf(fonts[name]) : { map: null, bytes: 1 }).trim();
     out.push(pageText ? `## Page ${i + 1}\n${pageText}` : '');
     if (out.join('').length > MAX_TEXT) break;
   }
   const text = out.filter(Boolean).join('\n\n');
+  if (pdfLeft <= 0 && !text.trim()) throw tooBig();
   if (!text.trim()) return '[This PDF has no text layer. It is probably a scan; use a screenshot and a model that can see.]';
-  return text;
+  return pdfLeft <= 0 ? text + '\n\n[The rest of this PDF unpacks to more than SILO reads from one document, so it was not read.]' : text;
 }
 function pdfOps(c, fontFor) {
   let font = { map: null, bytes: 1 }, line = '', out = [];

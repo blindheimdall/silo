@@ -73,7 +73,11 @@ export class TaskStore extends EventEmitter {
   prune() {
     const now = Date.now();
     for (const [id, t] of this.tasks) if (TERMINAL.has(t.status.state) && now - t.touched > this.ttl) this.tasks.delete(id);
-    while (this.tasks.size >= this.max) { const old = [...this.tasks.values()].filter(t => TERMINAL.has(t.status.state)).sort((a, b) => a.touched - b.touched)[0]; if (!old) throw new A2aError(ERR.internal, 'Too many tasks are running. Try again later.'); this.tasks.delete(old.id); }
+    if (this.tasks.size < this.max) return;
+    // The oldest finished tasks go first, sorted once.
+    const done = [...this.tasks.values()].filter(t => TERMINAL.has(t.status.state)).sort((a, b) => a.touched - b.touched);
+    for (const t of done) { if (this.tasks.size < this.max) return; this.tasks.delete(t.id); }
+    if (this.tasks.size >= this.max) throw new A2aError(ERR.internal, 'Too many tasks are running. Try again later.');
   }
 }
 // A task as sent: history cut to the length asked for.

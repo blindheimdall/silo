@@ -19,7 +19,9 @@ function run(cmd,args,{cwd,env,timeout=60000,input,maxOutput=20000,signal,onKill
     try{child=spawn(cmd,args,{cwd,env,windowsHide:true});}catch(e){return resolve({code:-1,stdout:'',stderr:e.message,timedOut:false,aborted:false,ms:0});}
     let stdout='',stderr='',timedOut=false,aborted=false;
     const cap=(s,d)=>s.length>maxOutput?s:(s+d).slice(0,maxOutput+1);
-    child.stdout.on('data',d=>{stdout=cap(stdout,d.toString());});child.stderr.on('data',d=>{stderr=cap(stderr,d.toString());});
+    // Decoded as a stream, so a letter split between two chunks is not broken.
+    child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
+    child.stdout.on('data',d=>{stdout=cap(stdout,d);});child.stderr.on('data',d=>{stderr=cap(stderr,d);});
     const stop=()=>{kill(child);onKill?.();};
     const onAbort=()=>{aborted=true;stop();};
     signal?.addEventListener('abort',onAbort,{once:true});

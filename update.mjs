@@ -98,7 +98,8 @@ export async function downloadRelease(feed, manifest, { allowHttp = false } = {}
   const zipUrl = new URL(manifest.zip, feedUrl(feed)).href;
   const buf = await fetchBytes(zipUrl, 150e6, allowHttp);
   if (sha256(buf) !== manifest.zipSha256) throw err('The downloaded update does not match its signed hash. Nothing was installed.', 502);
-  const z = unzip(buf), files = new Map();
+  // A release is checked against its signed hash before this, and may unpack to more than one document may.
+  const z = unzip(buf, { budget: 1e9 }), files = new Map();
   for (const n of z.names) {
     if (n.endsWith('/')) continue;
     const p = safeReleasePath(n);

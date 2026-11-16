@@ -51,7 +51,7 @@ async function one(m, ctx) {
   }
   const notify = !('id' in m);
   if (notify) return null; // notifications/initialized, notifications/cancelled: nothing to answer
-  const { id, method, params = {} } = m;
+  const { id, method } = m, params = m.params && typeof m.params === 'object' ? m.params : {};
   if (typeof id !== 'string' && typeof id !== 'number') return rpcError(null, ERR.request, 'The id must be a string or a number.');
   try {
     if (method === 'initialize') {
@@ -64,7 +64,7 @@ async function one(m, ctx) {
       return ok(id, { tools });
     }
     if (method === 'tools/call') {
-      const name = params?.name, tool = typeof name === 'string' && ctx.tools().find(t => t.name === name);
+      const name = params.name, tool = typeof name === 'string' && ctx.tools().find(t => t.name === name);
       if (!tool) return rpcError(id, ERR.params, `Unknown tool: ${String(name).slice(0, 80)}`);
       if (!ctx.can(tool.scope)) return ok(id, { content: [{ type: 'text', text: `This needs a token with the ${tool.scope} scope.` }], isError: true });
       const bad = checkArgs(tool.inputSchema, params.arguments);
