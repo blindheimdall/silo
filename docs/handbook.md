@@ -398,6 +398,19 @@ Set in System, under Guardrails (owners). They work on text, without a model, so
   - Answer rules apply to the answer that is kept and sent (chat, workflow steps, talk channels, Telegram); what streams live to the page while the resident writes is not held back.
 - **Try a text** shows, without a model, what a model would get, what would read as orders and what the answer rules would make of it (`POST /api/guardrails/check` with `{"text": "..."}`).
 
+## Compliance report
+
+In System, under Compliance report (owners), pick a period and choose Show, or download it as PDF, Markdown or JSON (`GET /api/compliance?from=YYYY-MM-DD&to=YYYY-MM-DD&format=pdf&download=1`; without `download` it answers JSON for a page or a program). It is built from the audit log, so it holds no message text, and it is meant as evidence for a GDPR record of processing or an EU AI Act review. It is not legal advice and does not certify anything.
+
+- **Where data went.** Every model call is in the audit log as `model.call`: the resident, the provider and model, the host it was sent to, the tokens in and out, what the guardrails hid (as counts by kind) and where in SILO it came from. A call that failed after it was sent counts too. The report groups them by model and host, and says for each whether it runs on this computer, on your network or on the internet.
+- **Residents.** For each: its model, its calls, how many went to the internet, its tool uses and failed tools, and which tools it uses without asking first.
+- **Human oversight.** Tool requests allowed and denied, workflow approvals given and rejected, and what waits now. Decisions made on the page are in the audit log with the name of who made them, as are those from a phone or a Windows notification.
+- **Guardrails.** How they are set and what they caught in the period.
+- **Access and changes.** Sign-ins and failed ones, changes to settings, connections, accounts, tokens, connectors and Radio, changes that were refused, and capabilities given to other silos.
+- **Set up now.** Accounts by role, single sign-on, API tokens, network access, where code runs, The Pact, how long the audit log is kept and whether its chain has its own key, where the data is kept, talk channels open to people outside, and capabilities given to other silos.
+- **Findings** come first, worst first: a broken audit chain, model calls to the internet with hiding off, no accounts, residents that act without asking, an audit log without its own key or kept for less than six months, many failed sign-ins, decisions that wait, and talk channels where people outside should be told they are talking to an AI.
+- Each file made is itself in the audit log (`compliance.report`). Model calls are in the audit log from this version on, so an earlier period shows none.
+
 ## Data and limits
 
 - `data/state.db` (SQLite) holds residents, conversations, workflows, runs, traces and the activity log. Each save writes only what changed, in one transaction, so a crash leaves the last complete save. Every row has a checksum, and a damaged database is moved aside and rebuilt from the copies below.

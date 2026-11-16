@@ -58,6 +58,7 @@ import { TALK_KINDS, PUBLIC_TALK, Conversations, Limits, Seen, cleanText, slackV
 import { Inbox } from './talk-inbox.mjs';
 import { GitSync, ENVIRONMENTS, SYNC_FORMAT, checkRemote, checkBranch, slug as syncSlug } from './git-sync.mjs';
 import { matchResident } from './public/flow-templates.js';
+import { modelDetail, buildReport, reportMarkdown } from './compliance.mjs';
 import { Masker, scanInjection, describeInjection, applyAnswerRules, toolRule, cleanGuardrails, DEFAULT_GUARDRAILS } from './guardrails.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1418,18 +1419,18 @@ function validateChannel(b,existing={}){
 }
 // Decisions can come from the page, from a phone or from a Windows notification. They all end here.
 function outcomeLabel(r){return r.status==='allowed'?`Allowed by ${r.by||'you'}.`:r.status==='denied'?`Denied by ${r.by||'you'}.`:r.status==='expired'?'Expired after 30 minutes.':'Cancelled.';}
-function decideRequest(r,allow,always,who='you'){
+function decideRequest(r,allow,always,who='you',by=''){
   if(r.status!=='pending')fail('This request was already handled.',409);
   r.status=allow?'allowed':'denied';r.by=who;
-  if(who!=='you')auditNote({action:allow?'request.allow':'request.deny',actor:who,target:r.title,detail:r.agentName+(always&&allow?', always':'')});
+  auditNote({action:allow?'request.allow':'request.deny',actor:who==='you'?by||'the page':who,target:r.title,detail:r.agentName+(always&&allow?', always':'')});
   if(allow&&always){const a=state.agents.find(a=>a.id===r.agentId);if(a)a.trust=[...new Set([...(a.trust||[]),r.tool])];}
   event(allow?'Request allowed':'Request denied',`${r.agentName}: ${r.title}${who!=='you'?' ('+who+')':''}`,'request');
   const waiter=requestWaiters.get(r.id);if(waiter)waiter(r.status);else settleAnnounced('rq',r.id,outcomeLabel(r));
 }
-function decideRun(run,approve,note='',who='you'){
+function decideRun(run,approve,note='',who='you',by=''){
   const decide=approvals.get(run.id);if(!decide)fail('This run is not waiting for you.',409);
   approvals.delete(run.id);delete run.waiting;stateRev++;run.lastDecisionBy=who;
-  if(who!=='you')auditNote({action:approve?'run.approve':'run.reject',actor:who,target:run.name,detail:note});decide({approve,note});
+  auditNote({action:approve?'run.approve':'run.reject',actor:who==='you'?by||'the page':who,target:run.name,detail:note});decide({approve,note});
   if(!approve)learnFromRejection(run,note);
   if(who!=='you')event(approve?'Run approved':'Run rejected',`${run.name} (${who})`,'workflow');
   settleAnnounced('run',run.id,`${approve?'Approved':'Rejected'} by ${who}.`);
@@ -2313,11 +2314,37 @@ function buildPolicyPreservingAgent(primary,fallback){
     _policyFolderChain:folderChain
   };
 }
+// SILO as it is set up now, for the compliance report. Words the owner hides are counted, never listed.
+function complianceSetup(){
+  const roles={},now=Date.now(),rad=state.settings.radio,g=state.settings.guardrails,nameOf=id=>state.agents.find(a=>a.id===id)?.name||'(no resident)';
+  for(const u of state.users)roles[u.role]=(roles[u.role]||0)+1;
+  return {
+    silo:{name:rad.siloId||'SILO',version:APP_VERSION},
+    accounts:{total:state.users.length,owner:roles.owner||0,roles},sso:ssoOn(),tokens:state.apiTokens.length,
+    network:state.settings.network===true,sandbox:state.settings.sandbox,pact:state.settings.pact?.enabled!==false,
+    audit:{months:state.settings.audit.months||0,keyed:!!secrets.get('audit')},dataDir:DATA,
+    guardrails:{pii:{...g.pii,terms:g.pii.terms.map(()=>'(listed)')},injection:g.injection,rules:g.rules.map(r=>r.line)},
+    residents:state.agents.map(a=>({name:a.name,role:a.role,provider:a.provider,model:a.model||'',tools:a.tools||[],trusted:a.trust||[]})),
+    channels:Object.entries(state.settings.talk).filter(([,c])=>c.enabled).map(([kind,c])=>({kind,resident:nameOf(c.agentId),public:kind==='widget'||kind==='whatsapp'})),
+    grants:rad.issued.map(c=>({to:c.audName||'',residents:c.rights?.residents||[],tools:c.rights?.tools||[],folders:c.rights?.folders||[],ends:new Date(c.exp).toISOString(),revoked:!!c.revoked,active:!c.revoked&&c.exp>now})),
+    pending:state.requests.filter(r=>r.status==='pending').length,
+  };
+}
+// Every model call that went out is in the audit log: who, which model, the host it was sent to, how much, what was
+// hidden, and from where in SILO. Never what was said. The compliance report is built from these records.
+function auditModel(agent,opts,r){
+  const p=r?.routed?.provider||opts.routed?.provider||agent.provider;if(p==='demo')return;
+  const m=r?.routed?.model||opts.routed?.model||agent.model||secrets.get(p)?.model||'',c=secrets.get(p);
+  let host=p==='openai'?'api.openai.com':p==='anthropic'?'api.anthropic.com':'';
+  if(!host)try{host=new URL(p==='ollama'?(c?.endpoint||'http://127.0.0.1:11434'):c?.endpoint).host;}catch{host=p;}
+  auditNote({action:'model.call',outcome:r?'ok':'failed',actor:agent.name,role:'resident',target:`${p}:${m}`,detail:modelDetail({host,input:r?.input,output:r?.output,hidden:r?.masked,from:opts.ctx?.source,test:opts.ctx?.test})});
+}
 // One call to a model. With onText the answer is streamed and every new piece of text is passed on as it arrives.
 // With opts.tools the model gets native tool definitions and the answer can carry tool calls.
 function providerCall(agent,messages,signal,onText,opts={}){
   return tracer.span('model',`${agent.provider}${agent.model?':'+agent.model:''}`,{agent:agent.name,agentId:agent.id},async sp=>{
-    const r=await providerCallRaw(agent,messages,signal,onText,opts);
+    let r;try{r=await providerCallRaw(agent,messages,signal,onText,opts);}catch(e){if(e?.modelSent)auditModel(agent,opts,null);throw e;}
+    auditModel(agent,opts,r);
     if(sp){
       const p=r.routed?.provider||agent.provider,m=r.routed?.model||agent.model||secrets.get(p)?.model||'';
       sp.name=p==='demo'?'demo reply (no model)':`${p}${m?':'+m:''}`;sp.provider=p;sp.model=m;sp.input=r.input||0;sp.output=r.output||0;sp.tokens=r.tokens||0;sp.messages=messages.length;
@@ -2354,6 +2381,7 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
   // The whole question and the longest answer allowed are held against the limits. When less is left, the answer is
   // asked to be shorter, so the provider cannot write past the limit.
   const maxOut=p==='openai'?8000:4096,releaseSpend=reserveSpending(p,model,estIn,maxOut,{minOutput:256}),outLimit=releaseSpend.maxOutput;
+  let sent=false;
   try{
     const stream=!!onText,tools=toolsFor(p,opts.tools);
     let url,headers={'Content-Type':'application/json'},body;
@@ -2374,6 +2402,7 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     let text='',input=0,output=0,truncated=false;const collector=new CallCollector(p);
     try{
       let r;
+      sent=true;
       try{r=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal:combined,redirect:'error'});}
       catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} did not answer for 3 minutes.`,504);throw Object.assign(new Error(`Could not reach ${p}. ${e.cause?.code||e.message}`),{status:502,retry:true});}
       if(!r.ok){
@@ -2432,7 +2461,8 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     recordUsage(p,model,input,output);
     if(!text&&!calls.length&&!opts.allowEmpty)fail('Provider returned no text. Check model support and output limits.',502);
     return {text,tokens:input+output,input,output,truncated,calls,routed,compacted:comp.compacted,...(masker?.size&&{masked:masker.counts()})};
-  }finally{releaseSpend();}
+  }catch(e){if(sent&&e&&typeof e==='object')e.modelSent=true;throw e;}
+  finally{releaseSpend();}
 }
 // Rate limits, overloaded servers and dropped connections are tried again, up to three times, with a growing pause.
 async function callWithRetry(agent,messages,signal,hooks={},opts={}){
@@ -6275,7 +6305,7 @@ const server=http.createServer(async(req,res)=>{
       const rq=route.match(/^\/api\/requests\/([^/]+)$/);
       if(rq&&req.method==='POST'){
         const r=state.requests.find(r=>r.id===rq[1]);if(!r)fail('Request not found.',404);if(r.status!=='pending')fail('This request was already handled.',409);
-        decideRequest(r,b.allow===true,b.always===true);await persist();return send(res,200,{ok:true});
+        decideRequest(r,b.allow===true,b.always===true,'you',me?.name);await persist();return send(res,200,{ok:true});
       }
       const tr=route.match(/^\/api\/agents\/([^/]+)\/trust$/);
       if(tr&&req.method==='POST'){const a=findAgent(tr[1]);a.trust=(a.trust||[]).filter(t=>t!==b.tool);if(b.clear===true)a.trust=[];await persist();return send(res,200,{trust:a.trust});}
@@ -6714,7 +6744,7 @@ const server=http.createServer(async(req,res)=>{
         if(rm[2]==='check')return send(res,202,await checkRun(run,b,me));
         if(rm[2]==='replay')return send(res,202,await replayRun(run,b.from));
         if(rm[2]==='compensate'){if(run.status==='running')fail('Stop the run before compensating it.',409);return send(res,200,await compensateRun(run));}
-        decideRun(run,b.approve===true,string(b.note||'',5000));return send(res,200,{ok:true});
+        decideRun(run,b.approve===true,string(b.note||'',5000),'you',me?.name);return send(res,200,{ok:true});
       }
       if(route==='/api/jobs'&&req.method==='GET'){
         return send(res,200,{jobs:state.jobs,queue:{...state.settings.queue,active:activeJobRunsCount(),queued:state.jobs.filter(j=>j.status==='queued').length,retrying:state.jobs.filter(j=>j.status==='retrying').length}});
@@ -6867,6 +6897,17 @@ const server=http.createServer(async(req,res)=>{
         res.writeHead(200,{'Content-Type':csv?'text/csv; charset=utf-8':'application/x-ndjson; charset=utf-8','Content-Disposition':`attachment; filename="${name}"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Silo-Audit-Records':String(records.length)});return res.end(body);
       }
       if(route==='/api/audit/verify'&&req.method==='GET')return send(res,200,await audit.verify());
+      // The compliance report for a period: JSON for the page, or a PDF, Markdown or JSON file to keep.
+      if(route==='/api/compliance'&&req.method==='GET'){
+        const q=url.searchParams,toRaw=q.get('to')||'',from=q.get('from')?Date.parse(q.get('from')):Date.now()-30*86400000,to=toRaw?Date.parse(toRaw)+(/^\d{4}-\d{2}-\d{2}$/.test(toRaw)?86399999:0):Date.now(),format=q.get('format')||'json';
+        if(!Number.isFinite(from)||!Number.isFinite(to)||to<from)fail('Give the dates as YYYY-MM-DD, the first one before the last.');
+        if(!['json','md','pdf'].includes(format))fail('Choose json, md or pdf.');
+        const report=buildReport({records:await audit.read({from,to,limit:500000}),chain:await audit.verify(),now:complianceSetup(),from,to});
+        if(q.get('download')!=='1')return send(res,200,report);
+        auditNote({action:'compliance.report',actor:me?.name||'owner',target:`${report.from.slice(0,10)} to ${report.to.slice(0,10)}`,detail:format});
+        const md=format==='json'?'':reportMarkdown(report),body=format==='pdf'?makePdf(report.title,md):Buffer.from(format==='md'?md:JSON.stringify(report,null,2),'utf8');
+        res.writeHead(200,{'Content-Type':{pdf:'application/pdf',md:'text/markdown; charset=utf-8',json:'application/json; charset=utf-8'}[format],'Content-Disposition':`attachment; filename="silo-compliance-${report.from.slice(0,10)}-to-${report.to.slice(0,10)}.${format}"`,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});return res.end(body);
+      }
       if(route==='/api/audit'&&req.method==='POST'){const m=Number(b.months);if(!Number.isInteger(m)||m<0||m>120)fail('Keep the log for 0 (always) to 120 months.');state.settings.audit.months=m;await persist();return send(res,200,{months:m});}
       if(route==='/api/otel'&&req.method==='GET'){const o=state.settings.otel;return send(res,200,{...o,headerNames:Object.keys(secrets.get('otel')?.headers||{}),status:otel.status()});}
       if(route==='/api/otel'&&req.method==='POST'){

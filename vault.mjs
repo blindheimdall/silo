@@ -61,7 +61,7 @@ const OWNER_ONLY=[/^\/api\/connections/,/^\/api\/vault/,/^\/api\/mcp/,/^\/api\/c
 // The MCP server and the A2A agent check each method against the role and the token themselves.
 const ANYONE=[/^\/api\/serve\/(mcp|a2a)$/,/^\/api\/logout$/,/^\/api\/password$/,/^\/api\/tokens(\/[a-f0-9]{24})?$/];
 // Only owners may even look at these: the audit log, telemetry, single sign-on, the system and Git environments.
-const OWNER_READ=[/^\/api\/audit/,/^\/api\/sync/,/^\/api\/otel/,/^\/api\/sso/,/^\/api\/system\//];
+const OWNER_READ=[/^\/api\/audit/,/^\/api\/compliance/,/^\/api\/sync/,/^\/api\/otel/,/^\/api\/sso/,/^\/api\/system\//];
 export function roleAllows(role,method,route){
   if(role==='owner')return true;
   if(ANYONE.some(r=>r.test(route)))return true;
