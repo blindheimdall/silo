@@ -569,7 +569,7 @@ async function hostedControl(req,res){
   if(route==='/api/hosted/status'&&req.method==='GET')
     return send(res,200,{version:APP_VERSION,accounts:state.users.length,owners:state.users.filter(u=>u.role==='owner').length,residents:state.agents.length,working:state.agents.filter(a=>a.status==='working').length,month:cents(workspaceSpent()),budget:hostedBudget,setup:!state.users.length?SETUP_CODE:''});
   if(route==='/api/hosted/plan'&&req.method==='POST'){
-    const b=JSON.parse(await readText(req,2000)||'{}'),budget=Number(b.budget);
+    let b;try{b=JSON.parse(await readText(req,2000)||'{}');}catch{fail('Invalid JSON.');}const budget=Number(b?.budget);
     if(!(budget>=0&&budget<=1e6))fail('A budget is dollars a month, from 0 to 1000000.');
     if(budget!==hostedBudget){hostedBudget=budget;limitFull.clear();stateRev++;event(budget?'Workspace budget set':'Workspace budget removed',budget?`${money(budget)} a month, for all providers together.`:'','system');}
     return send(res,200,{budget:hostedBudget});
