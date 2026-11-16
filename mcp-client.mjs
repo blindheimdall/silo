@@ -31,7 +31,16 @@ export class McpClient{
     const gone=e=>{if(this.closed)return;this.closed=true;this.failAll(new Error(`The connector program is gone (${e.message}).`));};
     child.stdin.on('error',gone);child.stdout.on('error',gone);child.stderr.on('error',()=>{});
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i).trim();buffer=buffer.slice(i+1);if(line)this.receive(line);}});
+    // A line is looked for only in what just came, so a long answer in many pieces is not searched again each time,
+    // and a line longer than an answer may be ends the connector instead of filling SILO's memory.
+    child.stdout.on('data',chunk=>{
+      const from=buffer.length;buffer+=chunk;
+      let i=buffer.indexOf('\n',from),start=0;
+      while(i>=0){const line=buffer.slice(start,i).trim();start=i+1;if(line)this.receive(line);i=buffer.indexOf('\n',start);}
+      if(start)buffer=buffer.slice(start);
+      // close() ends the whole tree: on Windows the program runs under a shell, and killing only that would leave it.
+      if(buffer.length>MAX_ANSWER){buffer='';if(!this.closed){this.failAll(new Error('The connector program sent an answer that is too large.'));this.close();}}
+    });
     child.stderr.setEncoding('utf8');child.stderr.on('data',d=>{this.log=(this.log+d).slice(-2000);});
     return new Promise((resolve,reject)=>{
       child.once('error',e=>reject(new Error(`Could not start ${command}: ${e.message}`)));

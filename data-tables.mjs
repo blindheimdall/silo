@@ -161,7 +161,15 @@ export class Tables {
     for (const c of this.sql.counts.all()) this.counts.set(c.tid, c.n);
     return this;
   }
-  close() { try { this.db?.close(); } catch {} this.db = null; }
+  close() { try { this.db?.close(); } catch {} this.db = null; this.stmts = null; }
+  // A statement made from SQL that is built per table and filter, kept so the same query is not compiled again for every
+  // row of a loop. The SQL holds only column names and placeholders, so a few hundred cover every shape in use.
+  prep(sql) {
+    const m = this.stmts ||= new Map();
+    let s = m.get(sql);
+    if (!s) { if (m.size >= 300) m.clear(); s = this.db.prepare(sql); m.set(sql, s); }
+    return s;
+  }
 
   tx(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -263,7 +271,7 @@ export class Tables {
   // The rows with this value in a column, other than one row.
   matching(t, c, v, except = 0) {
     const {sql} = this.expr(t, c.name), text = c.type === 'text';
-    return this.db.prepare(`SELECT * FROM silo_rows WHERE tid = ? AND id <> ? AND ${text ? `lower(${sql}) = lower(?)` : `${sql} = ?`} ORDER BY id LIMIT 2`).all(t.id, except, text ? String(v) : this.bind(c, c.type === 'json' ? JSON.stringify(v) : v));
+    return this.prep(`SELECT * FROM silo_rows WHERE tid = ? AND id <> ? AND ${text ? `lower(${sql}) = lower(?)` : `${sql} = ?`} ORDER BY id LIMIT 2`).all(t.id, except, text ? String(v) : this.bind(c, c.type === 'json' ? JSON.stringify(v) : v));
   }
   unique(t, data, except = 0) {
     for (const c of t.columns) if (c.unique && data[c.name] !== undefined && this.matching(t, c, data[c.name], except).length) fail(`${t.name} already has a row with ${c.name} ${short(data[c.name])}.`, 409);
@@ -304,11 +312,11 @@ export class Tables {
     let order = 'id';
     if (sort) { const {sql, col} = this.expr(t, sort); order = `${col.type === 'text' ? `lower(${sql})` : sql} ${desc ? 'DESC' : 'ASC'}, id`; }
     else if (desc) order = 'id DESC';
-    const list = this.db.prepare(`SELECT * FROM silo_rows WHERE ${w.sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...w.args, n, skip).map(r => this.rowView(r));
-    const total = !filters.length && !String(search ?? '').trim() ? this.counts.get(t.id) || 0 : this.db.prepare(`SELECT COUNT(*) AS n FROM silo_rows WHERE ${w.sql}`).get(...w.args).n;
+    const list = this.prep(`SELECT * FROM silo_rows WHERE ${w.sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...w.args, n, skip).map(r => this.rowView(r));
+    const total = !filters.length && !String(search ?? '').trim() ? this.counts.get(t.id) || 0 : this.prep(`SELECT COUNT(*) AS n FROM silo_rows WHERE ${w.sql}`).get(...w.args).n;
     return {table: this.view(t), rows: list, total};
   }
-  count(ref, filters = [], search = '') { const t = this.table(ref), w = this.where(t, filters, search); return this.db.prepare(`SELECT COUNT(*) AS n FROM silo_rows WHERE ${w.sql}`).get(...w.args).n; }
+  count(ref, filters = [], search = '') { const t = this.table(ref), w = this.where(t, filters, search); return this.prep(`SELECT COUNT(*) AS n FROM silo_rows WHERE ${w.sql}`).get(...w.args).n; }
   row(ref, id) {
     const t = this.table(ref), n = Number(id);
     if (!Number.isInteger(n) || n < 1) fail('A row id is a whole number from 1.');
@@ -316,18 +324,19 @@ export class Tables {
     return this.rowView(r);
   }
 
+  // Inside a transaction; the count is raised by the caller once it is committed, so a rollback leaves it right.
   insert(t, data, now) {
     const id = this.sql.take.get(1, t.id).next - 1;
     this.sql.add.run(t.id, id, JSON.stringify(data), now, now);
-    this.counts.set(t.id, (this.counts.get(t.id) || 0) + 1);
     return id;
   }
+  added(t, n) { this.counts.set(t.id, (this.counts.get(t.id) || 0) + n); }
   add(ref, values) {
     const t = this.table(ref);
     if ((this.counts.get(t.id) || 0) >= ROW_MAX) fail(`${t.name} is full: a table keeps at most ${ROW_MAX} rows.`, 409);
     const data = this.clean(t, values), now = Date.now();
     const id = this.tx(() => { this.unique(t, data); return this.insert(t, data, now); });
-    this.changed(t);
+    this.added(t, 1);this.changed(t);
     return {id, ...data, created: now, updated: now};
   }
   update(ref, id, values) {
@@ -394,6 +403,7 @@ export class Tables {
       rows.forEach((d, n) => { for (const {c, seen} of uniq) { if (d[c.name] === undefined) continue; const k = this.key(c, d[c.name]); if (seen.has(k)) fail(`Line ${n + 2}: ${t.name} already has a row with ${c.name} ${short(d[c.name])}.`, 409); seen.add(k); } });
       const now = Date.now();
       this.tx(() => { for (const d of rows) this.insert(t, d, now); });
+      this.added(t, rows.length);
     } catch (e) { if (made) this.drop(made.id); throw e; }
     this.changed(t);
     return {table: this.view(t), added: rows.length, skipped, made: !!made};

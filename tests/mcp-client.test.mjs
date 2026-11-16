@@ -14,6 +14,12 @@ test('talks to a local MCP program over stdio, with paged tool lists and errors'
   assert.equal(resultText(await c.callTool('echo',{text:'level 40'})),'echo: level 40');
   const bad=await c.callTool('fail',{});assert.equal(bad.isError,true);
   await assert.rejects(c.callTool('nope',{}),/Unknown tool nope/);
+  const big='x'.repeat(3_000_000);assert.equal(resultText(await c.callTool('echo',{text:big})).length,big.length+6,'a long answer in many pieces arrives whole');
+});
+test('a program that sends a line longer than any answer is ended, not kept in memory',async t=>{
+  const flood=`process.stdin.once('data',()=>{const p='x'.repeat(1<<20);let n=0;const go=()=>{while(n++<12)if(!process.stdout.write(p))return process.stdout.once('drain',go);};go();});setInterval(()=>{},1000);`;
+  const c=new McpClient({transport:'stdio',command:process.execPath,args:['-e',flood]},{timeout:10000});t.after(()=>c.close());
+  await assert.rejects(c.listTools(),/too large/);
 });
 test('talks to an MCP server over Streamable HTTP, as JSON and as an event stream',async t=>{
   let sessions=0,lastHeaders;

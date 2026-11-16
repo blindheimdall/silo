@@ -81,6 +81,12 @@ test('the table store', async t => {
     assert.match(csv, /"'=HYPERLINK\(""x""\)"/, 'a formula gets a quote mark first');
     assert.throws(() => T.importCsv(null, 'id\n1\n', { name: 'Only ids' }), /no columns to keep/);
     assert.ok(!T.list().some(x => x.name === 'Only ids'));
+    // A write that fails halfway through the file (a full disk) rolls it all back, and the count stays right.
+    const run = T.sql.add.run, before = T.rows('People').total;let n = 0;
+    T.sql.add.run = (...a) => { if (++n === 2) throw new Error('disk full'); return run.apply(T.sql.add, a); };
+    try { assert.throws(() => T.importCsv('People', 'Nume\nA\nB\nC\n'), /disk full/); } finally { T.sql.add.run = run; }
+    assert.equal(T.list().find(x => x.name === 'People').rows, before, 'the count is not raised by rows that were rolled back');
+    assert.equal(T.count('People'), before);
     T.close();
   });
 
