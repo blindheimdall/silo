@@ -107,6 +107,18 @@ docker compose logs silo   # the setup address for the first account
 
 See "Running without anyone signed in" in [docs/handbook.md](docs/handbook.md).
 
+### Deploy to the cloud
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/blindheimdall/silo)
+
+| Service | How |
+| :--- | :--- |
+| **Render** | Select the button. `render.yaml` makes one web service from the Dockerfile with a 1 GB disk and a generated `SILO_SECRET`. |
+| **Fly.io** | `fly launch --copy-config --no-deploy --ha=false`, then `fly secrets set SILO_SECRET=...` and `fly deploy`. `fly.toml` keeps one machine awake with a volume. |
+| **Railway** | Make a project from the repository. `railway.json` builds the Dockerfile; attach a volume at `/data`. |
+
+The first start prints a setup address in the service's log. Open it once to make the owner account. SILO finds the service's HTTPS proxy by itself; behind your own, set `SILO_PROXY=1`. See "Deploy to the cloud" in the [handbook](docs/handbook.md#deploy-to-the-cloud).
+
 For development, testing and production, run one SILO for each and move workflows between them through a Git repository: push from development, read what a pull would change, and pull into a protected production SILO (System, Environments and Git). See "Development, testing and production" in the handbook.
 
 ## Developer resources

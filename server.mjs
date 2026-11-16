@@ -296,6 +296,13 @@ const loopback=a=>/^(127\.|::1$|::ffff:127\.)/.test(String(a||''));
 // printed at start may use SILO from outside; after that everyone signs in.
 const HOST_ENV=String(process.env.SILO_HOST||'').trim();
 if(HOST_ENV&&HOST_ENV!=='localhost'&&!isIP(HOST_ENV)){console.error(`SILO_HOST must be an IP address, like 0.0.0.0, not "${HOST_ENV.slice(0,60)}".`);process.exit(1);}
+// Behind a hosting service's HTTPS proxy (Render, Fly.io and Railway are found by themselves; SILO_PROXY=1 for your own):
+// the browser's address is https, and the visitor's address is the last one the proxy adds to X-Forwarded-For.
+// Without it, these headers are not trusted. SILO_PROXY=0 turns it off; SILO_PUBLIC_URL is the address people open.
+const PROXY_ENV=String(process.env.SILO_PROXY||'').trim(),ON_FLY=!!process.env.FLY_APP_NAME;
+const TRUST_PROXY=PROXY_ENV==='1'||(PROXY_ENV!=='0'&&!!(process.env.RENDER_EXTERNAL_URL||ON_FLY||process.env.RAILWAY_PUBLIC_DOMAIN));
+const PUBLIC_URL=(()=>{const e=process.env,u=e.SILO_PUBLIC_URL||e.RENDER_EXTERNAL_URL||(ON_FLY&&`https://${e.FLY_APP_NAME}.fly.dev`)||(e.RAILWAY_PUBLIC_DOMAIN&&`https://${e.RAILWAY_PUBLIC_DOMAIN}`)||'';
+  try{const x=new URL(String(u).trim());return /^https?:$/.test(x.protocol)?x.origin:'';}catch{return '';}})();
 const LISTEN=HOST_ENV||(NETWORK?'0.0.0.0':'127.0.0.1'),WIDE=NETWORK||!/^(127\.|localhost$|::1$)/.test(LISTEN);
 const SETUP_CODE=WIDE&&!state.users.length?randomBytes(16).toString('hex'):'';
 const setupOk=c=>!!SETUP_CODE&&typeof c==='string'&&c.length===32&&timingSafeEqual(Buffer.from(c),Buffer.from(SETUP_CODE));
@@ -5630,26 +5637,33 @@ const rawBodyOk=(p,type='')=>((p==='/api/upload'||p==='/api/voice/transcribe')&&
 async function readBody(req){const body=await readText(req,300000);try{return JSON.parse(body||'{}');}catch{fail('Invalid JSON.');}}
 const server=http.createServer(async(req,res)=>{
   try{
+    // The hosting service checks that SILO answers before anyone has an account, from its own network.
+    if(req.method==='GET'&&req.url==='/api/health')return send(res,200,{ok:true});
     const host=req.headers.host;
     // Requests from the tunnel come from cloudflared on this computer, with Cloudflare's headers. They never count as local.
     const viaTunnel=loopback(req.socket.remoteAddress)&&(req.headers['cf-connecting-ip']!==undefined||req.headers['cf-ray']!==undefined||(!!tunnel.host()&&remoteHost(host)===tunnel.host()));
-    const clientIp=viaTunnel?String(req.headers['cf-connecting-ip']||'internet').slice(0,64):req.socket.remoteAddress;
-    const secure=viaTunnel?'; Secure':'';
+    // Through a trusted proxy, a request carries its forwarding headers; the container's own health check does not.
+    // Its visitor is never this computer, even when a header says 127.0.0.1.
+    const fwd=h=>String(req.headers[h]||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const proxied=TRUST_PROXY&&!viaTunnel&&(req.headers['x-forwarded-for']!==undefined||req.headers['x-forwarded-proto']!==undefined||(ON_FLY&&req.headers['fly-client-ip']!==undefined));
+    const proxyIp=proxied?[ON_FLY?String(req.headers['fly-client-ip']||'').trim():'',fwd('x-forwarded-for').at(-1)].find(x=>x&&isIP(x)&&!loopback(x))||'unknown':'';
+    const clientIp=viaTunnel?String(req.headers['cf-connecting-ip']||'internet').slice(0,64):proxyIp||req.socket.remoteAddress;
+    const scheme=viaTunnel||(proxied&&fwd('x-forwarded-proto')[0]?.toLowerCase()==='https')?'https':'http';
+    const secure=scheme==='https'?'; Secure':'';
     if(viaTunnel){if(!tunnel.host()||remoteHost(host)!==tunnel.host())fail('Invalid host.',403);if(!state.users.length)fail('Remote access needs an account.',403);}
     else if(!WIDE){if(host!==`127.0.0.1:${PORT}`&&host!==`localhost:${PORT}`)fail('Invalid host.',403);}
     else{
       if(!/^[\w.-]+(:\d+)?$|^\[[0-9a-f:.]+\](:\d+)?$/i.test(host||''))fail('Invalid host.',403);
-      if(!state.users.length&&!loopback(req.socket.remoteAddress)){
+      if(!state.users.length&&(proxied||!loopback(req.socket.remoteAddress))){
         // The setup code comes once in the address, and then in a cookie that is gone when the first account exists.
         const given=new URL(req.url,'http://x').searchParams.get('setup')||'',kept=/(?:^|;\s*)silo_setup=([a-f0-9]{32})(?:;|$)/.exec(req.headers.cookie||'')?.[1]||'';
         if(!setupOk(given||kept))fail(SETUP_CODE?'Network access needs an account. Open the setup address SILO printed when it started.':'Network access needs an account.',403);
-        if(given){res.writeHead(302,{Location:'/','Set-Cookie':`silo_setup=${given}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});return res.end();}
+        if(given){res.writeHead(302,{Location:'/','Set-Cookie':`silo_setup=${given}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure}`,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});return res.end();}
       }
     }
     const url=new URL(req.url,`http://${host}`);
     const cookies=Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim().split('=')));
     // For a container's health check or a monitor: says only that SILO answers.
-    if(url.pathname==='/api/health'&&req.method==='GET')return send(res,200,{ok:true});
     if(url.pathname==='/api/session'&&req.method==='GET'){
       if(req.headers['sec-fetch-site']==='cross-site')fail('Cross-site request denied.',403);
       // A page that already has a live session keeps it, so a reload does not sign you out.
@@ -5682,7 +5696,7 @@ const server=http.createServer(async(req,res)=>{
     const wg=url.pathname.match(/^\/widget\/([a-f0-9]{32})(\.js|\/chat|\/try)$/);
     if(wg){
       const cfg=state.settings.talk.widget,on=cfg.enabled&&!!cfg.key&&cfg.key.length===32&&timingSafeEqual(Buffer.from(cfg.key),Buffer.from(wg[1]));
-      const own=`${viaTunnel?'https':'http'}://${host}`;
+      const own=`${scheme}://${host}`;
       if(wg[2]==='.js'){
         res.writeHead(on?200:404,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':on?'public, max-age=300':'no-store','Cross-Origin-Resource-Policy':'cross-origin','X-Content-Type-Options':'nosniff'});
         return res.end(on?widgetScript({key:cfg.key,title:cfg.title,greeting:cfg.greeting,color:cfg.color,base:own}):'/* This chat is off. */');
@@ -5810,7 +5824,7 @@ const server=http.createServer(async(req,res)=>{
       const raw=Buffer.concat(chunks).toString('utf8');
       if(t.instant==='any'){
         const hk='apphook:'+w.id,sec=secrets.get(hk)||{};
-        const r=readWebhook(w.app,{method:req.method,headers:req.headers,raw,query:url.searchParams,url:`${viaTunnel?'https':'http'}://${host}${url.pathname}${url.search}`,token:ah[1],secret:sec.app===w.app.app?sec.secret||'':''});
+        const r=readWebhook(w.app,{method:req.method,headers:req.headers,raw,query:url.searchParams,url:`${scheme}://${host}${url.pathname}${url.search}`,token:ah[1],secret:sec.app===w.app.app?sec.secret||'':''});
         if(r.learn){secrets.set(hk,{secret:r.learn,by:'learned',app:w.app.app});await persistSecrets();event(`${HOOK_APPS[w.app.app].name} webhook made`,w.name,'connection');}
         if(r.status===200&&req.method==='POST'){w.appEventAt=Date.now();stateRev++;}
         // The events are saved before the app hears they arrived, so one that SILO takes cannot be lost to a restart.
@@ -5904,7 +5918,7 @@ const server=http.createServer(async(req,res)=>{
       const page=(title,body)=>{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",'Referrer-Policy':'no-referrer'});res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SILO</title><style>body{font:16px/1.6 system-ui,sans-serif;background:#0b100c;color:#cfe8c8;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:460px;padding:24px}h1{font-size:22px;color:#8cf57d}</style></head><body><main><h1>${title.replace(/[<>&]/g,'')}</h1><p>${body.replace(/[<>&]/g,'')}</p></main></body></html>`);};
       const st=url.searchParams.get('state')||'';
       if(url.searchParams.get('error')){mcpSignIns.delete(st);return page('The connector was not signed in.',String(url.searchParams.get('error_description')||url.searchParams.get('error')).slice(0,300));}
-      try{const r=await finishMcpSignIn(st,url.searchParams.get('code')||'',`${viaTunnel?'https':'http'}://${host}`);return page(`${r.name} is signed in.`,(r.error?'It did not answer yet: '+r.error+' ':`It has ${r.tools} tools. `)+'You can close this tab and go back to SILO.');}
+      try{const r=await finishMcpSignIn(st,url.searchParams.get('code')||'',`${scheme}://${host}`);return page(`${r.name} is signed in.`,(r.error?'It did not answer yet: '+r.error+' ':`It has ${r.tools} tools. `)+'You can close this tab and go back to SILO.');}
       catch(e){return page('The connector was not signed in.',String(e.message).slice(0,300));}
     }
     if(url.pathname==='/connect/callback'&&req.method==='GET'&&!viaTunnel){
@@ -5924,7 +5938,7 @@ const server=http.createServer(async(req,res)=>{
       }catch(e){return page(`${name} was not connected.`,e.message);}
     }
     if((url.pathname==='/sso/start'||url.pathname==='/sso/callback')&&req.method==='GET'){
-      const origin=`${viaTunnel?'https':'http'}://${host}`,via=viaTunnel?'internet':loopback(clientIp)?'local':'network',sso=state.settings.sso;
+      const origin=`${scheme}://${host}`,via=viaTunnel?'internet':loopback(clientIp)?'local':'network',sso=state.settings.sso;
       const page=(title,body,go=false)=>{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",'Referrer-Policy':'no-referrer',...(res.ssoCookies&&{'Set-Cookie':res.ssoCookies})});res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${go?'<meta http-equiv="refresh" content="0;url=/">':''}<title>SILO</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#020602;color:#8cf57d;font:15px Consolas,monospace}main{max-width:520px;padding:28px;border:1px solid #2d6a28;background:#041004}h1{font-size:13px;letter-spacing:3px;color:#e3b85b;margin:0 0 18px}p{line-height:1.6}a{color:#8cf57d}</style></head><body><main><h1>SILO 18</h1><p>${escHtml(title)}</p>${body?`<p>${escHtml(body)}</p>`:''}<p><a href="/">Open SILO</a></p></main></body></html>`);};
       const deny=(reason,who='')=>{auditNote({action:'sign-in.sso',outcome:'denied',actor:who||'unknown',ip:clientIp,via,detail:reason});return page('You are not signed in.',reason);};
       if(!ssoOn())return page('Single sign-on is off.','Sign in with your SILO name and password.');
@@ -5970,8 +5984,8 @@ const server=http.createServer(async(req,res)=>{
     }
     // The description of this API. It holds no data, so it needs no session.
     // The A2A Agent Card: public, like the card of any A2A agent, and only while the A2A agent is on.
-    if((url.pathname==='/.well-known/agent-card.json'||url.pathname==='/.well-known/agent.json')&&req.method==='GET'){if(!state.settings.expose.a2a)fail('Not found.',404);return send(res,200,a2aCard(`${viaTunnel?'https':'http'}://${host}`));}
-    if(url.pathname==='/api/openapi.json'&&req.method==='GET')return send(res,200,openApiSpec({version:APP_VERSION,server:`${viaTunnel?'https':'http'}://${host}`}));
+    if((url.pathname==='/.well-known/agent-card.json'||url.pathname==='/.well-known/agent.json')&&req.method==='GET'){if(!state.settings.expose.a2a)fail('Not found.',404);return send(res,200,a2aCard(`${scheme}://${host}`));}
+    if(url.pathname==='/api/openapi.json'&&req.method==='GET')return send(res,200,openApiSpec({version:APP_VERSION,server:`${scheme}://${host}`}));
     if(url.pathname.startsWith('/api/')){
       const bearer=bearerFrom(req.headers.authorization);
       let sess;
@@ -5991,7 +6005,7 @@ const server=http.createServer(async(req,res)=>{
         sess.seen=Date.now();sess.used=true;
       }
       if(!sess.token&&req.method!=='GET'){
-        if(req.headers.origin!==`${viaTunnel?'https':'http'}://${host}`)fail('Origin denied.',403);
+        if(req.headers.origin!==`${scheme}://${host}`)fail('Origin denied.',403);
         const token=String(req.headers['x-silo-token']||'');const expected=cookies.silo_session;
         if(!/^[a-f0-9]{64}$/.test(token)||!timingSafeEqual(Buffer.from(token),Buffer.from(expected)))fail('Invalid session token.',403);
         if(!req.headers['content-type']?.startsWith('application/json')&&!rawBodyOk(url.pathname,req.headers['content-type']))fail('JSON required.',415);
@@ -6428,7 +6442,7 @@ const server=http.createServer(async(req,res)=>{
       const mc=route.match(/^\/api\/mcp\/([^/]+)(\/test|\/signin|\/signout)?$/);
       if(mc){
         const c=state.mcp.find(c=>c.id===mc[1]);if(!c)fail('Connector not found.',404);
-        if(mc[2]==='/signin'&&req.method==='POST')return send(res,200,await startMcpSignIn(c,`${viaTunnel?'https':'http'}://${host}`));
+        if(mc[2]==='/signin'&&req.method==='POST')return send(res,200,await startMcpSignIn(c,`${scheme}://${host}`));
         if(mc[2]==='/signout'&&req.method==='POST'){secrets.delete(oauthSecretKey('mcp:'+c.id));await persistSecrets();dropMcp(c.id);c.status='';c.checked=0;event('Connector signed out',c.name,'connection');await persist();return send(res,200,{ok:true});}
         if(mc[2]&&req.method==='POST'){dropMcp(c.id);const tools=await refreshMcp(c).catch(async e=>{await persist().catch(()=>{});fail(e.message,502);});await persist();return send(res,200,{tools:tools.map(t=>({name:t.name,description:t.description,readOnly:t.readOnly}))});}
         if(!mc[2]&&req.method==='DELETE'){dropMcp(c.id);state.mcp=state.mcp.filter(x=>x.id!==c.id);secrets.delete('mcp:'+c.id);secrets.delete(oauthSecretKey('mcp:'+c.id));await fs.rm(openapiFile(c.id),{force:true}).catch(()=>{});for(const a of state.agents)a.tools=(a.tools||[]).filter(t=>t!=='mcp:'+c.id);event('Connector removed',c.name,'connection');await persistSecrets();await persist();return send(res,200,{ok:true});}
@@ -7137,7 +7151,7 @@ const appWatcher=setInterval(()=>{checkAppTriggers().catch(e=>event('App trigger
 mailer.unref();appWatcher.unref();
 await persist();server.listen(PORT,LISTEN,()=>{
   console.log(`SILO is ready at http://127.0.0.1:${PORT}`);
-  if(SETUP_CODE)console.log(`No account yet. From another computer or the host of this container, open SILO once with the setup code, for example http://localhost:${PORT}/?setup=${SETUP_CODE}, and make the owner account. The code works until then, and a new one is made at each start.`);
+  if(SETUP_CODE)console.log(`No account yet. From another computer or the host of this container, open SILO once with the setup code, for example ${PUBLIC_URL||`http://localhost:${PORT}`}/?setup=${SETUP_CODE}, and make the owner account. The code works until then, and a new one is made at each start.`);
   // Jobs cut off by a stop go on from their last checkpoint, unless the queue settings say to wait for you.
   if(state.settings.queue?.autoRecover!==false)recoverInterruptedJobs().catch(e=>event('Crash recovery failed',e.message,'error'));
   for(const run of state.runs.filter(r=>r.resumeWait)){delete run.resumeWait;resumeRun(run).catch(e=>{run.error=`The server restarted during a Wait step and the run could not go on: ${e.message}`;event(`Workflow not resumed: ${run.name}`,e.message,'error');});}

@@ -119,8 +119,16 @@
 </section>
 
 <section id="start" class="product-section launch">
-  <div class="chapter"><p class="label">SELF-HOSTED EVALUATION</p><h2>Run SILO locally.</h2><p>With Node.js 22 or newer, run the command from the repository. Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> and select a demo resident.</p></div>
-  <div><div class="command"><code>npm start</code><button id="copy" type="button" class="key" hidden>Copy</button></div><p class="resource"><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Handbook ↗</a><a href="https://github.com/blindheimdall/silo">Private repository ↗</a></p></div>
+  <div class="chapter"><p class="label">SELF-HOSTED</p><h2>Run SILO locally, or on a server.</h2><p>With Node.js 22 or newer, run the command from the repository. Open <a href="http://127.0.0.1:3000">127.0.0.1:3000</a> and select a demo resident. On a server, the first start prints a setup address in the log; open it once to make the owner account.</p></div>
+  <div><div class="command"><code>npm start</code><button id="copy" type="button" class="key" hidden>Copy</button></div>
+    <p class="label deploy-label">OR ON A SERVER</p>
+    <dl class="control-ledger deploy">
+      <div><dt>Render</dt><dd>One web service and a 1 GB disk, from <code>render.yaml</code>.</dd><dd><a href="https://render.com/deploy?repo=https://github.com/blindheimdall/silo">Deploy ↗</a></dd></div>
+      <div><dt>Fly.io</dt><dd>One machine and a volume: <code>fly launch --copy-config</code>.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#deploy-to-the-cloud">Steps ↗</a></dd></div>
+      <div><dt>Railway</dt><dd>From the repository, with a volume at <code>/data</code>.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#deploy-to-the-cloud">Steps ↗</a></dd></div>
+      <div><dt>Docker</dt><dd>Your own server: <code>docker compose up -d</code>.</dd><dd><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md#running-without-anyone-signed-in">Steps ↗</a></dd></div>
+    </dl>
+    <p class="resource"><a href="https://github.com/blindheimdall/silo/blob/main/docs/handbook.md">Handbook ↗</a><a href="https://github.com/blindheimdall/silo">GitHub repository ↗</a></p></div>
 </section>
 </main>
 <footer class="mast"><a class="mark" href="#main"><strong>SILO</strong></a><a href="https://github.com/blindheimdall/silo/blob/main/LICENSE">AGPLv3</a></footer>

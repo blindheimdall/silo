@@ -1,0 +1,24 @@
+# SILO on Render: the "Deploy to Render" button in README.md reads this file.
+# One web service from the Dockerfile, with a disk for residents, workflows, keys and the workspace. A service with a
+# disk runs as one instance, which is what SILO needs. The first start prints a setup address in the log.
+services:
+  - type: web
+    name: silo
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # A disk needs a paid instance; starter is the smallest.
+    plan: starter
+    healthCheckPath: /api/health
+    autoDeploy: false
+    disk:
+      name: silo-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SILO_WORK_DIR
+        value: /data/workspace
+      # The passphrase for the saved keys, made once by Render and kept in the service's settings.
+      - key: SILO_SECRET
+        generateValue: true
+      - key: TZ
+        value: UTC
