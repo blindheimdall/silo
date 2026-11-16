@@ -5,7 +5,10 @@ import net from 'node:net';
 import tls from 'node:tls';
 
 const isLocal=host=>/^(localhost|127\.0\.0\.1|::1)$/i.test(host);
-const quote=s=>'"'+String(s).replace(/[\\"]/g,m=>'\\'+m)+'"';
+// A quoted IMAP string cannot hold a line break: one would end the command and start another.
+const quote=s=>{s=String(s);if(/[\r\n\0]/.test(s))throw new Error('The mail user name, password and folder cannot hold a line break.');return '"'+s.replace(/[\\"]/g,m=>'\\'+m)+'"';};
+// The highest UID a SEARCH answered, in a loop: a big inbox has more UIDs than Math.max can take as arguments.
+const topUid=items=>{let top=0;for(const i of items)for(const x of (i.text.match(/^\* SEARCH(.*)$/i)?.[1]||'').trim().split(/\s+/)){const n=Number(x);if(n>top)top=n;}return top;};
 
 class Wire{
   constructor(sock){this.sock=sock;this.buf=Buffer.alloc(0);this.items=[];this.wait=null;this.err=null;
@@ -60,7 +63,7 @@ export async function checkMail({host,port=993,user,pass,folder='INBOX',uidValid
     // A changed UIDVALIDITY means the numbers start over, so the inbox is learned again.
     if(lastUid===undefined||lastUid===null||(uidValidity&&validity&&uidValidity!==validity)){
       let top=uidNext?uidNext-1:0;
-      if(!uidNext){const s=await cmd('UID SEARCH ALL');top=Math.max(0,...s.flatMap(i=>(i.text.match(/^\* SEARCH(.*)$/i)?.[1]||'').trim().split(/\s+/).filter(Boolean).map(Number)));}
+      if(!uidNext)top=topUid(await cmd('UID SEARCH ALL'));
       return {uidValidity:validity,lastUid:top,messages:[],primed:true};
     }
     const s=await cmd(`UID SEARCH UID ${Number(lastUid)+1}:*`);

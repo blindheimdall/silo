@@ -3,7 +3,7 @@
 // through a shell, without prompts, and only over https, ssh, git or a local folder. Its sign-in is Git's own (a
 // credential manager or an SSH key): SILO never holds a password or token for the repository.
 import {execFile} from 'node:child_process';
-import {existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync} from 'node:fs';
+import {existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, lstatSync} from 'node:fs';
 import path from 'node:path';
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), {status}); };
@@ -43,7 +43,9 @@ export class GitSync {
   git(args, {cwd = this.repo, allowFail = false} = {}) {
     const env = {...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ALLOW_PROTOCOL: 'https:ssh:git:file', LC_ALL: 'C'};
     if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o ConnectTimeout=20';
-    const all = ['-c', 'core.autocrlf=false', '-c', 'core.quotepath=false', '-c', 'protocol.ext.allow=never', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + path.join(this.dir, 'no-hooks'), ...args];
+    // core.symlinks=false: a link in the repository is checked out as a small file holding its target, never as a link
+    // that could lead read() to a file of this computer.
+    const all = ['-c', 'core.autocrlf=false', '-c', 'core.quotepath=false', '-c', 'core.symlinks=false', '-c', 'protocol.ext.allow=never', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + path.join(this.dir, 'no-hooks'), ...args];
     return new Promise((resolve, reject) => execFile('git', all, {cwd, env, windowsHide: true, timeout: this.timeout, maxBuffer: 20e6}, (e, out, err) => {
       if (e && !allowFail) {
         const text = String(err || e.message).trim().split('\n').filter(l => !/^hint:/.test(l)).slice(-3).join(' ').slice(0, 400);
@@ -76,15 +78,17 @@ export class GitSync {
     return {head, empty: !there};
   }
 
-  // The files SILO keeps there: silo.json, workflows/*.json and tables/*.json.
+  // The files SILO keeps there: silo.json, workflows/*.json and tables/*.json. Only plain files in plain folders: a
+  // link (made by hand in the working copy, or by a Git that keeps links) is never followed out of the repository.
   read() {
-    const files = new Map();
+    const files = new Map(), plain = (p, dir) => { try { const s = lstatSync(p); return dir ? s.isDirectory() : s.isFile(); } catch { return false; } };
     for (const sub of ['workflows', 'tables']) {
-      const d = path.join(this.repo, sub); if (!existsSync(d)) continue;
+      const d = path.join(this.repo, sub); if (!plain(d, true)) continue;
       for (const name of readdirSync(d)) {
         if (!name.endsWith('.json')) continue;
-        const f = path.join(d, name); const st = statSync(f);
-        if (!st.isFile()) continue;
+        const f = path.join(d, name);
+        if (!plain(f)) continue;
+        const st = lstatSync(f);
         if (st.size > SYNC_FILE_MAX) fail(`${sub}/${name} is larger than 2 MB.`, 422);
         files.set(sub + '/' + name, readFileSync(f, 'utf8'));
         if (files.size > SYNC_FILES_MAX) fail(`The repository holds more than ${SYNC_FILES_MAX} SILO files.`, 422);

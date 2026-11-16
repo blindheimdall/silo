@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkRemote, checkBranch, slug } from '../git-sync.mjs';
+import { checkRemote, checkBranch, slug, GitSync } from '../git-sync.mjs';
 import { roleAllows } from '../vault.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +26,18 @@ async function client(api) {
   const ses = await fetch(api + '/api/session'), c = { ...(await ses.json()), cookie: ses.headers.get('set-cookie')?.split(';')[0] };
   return async (route, body, method = body === undefined ? 'GET' : 'POST') => { const r = await fetch(api + '/api' + route, { method, headers: { cookie: c.cookie, origin: api, 'Content-Type': 'application/json', 'x-silo-token': c.token }, body: body === undefined ? undefined : JSON.stringify(body) }); return { status: r.status, data: await r.json().catch(() => ({})) }; };
 }
+
+test('a link in the repository is never followed to a file of this computer', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'silo-gitread-')); t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const g = new GitSync(dir), wf = path.join(g.repo, 'workflows'), secret = path.join(dir, 'secret.json');
+  await fs.mkdir(wf, { recursive: true }); await fs.writeFile(secret, '{"key":"do-not-read"}'); await fs.writeFile(path.join(wf, 'real.json'), '{"name":"Real"}');
+  // A folder link (a junction on Windows needs no rights) and, where this account may make one, a file link.
+  await fs.symlink(dir, path.join(g.repo, 'tables'), 'junction');
+  try { await fs.symlink(secret, path.join(wf, 'link.json'), 'file'); } catch (e) { if (e.code !== 'EPERM') throw e; }
+  const files = g.read();
+  assert.deepEqual([...files.keys()], ['workflows/real.json']);
+  assert.ok(![...files.values()].some(v => v.includes('do-not-read')));
+});
 
 test('repository addresses and branch names', () => {
   assert.equal(checkRemote('https://github.com/acme/flows.git'), 'https://github.com/acme/flows.git');
