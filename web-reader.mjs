@@ -59,7 +59,8 @@ function get(url,{allowLocal,timeout}){
   });
 }
 // Follows up to four redirects, each checked again. Returns the page as plain text, cut at maxChars.
-export async function readPage(url,{allowLocal=false,maxChars=20000,timeout=15000}={}){
+// raw: the text as it came, for a sitemap or a feed, instead of the readable text of a page.
+export async function readPage(url,{allowLocal=false,maxChars=20000,timeout=15000,raw:asIs=false}={}){
   let current;
   try{current=new URL(String(url));}catch{throw new Error('That is not a valid web address.');}
   for(let hop=0;hop<5;hop++){
@@ -72,7 +73,7 @@ export async function readPage(url,{allowLocal=false,maxChars=20000,timeout=1500
     if(!/text\/|json|xml|javascript/.test(type))throw new Error(`This is not a text page (${type.split(';')[0]}).`);
     const charset=type.match(/charset=([\w-]+)/)?.[1]||'utf-8';
     let raw;try{raw=new TextDecoder(charset).decode(body);}catch{raw=body.toString('utf8');}
-    const page=/html|xml/.test(type)&&/<[a-z!]/i.test(raw)?htmlToText(raw):{title:'',text:raw.trim()};
+    const page=!asIs&&/html|xml/.test(type)&&/<[a-z!]/i.test(raw)?htmlToText(raw):{title:'',text:raw.trim()};
     const long=page.text.length>maxChars;
     return {url:current.href,title:page.title,text:page.text.slice(0,maxChars)+(long||cut?'\n\n(The page was cut here.)':''),bytes:body.length};
   }

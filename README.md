@@ -44,6 +44,7 @@ Open [`docs/product/index.html`](docs/product/index.html) from a checkout to ste
 | Capability | What you can do |
 | :--- | :--- |
 | **Residents** | Configure agents with a role, instructions, model, home level and tool permissions. Try demo residents without an API key. |
+| **Knowledge** | Keep Google Drive and OneDrive folders, Notion pages and websites as searchable copies that sync on their own, reading only what changed. Residents answer from them with citations that open the exact lines, and each passage links back to its source. |
 | **Workflows** | Combine residents, reviews, app actions, waits and approvals. Run steps in parallel, branch on prior results or repeat for every item in a list. |
 | **Canvas** | Draw a workflow as a graph and drag steps to reorder them or run them at the same time. References between steps follow every move, and the canvas says what would be refused before you save. |
 | **Gallery** | Adopt procedures other SILOs share in one step, from a catalog checked by fingerprint, or point SILO at a catalog of your company. |

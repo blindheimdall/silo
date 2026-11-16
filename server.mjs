@@ -10,6 +10,7 @@ import { Worker } from 'node:worker_threads';
 import { SECTORS, sectorForLevel } from './public/world-geometry.js';
 import { StateStore } from './storage.mjs';
 import { readPage } from './web-reader.mjs';
+import { KNOWLEDGE_DIR, SOURCE_KINDS, EVERY, cleanSource, syncSource, slugOf as knowledgeSlug } from './knowledge.mjs';
 import { webSearch, ENGINES } from './web-search.mjs';
 import { ArchiveIndex } from './archive-index.mjs';
 import { sendNotification, checkUrl, emailList, CHANNEL_KINDS, NOTIFY_EVENTS } from './notify.mjs';
@@ -548,7 +549,7 @@ setInterval(()=>{if(liveStreams.size)liveTick();},150).unref();
 setInterval(()=>{for(const c of liveStreams)if(!c.behind()){c.write(': still here\n\n');c.flush();}},20000).unref();
 const APP_TRIGGER_LIST=Object.entries(TRIGGERS).map(([kind,t])=>({kind,service:t.service,label:t.label,fields:t.fields,instant:t.instant||null}));
 // Capability tokens are bound to the key of their holder, so they are no use to anyone else; still, only owners see them.
-function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,guardrails:{...state.settings.guardrails,pii:{...state.settings.guardrails.pii,terms:[]}},sync:{environment:state.settings.sync.environment,protect:state.settings.sync.protect},radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,hosted:hostedView(),tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),guardMasked:{...guardTally},remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
+function publicState(role='owner',{page=false}={}){ const rad=state.settings.radio; return {...state,settings:role==='owner'?state.settings:{...state.settings,guardrails:{...state.settings.guardrails,pii:{...state.settings.guardrails.pii,terms:[]}},sync:{environment:state.settings.sync.environment,protect:state.settings.sync.protect},radio:{...rad,issued:rad.issued.map(({token,...c})=>c),held:rad.held.map(({token,...h})=>h)}},traces:undefined,apiTokens:undefined,runs:page?state.runs.map(pageRun):state.runs.map(r=>r.eachDone?{...r,eachDone:undefined}:r),appTriggers:APP_TRIGGER_LIST,hosted:hostedView(),tables:tables.list(),talkInbox:role==='viewer'?undefined:inbox.counts(),activity:residentActivity(),browsers:browsers.status(),knowledgeSyncing:[...knowledgeBusy.keys()],agents:state.agents.map(slimSuite),workflows:state.workflows.map(w=>{const x={...slimSuite(w),queue:queueInfo(w,w.pendingQueue?.length?queueWhy(w):''),lostEvents:undefined,lost:(w.lostEvents||[]).map(({input,...l})=>({...l,preview:String(input).slice(0,400).replace(/\s+/g,' ').slice(0,200)}))};if(page)for(const k of PAGE_WORKFLOW_DROP)delete x[k];return role==='viewer'?{...x,hook:w.hook?'redacted':null,formToken:w.formToken?'redacted':null,appHook:w.appHook?'redacted':null}:role==='owner'?x:{...x,appHook:w.appHook?'redacted':null};}),connections:Object.fromEntries(Object.entries(state.connections).map(([p,c])=>[p,{...c,configured:secrets.has(p),model:secrets.get(p)?.model||c.model}])),pulse:pulse(),guardMasked:{...guardTally},remote:tunnel.status(),voiceUse:voiceUse(),app:{version:APP_VERSION,supervised:SUPERVISED,update:updater.available?.version||null,staged:updater.staged},users:state.users.map(u=>({...publicUser(u),created:u.created})),access:{network:state.settings.network===true,listening:NETWORK,vault:vault.source,vaultError,envKeys:[...fromEnv],radioKeys:Object.fromEntries((rad.peers||[]).map(p=>[p.id,secrets.has('radio:'+p.id)])),radioPrints:Object.fromEntries([...(rad.peers||[]).filter(p=>p.publicKey).map(p=>[p.id,fingerprint(p.publicKey)]),...[...rad.issued,...rad.held].flatMap(c=>[[c.holder,fingerprint(c.holder)],[c.root,fingerprint(c.root)]])]),a2aKeys:Object.fromEntries(state.settings.a2aPeers.map(p=>[p.id,secrets.has('a2a:'+p.id)]))},channels:state.channels.map(c=>{const sec=secrets.get('channel:'+c.id)||{};return {...c,has:Object.fromEntries(Object.entries(sec).map(([k,v])=>[k,!!v]))};}),notifyEvents:NOTIFY_EVENTS,mcp:state.mcp.map(c=>{const sec=secrets.get('mcp:'+c.id)||{};return {...c,tools:(c.tools||[]).map(({schema,...t})=>t),envNames:Object.keys(sec.env||{}),headerNames:Object.keys(sec.headers||{}),signedIn:mcpSignedIn(c),secretUrl:!!sec.url,keySaved:!!sec.authValue};}),proposals:state.proposals.map(({content,previous,...p})=>({...p,size:content.length,preview:content.slice(0,300),canRevert:p.status==='saved'&&typeof previous==='string'}))}; }
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 // Hosted workspaces: what the page shows of the workspace, what the host reads, and the parts that would run programs
 // on the server or reach its network (the guard in tenant-guard.mjs refuses those anyway; this says so plainly).
@@ -913,6 +914,10 @@ function serviceConnected(svc){const sec=secrets.get('svc:'+svc)||{};return SERV
 // Shared procedures: a workflow as a file to pass on, without ids, keys, addresses, mail settings, runs or files.
 // Residents are described by name, role and sector, and matched to the residents of the silo that imports it.
 state.templates||=[];
+// Knowledge sources: folders and pages kept as copies in knowledge/ (knowledge.mjs). What each copy came from is kept
+// apart, in data/knowledge/<source id>.json, so the state stays small.
+state.knowledge=(state.knowledge&&Array.isArray(state.knowledge.sources))?state.knowledge:{sources:[]};
+state.knowledge.sources=state.knowledge.sources.filter(x=>x&&SOURCE_KINDS[x.kind]&&typeof x.id==='string'&&/^[a-z0-9][a-z0-9-]{0,47}$/.test(x.folder||''));
 const TEMPLATE_NEEDS=new Set(['read_files','write_files','web','browser','run_code','delegate','memory','desktop','google','microsoft','slack','github','notion','tables']);
 const connectorName=st=>st?.type==='action'&&String(st.app||'').startsWith('mcp:')?state.mcp.find(c=>'mcp:'+c.id===st.app)?.name||'':'';
 // A table has an id of its own in each SILO too, so a table step names its table and finds it by that name.
@@ -3037,7 +3042,7 @@ defineTool({name:'search_archive',permission:'read_files',description:'Finds the
     const caps=ctx?.caps||effectiveCapabilities(agent,ctx);
     const rawHits=await archive.search(a.query,12);
     const hits=rawHits.filter(h=>!(caps.folderChain||[]).some(fl=>!pathMatchesFolderList(h.name,fl))).slice(0,6);
-    return {ok:true,summary:`searched the archive for "${String(a.query).slice(0,50)}" / ${hits.length} passages`,text:hits.length?hits.map(h=>`<passage file=${JSON.stringify(h.name)} lines="${h.start}-${h.end}" score="${h.score}">\n${h.text}\n</passage>`).join('\n'):'Nothing in the archive matches.'};
+    return {ok:true,summary:`searched the archive for "${String(a.query).slice(0,50)}" / ${hits.length} passages`,text:hits.length?hits.map(h=>`<passage cite="[[${h.name}:${h.start}-${h.end}]]" file=${JSON.stringify(h.name)} lines="${h.start}-${h.end}"${h.title?` title=${JSON.stringify(h.title)}`:''}${h.source?` source=${JSON.stringify(h.source)}`:''} score="${h.score}">\n${h.text}\n</passage>`).join('\n')+`\n\nWhen your answer uses a passage, put its cite right after the sentence it supports, exactly as given, like ${`[[${hits[0].name}:${hits[0].start}-${hits[0].end}]]`}. Say so when the passages do not answer the question.`:'Nothing in the archive matches.'};
   }});
 const busy=new Set(),waitingFor=new Map(),chatLive=new Map();
 function wouldDeadlock(callerId,targetId,chain=[]){
@@ -3650,9 +3655,45 @@ defineTool({name:'notebook_reset',permission:'run_code',description:'Stops the k
   async run(agent,a){const name=notebookName(a.notebook),was=kernels.stop(agent.id+':'+name);return {ok:true,summary:`reset notebook ${name}`,text:was?`The kernel of ${name} stopped. The next cell starts fresh.`:`${name} had no running kernel.`};}});
 // The Archive index. Keywords always, meaning too when an embedding model is set in IT.
 const archive=new ArchiveIndex(path.join(DATA,'archive-index.json'),{
-  list:async()=>(await listFiles()).filter(f=>TEXT_FILE.test(f.name)&&f.size<=1_000_000).map(f=>({name:f.name,size:f.size,mtime:f.modified})),
-  read:async n=>fs.readFile(await safeFile(n),'utf8')
+  list:async()=>(await listFiles()).filter(f=>(TEXT_FILE.test(f.name)&&f.size<=1_000_000)||(READABLE.test(f.name)&&f.size<=15e6)).map(f=>({name:f.name,size:f.size,mtime:f.modified})),
+  // PDF, Word, Excel, PowerPoint and OpenDocument files are searched by their text.
+  read:async n=>READABLE.test(n)?extractText(await fs.readFile(await safeFile(n)),n):fs.readFile(await safeFile(n),'utf8')
 });
+const knowledgeBusy=new Map(),KNOWLEDGE_DATA=path.join(DATA,'knowledge');
+const manifestFile=id=>path.join(KNOWLEDGE_DATA,id+'.json');
+function knowledgeDeps(){
+  return {
+    request:(svc,url,o={})=>serviceRequest(svc,serviceCtx(svc),o.method||'GET',url,{raw:o.raw,body:o.body}),base:serviceBase,
+    extract:(buf,name,mime)=>extractText(buf,name,mime),readPage:(url,o)=>readPage(url,{...o,allowLocal:process.env.SILO_TEST_ALLOW_LOCAL_PAGES==='1'}),
+    write:async(rel,text)=>{const f=await safeFile(rel,true);await fs.mkdir(path.dirname(f),{recursive:true});await fs.writeFile(f,text);},
+    remove:async rel=>{const f=await safeFile(rel,true);await fs.rm(f,{force:true});},
+    exists:async rel=>{try{await fs.access(await safeFile(rel,true));return true;}catch{return false;}}
+  };
+}
+// One sync of a source at a time; asking again while it runs gets the same one.
+function syncKnowledge(src){
+  if(knowledgeBusy.has(src.id))return knowledgeBusy.get(src.id);
+  const run=(async()=>{
+    const started=Date.now(),svc=SOURCE_KINDS[src.kind].service;stateRev++;
+    try{
+      if(svc&&!state.services?.[svc])fail(`Connect ${SERVICES[svc].name} in IT / Uplink first.`,409);
+      let manifest={};try{manifest=JSON.parse(await fs.readFile(manifestFile(src.id),'utf8'));}catch{}
+      const r=await syncSource(src,manifest,knowledgeDeps());
+      // The source may have been removed while it synced: then its copies go too.
+      if(!state.knowledge.sources.includes(src)){await fs.rm(await safeFile(`${KNOWLEDGE_DIR}/${src.folder}`,true),{recursive:true,force:true}).catch(()=>{});return null;}
+      await fs.mkdir(KNOWLEDGE_DATA,{recursive:true});await fs.writeFile(manifestFile(src.id)+'.tmp',JSON.stringify(r.manifest));await fs.rename(manifestFile(src.id)+'.tmp',manifestFile(src.id));
+      src.last={at:Date.now(),ms:Date.now()-started,ok:!r.failed||r.added+r.changed+r.kept>0,docs:r.docs,added:r.added,changed:r.changed,removed:r.removed,failed:r.failed,errors:r.errors};
+      if(r.added||r.changed||r.removed||r.failed)event(`Knowledge synced: ${src.name}`,`${r.docs} document${r.docs===1?'':'s'}: ${r.added} new, ${r.changed} changed, ${r.removed} removed${r.failed?`, ${r.failed} could not be read`:''}`,r.failed&&!(r.added+r.changed+r.kept)?'error':'file');
+      await archive.update().catch(()=>{});
+    }catch(e){
+      src.last={at:Date.now(),ms:Date.now()-started,ok:false,error:String(e.message).slice(0,300),docs:src.last?.docs||0};
+      event(`Knowledge sync failed: ${src.name}`,e.message,'error');
+    }finally{knowledgeBusy.delete(src.id);stateRev++;await persist().catch(()=>{});}
+    return src.last;
+  })();
+  knowledgeBusy.set(src.id,run);return run;
+}
+const knowledgeView=x=>({id:x.id,name:x.name,kind:x.kind,ref:x.ref,every:x.every,folder:`${KNOWLEDGE_DIR}/${x.folder}`,created:x.created,last:x.last||null,syncing:knowledgeBusy.has(x.id)});
 async function embedTexts(p,model,texts){
   const m=model||(p==='openai'?'text-embedding-3-small':p==='ollama'?'nomic-embed-text':'');
   const releaseSpend=reserveSpending(p,m,Math.max(5,texts.length*5),0);
@@ -6507,6 +6548,40 @@ const server=http.createServer(async(req,res)=>{
         if(mc[2]&&req.method==='POST'){dropMcp(c.id);const tools=await refreshMcp(c).catch(async e=>{await persist().catch(()=>{});fail(e.message,502);});await persist();return send(res,200,{tools:tools.map(t=>({name:t.name,description:t.description,readOnly:t.readOnly}))});}
         if(!mc[2]&&req.method==='DELETE'){dropMcp(c.id);state.mcp=state.mcp.filter(x=>x.id!==c.id);secrets.delete('mcp:'+c.id);secrets.delete(oauthSecretKey('mcp:'+c.id));await fs.rm(openapiFile(c.id),{force:true}).catch(()=>{});for(const a of state.agents)a.tools=(a.tools||[]).filter(t=>t!=='mcp:'+c.id);event('Connector removed',c.name,'connection');await persistSecrets();await persist();return send(res,200,{ok:true});}
       }
+      if(route==='/api/knowledge'&&req.method==='GET'){
+        await archive.load();
+        return send(res,200,{sources:state.knowledge.sources.map(knowledgeView),kinds:Object.fromEntries(Object.entries(SOURCE_KINDS).map(([k,v])=>[k,{...v,connected:!v.service||!!state.services?.[v.service]}])),every:EVERY,index:archive.stats()});
+      }
+      if(route==='/api/knowledge'&&req.method==='POST'){
+        const c=cleanSource(b);if(state.knowledge.sources.length>=50)fail('Keep at most 50 knowledge sources.');
+        const svc=SOURCE_KINDS[c.kind].service;if(svc&&!state.services?.[svc])fail(`Connect ${SERVICES[svc].name} in IT / Uplink first.`,409);
+        // Its own folder, never one that is already there: that one may hold your own files.
+        const taken=new Set(state.knowledge.sources.map(x=>x.folder)),stem=knowledgeSlug(c.name)||'source';let folder=stem,n=2;
+        for(;;){let there=false;try{await fs.access(await safeFile(`${KNOWLEDGE_DIR}/${folder}`,true));there=true;}catch{}if(!taken.has(folder)&&!there)break;folder=`${stem}-${n++}`;}
+        const src={id:id(),...c,folder,created:Date.now(),last:null};state.knowledge.sources.push(src);
+        event('Knowledge source added',`${src.name} (${SOURCE_KINDS[src.kind].name}) into ${KNOWLEDGE_DIR}/${folder}`,'file');await persist();
+        syncKnowledge(src).catch(()=>{});
+        return send(res,201,knowledgeView(src));
+      }
+      const kn=route.match(/^\/api\/knowledge\/([0-9a-f-]{36})(\/sync)?$/);
+      if(kn){
+        const src=state.knowledge.sources.find(x=>x.id===kn[1]);if(!src)fail('Knowledge source not found.',404);
+        if(kn[2]&&req.method==='POST'){syncKnowledge(src).catch(()=>{});return send(res,202,knowledgeView(src));}
+        if(!kn[2]&&req.method==='POST'){
+          const c=cleanSource(b,src),moved=c.ref!==src.ref;Object.assign(src,c);if(moved)src.last=null;
+          event('Knowledge source changed',src.name,'file');await persist();
+          if(moved)syncKnowledge(src).catch(()=>{});
+          return send(res,200,knowledgeView(src));
+        }
+        if(!kn[2]&&req.method==='DELETE'){
+          // Its copies go with it; the documents where they came from are not touched.
+          state.knowledge.sources=state.knowledge.sources.filter(x=>x!==src);
+          if(!knowledgeBusy.has(src.id))await fs.rm(await safeFile(`${KNOWLEDGE_DIR}/${src.folder}`,true),{recursive:true,force:true});
+          await fs.rm(manifestFile(src.id),{force:true});
+          event('Knowledge source removed',`${src.name}: its copies in ${KNOWLEDGE_DIR}/${src.folder} were deleted.`,'file');await persist();archive.update().catch(()=>{});
+          return send(res,200,{ok:true});
+        }
+      }
       if(route==='/api/archive'&&req.method==='GET'){syncEmbedder();let error='';await archive.update().catch(e=>{error=e.message;});return send(res,200,{...archive.stats(),error,searchKey:secrets.has('search')});}
       if(route==='/api/archive/search'&&req.method==='POST'){syncEmbedder();return send(res,200,{hits:await archive.search(string(b.query||'',400),8)});}
       if(route==='/api/search-test'&&req.method==='POST'){const results=await webSearch(string(b.query||'',400)||'silo',{engine:state.settings.search.engine,key:secrets.get('search')?.key||'',url:state.settings.search.url}).catch(e=>fail(e.message,502));return send(res,200,{results});}
@@ -7230,6 +7305,8 @@ for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>shutdown(0));
 if(SUPERVISED&&process.send){process.on('message',m=>{if(m==='stop')shutdown(0);});process.on('disconnect',()=>shutdown(0));}
 process.on('exit',()=>{try{tunnel.stop(true);browsers.closeAll();desktop.close();}catch{}try{store.close();}catch{}tables.close();inbox.close();});
 phoneStart();
+// Sources that sync on their own: checked every minute, each when its time has come.
+const knowledgeTimer=setInterval(()=>{const now=Date.now();for(const x of state.knowledge.sources)if(x.every&&!knowledgeBusy.has(x.id)&&now-(x.last?.at||0)>=x.every*60000)syncKnowledge(x).catch(()=>{});},60000);knowledgeTimer.unref();
 const mailer=setInterval(()=>{checkMailTriggers().catch(e=>event('Email trigger failed',e.message,'error'));},MAIL_EVERY);
 const appWatcher=setInterval(()=>{checkAppTriggers().catch(e=>event('App trigger failed',e.message,'error'));},APP_EVERY);
 mailer.unref();appWatcher.unref();

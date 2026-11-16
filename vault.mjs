@@ -57,7 +57,7 @@ export async function checkPassword(password,stored){
 export const ROLES={owner:'Owner',operator:'Operator',viewer:'Viewer'};
 // What each role may do. Owners do everything. Operators run the silo but cannot change keys, connectors,
 // channels, spending, settings or people. Viewers only look.
-const OWNER_ONLY=[/^\/api\/connections/,/^\/api\/workspaces/,/^\/api\/vault/,/^\/api\/mcp/,/^\/api\/channels/,/^\/api\/spending$/,/^\/api\/settings$/,/^\/api\/users/,/^\/api\/apps\/open$/,/^\/api\/oauth/,/^\/api\/grants/,/^\/api\/phone/,/^\/api\/desktop/,/^\/api\/browser/,/^\/api\/remote/,/^\/api\/services/,/^\/api\/system\//,/^\/api\/radio\/(peers|key|caps|held|lookup)/,/^\/api\/expose$/,/^\/api\/a2a\//,/^\/api\/python-tools/,/^\/api\/gallery\/feed$/];
+const OWNER_ONLY=[/^\/api\/connections/,/^\/api\/workspaces/,/^\/api\/knowledge/,/^\/api\/vault/,/^\/api\/mcp/,/^\/api\/channels/,/^\/api\/spending$/,/^\/api\/settings$/,/^\/api\/users/,/^\/api\/apps\/open$/,/^\/api\/oauth/,/^\/api\/grants/,/^\/api\/phone/,/^\/api\/desktop/,/^\/api\/browser/,/^\/api\/remote/,/^\/api\/services/,/^\/api\/system\//,/^\/api\/radio\/(peers|key|caps|held|lookup)/,/^\/api\/expose$/,/^\/api\/a2a\//,/^\/api\/python-tools/,/^\/api\/gallery\/feed$/];
 // The MCP server and the A2A agent check each method against the role and the token themselves.
 const ANYONE=[/^\/api\/serve\/(mcp|a2a)$/,/^\/api\/logout$/,/^\/api\/password$/,/^\/api\/tokens(\/[a-f0-9]{24})?$/];
 // Only owners may even look at these: the audit log, telemetry, single sign-on, the system, Git environments and workspaces.
