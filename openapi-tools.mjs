@@ -120,7 +120,7 @@ function wanted(include,name,p,op){
 export function compileSpec(spec,{specUrl='',base='',include=''}={}){
   const inline=resolver(spec),v2=String(spec.swagger||'')==='2.0';
   let server=base||(v2?swaggerServer(spec,specUrl):spec.servers?.[0]?.url)||'';
-  if(server){for(const [k,v] of Object.entries(spec.servers?.[0]?.variables||{}))server=server.replaceAll(`{${k}}`,String(v?.default??''));}
+  if(server){for(const [k,v] of Object.entries(spec.servers?.[0]?.variables||{}))server=server.replaceAll(`{${k}}`,()=>String(v?.default??''));}
   if(server&&specUrl&&!/^https?:/i.test(server))server=new URL(server,specUrl).href;
   if(!server)throw new Error('The description does not say where the API is. Give the API address.');
   const baseUrl=safeUrl(server,'API address').href.replace(/\/$/,'');
@@ -192,7 +192,8 @@ export class OpenApiClient{
     for(const p of op.params){
       const v=args[p.key];if(v===undefined||v===null||v==='')continue;
       // "." and ".." stay as they are when encoded, and would move the call to another address of the API.
-      if(p.in==='path'){if(/^\.{1,2}$/.test(String(v).trim()))throw new Error(`${p.name} cannot be "${String(v).trim()}".`);path=path.replaceAll(`{${p.name}}`,encodeURIComponent(String(v)));}
+      if(p.in==='path'){if(/^\.{1,2}$/.test(String(v).trim()))throw new Error(`${p.name} cannot be "${String(v).trim()}".`);// Through a function: encodeURIComponent keeps $, and $& in a value would otherwise put the {name} back.
+        path=path.replaceAll(`{${p.name}}`,()=>encodeURIComponent(String(v)));}
       else if(p.in==='query'){if(Array.isArray(v))for(const x of v)url.searchParams.append(p.name,String(x));else url.searchParams.set(p.name,typeof v==='object'?JSON.stringify(v):String(v));}
       else headers[p.name]=String(v).replace(/[\r\n]/g,' ');
     }

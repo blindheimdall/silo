@@ -352,13 +352,14 @@ test('SILO local runtime integration',async t=>{
     const w=(await request('/workflows',{name:'Tooling',steps:[{agentId:worker.id,prompt:'CALL {"tool":"read_file","name":"notes/silo.md"}'}]})).data;
     const run=await finish((await request('/workflows/'+w.id+'/run',{input:'Go'})).data.id);
     assert.equal(run.status,'completed',run.error);assert.equal(run.steps[0].tools[0].summary,'read notes/silo.md (1 KB)');assert.match(run.output,/oil on Tuesdays/);
-    const pw=(await request('/workflows',{name:'Patching',steps:[{agentId:worker.id,prompt:'CALL {"tool":"patch_file","name":"notes/silo.md","find":"Tuesdays","replace":"Wednesdays"}'}]})).data;
+    const pw=(await request('/workflows',{name:'Patching',steps:[{agentId:worker.id,prompt:'CALL {"tool":"patch_file","name":"notes/silo.md","find":"Tuesdays","replace":"Wednesdays ($$5, $&)"}'}]})).data;
     const prun=await finish((await request('/workflows/'+pw.id+'/run',{input:'Patch'})).data.id);
     assert.equal(prun.status,'completed',prun.error);
     const prop=(await request('/state')).data.proposals.find(p=>p.name==='notes/silo.md'&&p.status==='pending');
     assert.ok(prop,'patch proposal created');assert.ok(prop.patch,'marked as surgical patch');
     await request('/proposals/'+prop.id,{action:'save'});
-    assert.equal((await request('/file?name=notes/silo.md')).data.content,'The generator needs oil on Wednesdays.');
+    // $$ and $& stay as written: the replacement is not read as a pattern.
+    assert.equal((await request('/file?name=notes/silo.md')).data.content,'The generator needs oil on Wednesdays ($$5, $&).');
     await request('/proposals/'+prop.id,{action:'revert'});
     assert.equal((await request('/file?name=notes/silo.md')).data.content,'The generator needs oil on Tuesdays.');
   });

@@ -338,6 +338,13 @@ function startTunnel(){
 }
 const remoteHost=h=>String(h||'').toLowerCase().replace(/:443$/,'');
 const failedLogins=new Map();
+// Addresses whose last wrong password is older than the ten minutes that count are forgotten, so addresses that try
+// once and never come back (many, from the internet) do not pile up. Past 5000 the oldest go first.
+function pruneFailedLogins(){
+  if(failedLogins.size<500)return;
+  const now=Date.now();for(const [k,v] of failedLogins)if(!v.length||now-v.at(-1)>600000)failedLogins.delete(k);
+  for(const k of failedLogins.keys()){if(failedLogins.size<=5000)break;if(k!=='internet*')failedLogins.delete(k);}
+}
 const publicUser=u=>u&&{id:u.id,name:u.name,role:u.role,...(u.sso&&{sso:{email:u.sso.email||''},password:!!u.hash}),...(u.lastLogin&&{lastLogin:u.lastLogin})};
 let stateRev = 1;
 // The state as the page sees it, one per role, made again only when something changed. The live channel keeps the
@@ -2744,7 +2751,8 @@ defineTool({name:'patch_file',permission:'write_files',description:'Proposes a s
     if(!find)return {ok:false,summary:'empty find block',text:'Provide the exact text to find.'};
     const current=await fs.readFile(file,'utf8');
     if(!current.includes(find))return {ok:false,summary:`text not found in ${name}`,text:`The exact find block was not found in ${name}. Read the file first to check the exact lines.`};
-    const next=current.replace(find,replace);
+    // The replacement goes in as written: with a string, replace() would read $& $' $` and $$ in it as patterns.
+    const at=current.indexOf(find),next=current.slice(0,at)+replace+current.slice(at+find.length);
     if(next.length>200000)return {ok:false,summary:'patched file too large',text:'The patched file would exceed 200,000 characters.'};
     const p=await propose(agent,name,next,ctx.source,{patch:{find:find.slice(0,240),replace:replace.slice(0,240)}});
     recordCompensation(ctx,{kind:'proposal',proposalId:p.id,file:p.name});
@@ -2774,7 +2782,8 @@ for(const svc of Object.keys(SERVICES))defineTool({name:svc,permission:svc,descr
   ask(agent,a){const x=ACTIONS[svc][a.action];if(!x?.write)return null;const t=approvalText(svc,a.action,a);return {tool:svc+':'+a.action,title:t.title,detail:t.detail+`\n\nThis is done with your ${SERVICES[svc].name} account (${state.services[svc]?.account||'connected'}).`};},
   async run(agent,a){
     const x=ACTIONS[svc][a.action];if(!x)throw new Error(`Use one of these actions: ${Object.keys(ACTIONS[svc]).join(', ')}.`);
-    if(x.write&&typeof a.text==='string'&&secretValues().some(v=>typeof v==='string'&&v.length>=6&&a.text.includes(v)))throw new Error('That text contains a saved key or password, so it is not sent.');
+    // Every value sent counts (subject, recipients, row cells), not only the text.
+    if(x.write){const sent=JSON.stringify(a);if(secretValues().some(v=>typeof v==='string'&&v.length>=6&&(sent.includes(v)||sent.includes(JSON.stringify(v).slice(1,-1)))))throw new Error('That text contains a saved key or password, so it is not sent.');}
     const r=await runAction(svc,a.action,a,serviceCtx(svc));
     if(state.services[svc]?.problem){delete state.services[svc].problem;stateRev++;}
     if(x.write)event(`${agent.name} used ${SERVICES[svc].name}`,r.summary,'mission');
@@ -6176,7 +6185,7 @@ const server=http.createServer(async(req,res)=>{
         const all=viaTunnel?(failedLogins.get('internet*')||[]).filter(t=>Date.now()-t<600000):[];
         if(all.length>=30)fail('Too many wrong passwords from the internet. Wait ten minutes, or sign in on this computer.',429);
         const u=state.users.find(u=>u.name.toLowerCase()===String(b.name||'').trim().toLowerCase());
-        if(!u||!await checkPassword(String(b.password||'').slice(0,200),u.hash)){auditNote({action:'sign-in',outcome:'denied',actor:string(String(b.name||''),40)||'unknown',ip,via,detail:u?'Wrong password.':'No such name.'});f.push(Date.now());failedLogins.set(ip,f);if(viaTunnel)failedLogins.set('internet*',[...all,Date.now()]);fail('Wrong name or password.',401);}
+        if(!u||!await checkPassword(String(b.password||'').slice(0,200),u.hash)){auditNote({action:'sign-in',outcome:'denied',actor:string(String(b.name||''),40)||'unknown',ip,via,detail:u?'Wrong password.':'No such name.'});f.push(Date.now());failedLogins.set(ip,f);pruneFailedLogins();if(viaTunnel)failedLogins.set('internet*',[...all,Date.now()]);fail('Wrong name or password.',401);}
         failedLogins.delete(ip);sessions.delete(cookies.silo_session);u.lastLogin=Date.now();
         auditNote({action:'sign-in',actor:u.name,role:u.role,ip,via});
         const token=randomBytes(32).toString('hex');sessions.set(token,{userId:u.id,seen:Date.now()});
@@ -6332,7 +6341,8 @@ const server=http.createServer(async(req,res)=>{
         if(state.mcp.some(c=>c.name.toLowerCase()===title.toLowerCase()))fail('A connector with that name exists.',409);
         if(existsSync(path.join(WORK,'tools',slug)))fail(`The folder tools/${slug} exists already. Pick another name.`,409);
         const py=await localCommand('python');if(!py)fail('Python 3 is not installed on this computer. Install it from python.org first.',409);
-        const fill=t=>t.replaceAll('{{title}}',title.replace(/["\\\r\n]/g,' ')).replaceAll('{{name_json}}',JSON.stringify(title)).replaceAll('{{description_json}}',JSON.stringify(description)).replaceAll('{{slug}}',slug);
+        // Values go in through a function, so a $ in a name or description is kept as written.
+        const fill=t=>t.replaceAll('{{title}}',()=>title.replace(/["\\\r\n]/g,' ')).replaceAll('{{name_json}}',()=>JSON.stringify(title)).replaceAll('{{description_json}}',()=>JSON.stringify(description)).replaceAll('{{slug}}',()=>slug);
         const files=[];
         for(const f of ['server.py','requirements.txt','README.md']){const text=fill(await fs.readFile(path.join(TOOL_TEMPLATE,f),'utf8')),target=await safeFile(`tools/${slug}/${f}`,true);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,text);files.push(`tools/${slug}/${f}`);}
         const {c}=validateMcp({name:title,transport:'stdio',command:py.cmd,args:[...py.pre,`tools/${slug}/server.py`],ask:'always'});c.id=id();c.python=slug;
@@ -7286,8 +7296,11 @@ const server=http.createServer(async(req,res)=>{
     if(relative.includes('\0'))fail('Bad address.',400);
     const file=path.resolve(ROOT,'public',relative);if(!file.startsWith(path.join(ROOT,'public')+path.sep))fail('Not found.',404);
     const st=await fs.stat(file);if(!st.isFile())fail('Not found.',404);
-    let sc=staticCache.get(file);
-    if(!sc||sc.mtime!==st.mtimeMs||sc.size!==st.size){const raw=await fs.readFile(file);sc={mtime:st.mtimeMs,size:st.size,raw,etag:'"'+createHash('sha1').update(raw).digest('base64url').slice(0,22)+'"',packed:{}};staticCache.set(file,sc);}
+    // One entry per file: on Windows and macOS /app.js and /APP.JS are the same file, and every spelling of a name
+    // must not hold its own copy. The cache also has a ceiling.
+    const cacheKey=process.platform==='win32'||process.platform==='darwin'?file.toLowerCase():file;
+    let sc=staticCache.get(cacheKey);
+    if(!sc||sc.mtime!==st.mtimeMs||sc.size!==st.size){const raw=await fs.readFile(file);sc={mtime:st.mtimeMs,size:st.size,raw,etag:'"'+createHash('sha1').update(raw).digest('base64url').slice(0,22)+'"',packed:{}};if(staticCache.size>=300)staticCache.clear();staticCache.set(cacheKey,sc);}
     const ext=path.extname(file),type={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp','.webmanifest':'application/manifest+json','.json':'application/json'}[ext]||'application/octet-stream';
     const sh={'Content-Type':type,'ETag':sc.etag,'Vary':'Accept-Encoding','Cache-Control':relative.startsWith('vendor/')?'public, max-age=604800':'no-cache',...(viaTunnel?{'Strict-Transport-Security':'max-age=31536000'}:{}),'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'};
     if(req.headers['if-none-match']===sc.etag){res.writeHead(304,sh);return res.end();}
