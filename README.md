@@ -46,6 +46,7 @@ Open [`docs/product/index.html`](docs/product/index.html) from a checkout to ste
 | **Residents** | Configure agents with a role, instructions, model, home level and tool permissions. Try demo residents without an API key. |
 | **Workflows** | Combine residents, reviews, app actions, waits and approvals. Run steps in parallel, branch on prior results or repeat for every item in a list. |
 | **Triggers** | Run on a schedule, a file change, an incoming email, a feed update, an app event or a webhook. |
+| **Guardrails** | Send personal data and keys to models as placeholders and get the real values back in answers and tool calls. Catch tool results that try to give orders, in English and Romanian, and hold the changes that follow for your approval. Hide words in answers, or block or hold tool calls with your own rules. |
 | **Approvals and traces** | Pause a workflow for a human decision. Inspect model calls, tool use, timings, tokens and estimated costs. Replay from a selected step. |
 | **Evaluation and versions** | Test residents and workflows against reference cases, compare changes and restore earlier workflow versions. |
 | **Spatial interface** | Navigate 144 levels, locate a resident or follow workflow activity from the live camera room. |

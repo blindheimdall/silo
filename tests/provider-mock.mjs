@@ -108,6 +108,8 @@ globalThis.fetch=async (url,options)=>{
   else if(b.model==='cut')text='second half.';
   else if(b.model==='review-once')text=once(kind+':review')?'REVISE\nAdd a number to the plan.':'APPROVED\nGood now.';
   else if(b.model==='echo')text=last;
+  // 'pii-probe' says whether the real email, IBAN or key reached it, then repeats the last message.
+  else if(b.model==='pii-probe')text='raw='+(/ana\.pop@example\.ro|RO49 AAAA|sk-probe-/.test(JSON.stringify(b))?'yes':'no')+' '+last;
   // 'talk' says how many turns of the conversation it got, how many tools it was offered, and the last message.
   else if(b.model==='talk')text='turns='+messages.filter(m=>m.role==='user').length+' tools='+(b.tools?.length||0)+' said='+last;
   // 'max-echo' says the longest answer it was allowed to write.

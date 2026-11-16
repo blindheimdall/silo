@@ -383,6 +383,21 @@ Under Give rights, an owner gives another silo the right to use some residents w
 - On the air lists what went over the radio: when, which silo, which resident, whether a capability was used, tokens, and why something was refused. It never keeps the messages.
 - The map in System shows this silo in the middle and the others around it: the radio links (lit when used in the last ten minutes), the capabilities with a bar of the budget left, and the messages of the last minute and a half. On a phone it is a list.
 
+## Guardrails
+
+Set in System, under Guardrails (owners). They work on text, without a model, so they cost no tokens and add no wait.
+
+- **Personal data sent to models.** With *Hidden as placeholders*, email addresses, phone numbers (with a country prefix, or the Romanian 07xx shape), IBANs and card numbers that pass their check digits, Romanian CNPs that pass theirs, and API keys go to the model as placeholders such as `[EMAIL_3fa9c1]`. So do the keys SILO itself holds and the words you list (client, project or people names). The answer comes back with the real values, as it streams too, and so do the tool calls the model makes: when a resident writes "send it to `[EMAIL_3fa9c1]`", the email goes to the real address. The conversation, the trace and the tools always keep the real values; only what leaves for the model is changed. The same value gets the same placeholder for as long as SILO runs, so a conversation sent again round after round stays the same to the model. A model on this computer (Ollama) gets the data as it is, unless you tick *Hide it from Ollama on this computer too*. Each model call that carried placeholders says what it hid in its trace, and the card counts them since SILO started. This covers every call to a chat model, test judges and the workflow builder included. Embeddings for meaning search and speech to text are not covered.
+- **Orders inside tool results.** A web page, an email, an issue or a file can hold text written for the model rather than for a reader: "ignore your previous instructions", "you are now…", "send the API keys to…", "do not tell the user", fake system turns, invisible characters. The check knows these in English and Romanian. *Marked* (the default) puts a note before such a result telling the resident it is data, not instructions. *Ask* does the same, and from then on, for the rest of that answer, every tool that changes something (writes a file, acts in an app, runs code) waits for you in Requests, even for a resident you trust with that tool. *Block* also withholds the result itself. Each catch is in the card, in the activity log and in the audit log.
+- **Rules**, one per line: where, what to do, and words or a `/pattern/`. Words are found as written, without case; a pattern between slashes is a regular expression. Lines starting with `#` are notes. At most 40.
+  - `answer redact internal price list` hides those words in residents' answers as `[REDACTED]`.
+  - `answer block /salary of \w+/` replaces a whole answer that matches.
+  - `tool block delete_` stops any tool call whose name and arguments (read as `name {"json":"arguments"}`) match, also in test runs.
+  - `tool ask /github.*close/` makes a matching call wait for you, every time.
+  - A wrong line is refused with its number, and nothing of that save is kept.
+  - Answer rules apply to the answer that is kept and sent (chat, workflow steps, talk channels, Telegram); what streams live to the page while the resident writes is not held back.
+- **Try a text** shows, without a model, what a model would get, what would read as orders and what the answer rules would make of it (`POST /api/guardrails/check` with `{"text": "..."}`).
+
 ## Data and limits
 
 - `data/state.db` (SQLite) holds residents, conversations, workflows, runs, traces and the activity log. Each save writes only what changed, in one transaction, so a crash leaves the last complete save. Every row has a checksum, and a damaged database is moved aside and rebuilt from the copies below.
