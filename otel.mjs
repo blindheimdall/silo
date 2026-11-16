@@ -4,7 +4,8 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 
-const nano = ms => (BigInt(Math.round(ms || 0)) * 1000000n).toString();
+// A time that is not a number becomes 0 instead of stopping the export (BigInt throws on NaN).
+const nano = ms => (BigInt(Math.round(Number.isFinite(ms) ? ms : 0)) * 1000000n).toString();
 const hex16 = s => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 16);
 const spanIdOf = id => /^[0-9a-f-]{36}$/i.test(id || '') ? id.replace(/-/g, '').slice(0, 16) : hex16(id);
 const traceIdOf = id => /^[0-9a-f-]{36}$/i.test(id || '') ? id.replace(/-/g, '').toLowerCase() : crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 32);
@@ -40,7 +41,8 @@ export function parseHeaders(text) {
   for (const part of String(text || '').split(/[,\n]/)) {
     const s = part.trim(); if (!s) continue; const i = s.indexOf('=');
     if (i < 1) throw Object.assign(new Error('Write headers as name=value, separated by commas.'), { status: 400 });
-    const k = s.slice(0, i).trim(), v = decodeURIComponent(s.slice(i + 1).trim());
+    const k = s.slice(0, i).trim(); let v;
+    try { v = decodeURIComponent(s.slice(i + 1).trim()); } catch { throw Object.assign(new Error('A header value has a % that is not followed by two hex digits: ' + k.slice(0, 40)), { status: 400 }); }
     if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/i.test(k) || /[\r\n]/.test(v)) throw Object.assign(new Error('A header name or value is not allowed: ' + k.slice(0, 40)), { status: 400 });
     out[k] = v;
   }

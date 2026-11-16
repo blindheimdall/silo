@@ -47,12 +47,17 @@ export class DesktopWorker{
   constructor({script=path.join(HERE,'desktop-worker.ps1'),timeout=30000}={}){this.script=script;this.timeout=timeout;this.seq=0;this.waiting=new Map();this.queue=Promise.resolve();}
   start(){
     if(this.proc&&!this.proc.killed&&this.proc.exitCode===null)return;
-    this.buf='';
-    this.proc=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',this.script],{stdio:['pipe','pipe','pipe'],windowsHide:true});
-    this.proc.stdout.setEncoding('utf8');
-    this.proc.stdout.on('data',d=>{this.buf+=d;let i;while((i=this.buf.indexOf('\n'))>=0){const line=this.buf.slice(0,i).trim();this.buf=this.buf.slice(i+1);if(!line)continue;let m;try{m=JSON.parse(line.replace(/^﻿/,''));}catch{continue;}const w=this.waiting.get(m.id);if(w){this.waiting.delete(m.id);clearTimeout(w.timer);m.ok?w.resolve(m.data):w.reject(new Error(m.error||'The desktop action failed.'));}}});
-    this.proc.stderr.on('data',()=>{});
-    this.proc.on('exit',()=>{for(const w of this.waiting.values()){clearTimeout(w.timer);w.reject(new Error('The desktop helper stopped.'));}this.waiting.clear();this.proc=null;});
+    const proc=this.proc=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',this.script],{stdio:['pipe','pipe','pipe'],windowsHide:true});
+    let buf='';
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data',d=>{buf+=d;let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line)continue;let m;try{m=JSON.parse(line.replace(/^﻿/,''));}catch{continue;}const w=this.waiting.get(m.id);if(w){this.waiting.delete(m.id);clearTimeout(w.timer);m.ok?w.resolve(m.data):w.reject(new Error(m.error||'The desktop action failed.'));}}});
+    proc.stderr.on('data',()=>{});
+    // A helper that cannot start, or a write to one that just stopped, is an error of the action, not of the server.
+    proc.stdin.on('error',()=>{});
+    // Only the helper running now ends the waiting actions: one killed after a timeout may exit after the next one
+    // started, and must not fail that one's actions or forget it.
+    const ended=e=>{if(this.proc!==proc)return;this.proc=null;for(const w of this.waiting.values()){clearTimeout(w.timer);w.reject(e?.code==='ENOENT'?new Error('PowerShell was not found on this computer.'):new Error('The desktop helper stopped.'));}this.waiting.clear();};
+    proc.on('error',ended);proc.on('exit',()=>ended());
   }
   call(cmd,args={}){
     const run=()=>new Promise((resolve,reject)=>{

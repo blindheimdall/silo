@@ -108,17 +108,19 @@ export function readChain(token) {
     return p;
   });
   const hashes = encoded.map(linkHash);
+  // Every link carries a budget that can be read, so a link with none is refused, not an error of the server.
+  const budgets = links.map((p, i) => { try { return cleanBudget(p.budget); } catch { fail(`Link ${i + 1} has a budget that cannot be read.`); } });
   for (let i = 1; i < links.length; i++) {
     const p = links[i], up = links[i - 1];
     if (p.iss !== up.aud) fail(`Link ${i + 1} is signed by a silo the capability was not given to.`);
     if (p.prf !== hashes[i - 1]) fail(`Link ${i + 1} does not extend the link before it.`);
     let r; try { r = cleanRights(p.att); } catch { fail(`Link ${i + 1} has rights that cannot be read.`); }
     const wider = narrower(r, cleanRights(up.att)); if (wider) fail(`Link ${i + 1} gives more ${wider} than it was given.`);
-    if (p.budget?.tokens > up.budget.tokens || p.budget?.messages > up.budget.messages) fail(`Link ${i + 1} gives a bigger budget than it was given.`);
+    if (budgets[i].tokens > budgets[i - 1].tokens || budgets[i].messages > budgets[i - 1].messages) fail(`Link ${i + 1} gives a bigger budget than it was given.`);
     if (p.exp > up.exp || p.nbf < up.nbf) fail(`Link ${i + 1} lasts longer than the link before it.`);
   }
   const last = links.at(-1);
-  return { links, encoded, hashes, root: links[0].iss, holder: last.aud, rights: cleanRights(last.att), budget: cleanBudget(last.budget), exp: last.exp, nbf: last.nbf, site: links[0].site || '', rootName: links[0].by || '' };
+  return { links, encoded, hashes, root: links[0].iss, holder: last.aud, rights: cleanRights(last.att), budget: budgets.at(-1), exp: last.exp, nbf: last.nbf, site: links[0].site || '', rootName: links[0].by || '' };
 }
 // The full check by the silo that owns the data: rooted at its own key, made out to the key that signed the request,
 // in its time window, no link revoked. Budgets are checked by the caller, which keeps the usage per link.

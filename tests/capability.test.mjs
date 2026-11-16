@@ -182,3 +182,12 @@ test('three silos: rights given, passed on to a silo the owner never met, budget
     assert.equal(viaToken.status,403);
   });
 });
+
+test('a link without a budget is refused as a capability problem, not a server error',()=>{
+  const a=newIdentity(),b=newIdentity(),c=newIdentity();
+  const root=issue({privateKey:a.privateKey,iss:a.publicKey,aud:b.publicKey,rights:{residents:['*']},budget:{tokens:1000,messages:10},hours:1});
+  // b signs a second link by hand, leaving the budget out.
+  const p={v:1,iss:b.publicKey,aud:c.publicKey,att:{residents:['*']},nbf:root.payload.nbf,exp:root.payload.exp,nonce:'x',prf:root.hash};
+  const body=Buffer.from(JSON.stringify(p),'utf8').toString('base64url'),link=body+'.'+signText(b.privateKey,'silocap\n'+body);
+  assert.throws(()=>readChain(root.token+'~'+link),e=>e.status===403&&/budget/.test(e.message));
+});

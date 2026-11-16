@@ -282,7 +282,12 @@ export class BrowserPool{
     if(s?.alive())return s;
     const exe=this.exe();if(!exe)throw new Error('No Edge or Chrome was found on this computer. Set the browser path in System.');
     const {headless=true,allowLocal=false}=this.settings();
-    if(!this.guardProxy||this.guardProxy.allowLocal!==allowLocal){this.guardProxy?.close();this.guardProxy={...await startGuardProxy({allowLocal}),allowLocal};}
+    // Two residents starting at once share one proxy start, so no second proxy is left running unseen.
+    if(!this.guardProxy||this.guardProxy.allowLocal!==allowLocal){
+      if(this.proxyStarting?.allowLocal!==allowLocal){const starting={allowLocal,done:startGuardProxy({allowLocal}).then(p=>{if(this.proxyStarting===starting){this.guardProxy?.close();this.guardProxy={...p,allowLocal};}else p.close();},e=>{throw e;}).finally(()=>{if(this.proxyStarting===starting)this.proxyStarting=null;})};this.proxyStarting=starting;}
+      await this.proxyStarting.done;
+      if(!this.guardProxy)throw new Error('The browser guard could not start.');
+    }
     s=await new BrowserSession({exe,profileDir:this.profileDir(agentId),headless,allowLocal,proxy:this.guardProxy.port}).start();
     this.sessions.set(agentId,s);this.onChange();return s;
   }

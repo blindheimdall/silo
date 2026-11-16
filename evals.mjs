@@ -83,9 +83,16 @@ export function compareReports(prev, cur) {
   return { baseline: prev?.id || null, cases, count, scoreDelta, ...(drop && { drop: true }), worse };
 }
 
-// A line diff (longest common subsequence). Long texts are cut so the work stays small.
+// A line diff (longest common subsequence). The lines both texts start and end with are matched first, so a small
+// change in a long text stays cheap; only the part in between is compared line by line, cut at max lines a side.
 export function lineDiff(a, b, max = 400) {
-  const A = String(a ?? '').split('\n').slice(0, max), B = String(b ?? '').split('\n').slice(0, max);
+  const FA = String(a ?? '').split('\n').slice(0, 20000), FB = String(b ?? '').split('\n').slice(0, 20000);
+  let head = 0; while (head < FA.length && head < FB.length && FA[head] === FB[head]) head++;
+  let tail = 0; while (tail < FA.length - head && tail < FB.length - head && FA[FA.length - 1 - tail] === FB[FB.length - 1 - tail]) tail++;
+  const same = l => [' ', l], mid = lineDiffMiddle(FA.slice(head, FA.length - tail).slice(0, max), FB.slice(head, FB.length - tail).slice(0, max));
+  return [...FA.slice(0, head).map(same), ...mid, ...FA.slice(FA.length - tail).map(same)];
+}
+function lineDiffMiddle(A, B) {
   const n = A.length, m = B.length, L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   const out = []; let i = 0, j = 0;

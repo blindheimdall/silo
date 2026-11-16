@@ -72,8 +72,11 @@ export class Tunnel {
     catch (e) { this.set({ state: 'error', error: e.message }); return; }
     this.child = child; this.lines = []; this.connections = 0;
     this.set({ state: 'starting', error: '', url: o.mode === 'token' ? 'https://' + o.hostname : '' });
-    const read = buf => {
-      for (const raw of String(buf).split(/\r?\n/)) {
+    // Whole lines only: a line that arrives in two pieces (the address among them) is read once it is complete.
+    const rest = { out: '', err: '' };
+    const read = (which, buf) => {
+      const all = (rest[which] + String(buf)).split(/\r?\n/); rest[which] = all.pop().slice(-4000);
+      for (const raw of all) {
         const line = raw.replace(/eyJ[A-Za-z0-9+/_=-]{20,}/g, '[token]').trim(); if (!line) continue;
         this.lines = [...this.lines, line].slice(-40);
         const found = line.match(/https:\/\/([a-z0-9-]+\.trycloudflare\.com)\b/);
@@ -87,7 +90,7 @@ export class Tunnel {
         else if (/ERR .*failed to request quick Tunnel|429 Too Many Requests/i.test(line)) this.error = 'Cloudflare did not give a quick address right now.';
       }
     };
-    child.stdout.on('data', read); child.stderr.on('data', read);
+    child.stdout.on('data', b => read('out', b)); child.stderr.on('data', b => read('err', b));
     child.on('error', e => { this.error = e.message; });
     child.on('exit', code => {
       if (this.child !== child) return;

@@ -186,3 +186,11 @@ test('after a restart, tests that were running are marked stopped and a held cha
   const r=await fetch(origin+'/api/agents/a1/candidate',{method:'POST',headers:{cookie,origin,'content-type':'application/json','x-silo-token':token},body:JSON.stringify({action:'retest'})});
   assert.equal(r.status,202);
 });
+
+test('a small change deep in a long text is found, and quickly',()=>{
+  const big=Array.from({length:5000},(_,i)=>'line '+i).join('\n');
+  const t=performance.now(),d=lineDiff(big,big.replace('line 2500\n','changed\n'));
+  assert.deepEqual(d.filter(x=>x[0]!==' '),[['-','line 2500'],['+','changed']]);
+  assert.equal(d.length,5001);assert.ok(performance.now()-t<500);
+  assert.deepEqual(lineDiff('a','a\nb'),[[' ','a'],['+','b']]);assert.deepEqual(lineDiff('a\nb','b'),[['-','a'],[' ','b']]);
+});

@@ -11,7 +11,7 @@ export function parseDuckDuckGo(html){
   const out=[],blocks=String(html).split(/<div[^>]+class="[^"]*\bresult\b/).slice(1);
   for(const b of blocks){
     const a=b.match(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);if(!a)continue;
-    let url=a[1].replace(/&amp;/g,'&');const u=url.match(/[?&]uddg=([^&]+)/);if(u)url=decodeURIComponent(u[1]);if(url.startsWith('//'))url='https:'+url;
+    let url=a[1].replace(/&amp;/g,'&');const u=url.match(/[?&]uddg=([^&]+)/);if(u){try{url=decodeURIComponent(u[1]);}catch{continue;}}if(url.startsWith('//'))url='https:'+url;
     if(!/^https?:\/\//.test(url)||/duckduckgo\.com\/y\.js/.test(url))continue;
     const sn=b.match(/class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(a|div)>/);
     out.push({title:clean(a[2]),url,snippet:clean(sn?.[1]||'')});
@@ -20,6 +20,7 @@ export function parseDuckDuckGo(html){
 }
 export async function webSearch(query,{engine='duckduckgo',key='',url='',count=8,signal}={}){
   query=String(query||'').trim().slice(0,400);if(!query)throw new Error('Give something to search for.');
+  count=Math.max(1,Math.min(20,Math.round(Number(count))||8));
   const timeout=AbortSignal.timeout(20000),sig=signal?AbortSignal.any([signal,timeout]):timeout;
   const get=async (u,opts={})=>{const r=await fetch(u,{...opts,signal:sig,headers:{'User-Agent':UA,...opts.headers}});if(!r.ok)throw new Error(`The search engine answered ${r.status}.`);return r;};
   let results=[];

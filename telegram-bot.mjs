@@ -17,21 +17,25 @@ export class TelegramBot{
   }
   async check(){this.me=await this.call('getMe');return this.me;}
   start(){
-    if(this.running)return;this.running=true;this.ctrl=new AbortController();
+    if(this.running)return;this.running=true;const ctrl=this.ctrl=new AbortController();
+    // The loop belongs to this start: after a stop and a quick start, the old loop ends instead of polling next to the
+    // new one (Telegram refuses two at once, and an update would be handled twice).
+    const mine=()=>this.running&&this.ctrl===ctrl;
     (async()=>{
       // Old messages waiting from before SILO started are skipped, so nothing stale is acted on.
-      try{const old=await this.call('getUpdates',{offset:-1,timeout:0},15000,this.ctrl.signal);if(old.length)this.offset=old.at(-1).update_id+1;}catch{}
-      while(this.running){
+      try{const old=await this.call('getUpdates',{offset:-1,timeout:0},15000,ctrl.signal);if(old.length)this.offset=old.at(-1).update_id+1;}catch{}
+      while(mine()){
         try{
-          const updates=await this.call('getUpdates',{offset:this.offset,timeout:25,allowed_updates:['message','callback_query']},35000,this.ctrl.signal);
+          const updates=await this.call('getUpdates',{offset:this.offset,timeout:25,allowed_updates:['message','callback_query']},35000,ctrl.signal);
+          if(!mine())break;
           this.failures=0;
           for(const u of updates){this.offset=Math.max(this.offset,u.update_id+1);try{await this.onUpdate?.(u);}catch(e){this.onError?.(e);}}
         }catch(e){
-          if(!this.running)break;
+          if(!mine())break;
           this.failures++;this.onError?.(e);
           if(e.status===401||e.status===404){this.running=false;break;}
           const wait=e.retryAfter?e.retryAfter*1000:Math.min(60000,1000*2**Math.min(this.failures,6));
-          await new Promise(r=>{const t=setTimeout(r,wait);this.ctrl?.signal.addEventListener('abort',()=>{clearTimeout(t);r();},{once:true});});
+          await new Promise(r=>{const t=setTimeout(r,wait);ctrl.signal.addEventListener('abort',()=>{clearTimeout(t);r();},{once:true});});
         }
       }
     })();
@@ -60,5 +64,8 @@ export class TelegramBot{
 function split(text,max=3900){
   const out=[];
   while(text.length>max){let cut=text.lastIndexOf('\n',max);if(cut<max/2)cut=max;out.push(text.slice(0,cut));text=text.slice(cut).replace(/^\n/,'');}
-  out.push(text);return out.slice(0,8);
+  out.push(text);
+  // At most eight messages: a longer answer says it was cut instead of stopping without a word.
+  if(out.length>8){out.length=8;out[7]=out[7].slice(0,max-40)+'\n[cut: the answer is longer]';}
+  return out;
 }

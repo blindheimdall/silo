@@ -191,6 +191,15 @@ const dotPart = p => /^\.{1,2}$/.test(p);
 const repoOf = v => { const r = String(v || '').trim(); if (!/^[\w.-]+\/[\w.-]+$/.test(r) || r.split('/').some(dotPart)) throw new Error('Give repo as owner/name.'); return r; };
 const limitOf = (v, d = 10) => Math.max(1, Math.min(25, Math.round(Number(v) || d)));
 
+// The body, stopped as soon as it passes max: a file is never held whole before its size is known.
+async function readUpTo(r, max, message) {
+  const reader = r.body?.getReader(); if (!reader) return Buffer.alloc(0);
+  const parts = []; let size = 0;
+  for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > max) { reader.cancel().catch(() => {}); throw new Error(message); } parts.push(value); }
+  return Buffer.concat(parts, size);
+}
+// An issue or pull request number: a whole number above zero.
+const numOf = v => { const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 1e9) throw new Error('Give number as the issue or pull request number, like 12.'); return n; };
 async function http(svc, ctx, method, url, { body, headers = {}, raw = false } = {}) {
   const token = await ctx.token();
   const h = { Authorization: 'Bearer ' + token, Accept: 'application/json', 'User-Agent': 'SILO-agent-world', ...headers };
@@ -199,8 +208,8 @@ async function http(svc, ctx, method, url, { body, headers = {}, raw = false } =
   let payload;
   if (body !== undefined) { h['Content-Type'] = svc === 'slack' ? 'application/json; charset=utf-8' : 'application/json'; payload = JSON.stringify(body); }
   const r = await fetch(url, { method, headers: h, body: payload, signal: AbortSignal.timeout(45000) });
-  if (raw && r.ok) { const len = Number(r.headers.get('content-length') || 0); if (len > 15e6) throw new Error('That file is larger than 15 MB.'); const buf = Buffer.from(await r.arrayBuffer()); if (buf.length > 15e6) throw new Error('That file is larger than 15 MB.'); return { buf, type: r.headers.get('content-type') || '' }; }
-  const text = await r.text(); let d; try { d = text ? JSON.parse(text) : {}; } catch { d = { text }; }
+  if (raw && r.ok) { const len = Number(r.headers.get('content-length') || 0); if (len > 15e6) { r.body?.cancel().catch(() => {}); throw new Error('That file is larger than 15 MB.'); } return { buf: await readUpTo(r, 15e6, 'That file is larger than 15 MB.'), type: r.headers.get('content-type') || '' }; }
+  const text = (await readUpTo(r, 20e6, `${SERVICES[svc].name} sent an answer larger than 20 MB.`)).toString('utf8'); let d; try { d = text ? JSON.parse(text) : {}; } catch { d = { text }; }
   if (r.status === 401) { ctx.expired?.(); throw new Error(`${SERVICES[svc].name} refused the sign-in. Connect it again in Connections.`); }
   if (!r.ok) throw new Error(`${SERVICES[svc].name} answered ${r.status}: ${one(d.error?.message || d.message || d.error_description || d.error || text, 200)}`);
   if (svc === 'slack' && d.ok === false) { if (d.error === 'invalid_auth' || d.error === 'token_revoked') ctx.expired?.(); throw new Error('Slack said: ' + d.error + (d.error === 'not_in_channel' ? '. Invite the bot to that channel first.' : '')); }
@@ -385,9 +394,8 @@ export async function runAction(svc, action, a, ctx) {
       return out(`${rows.length} ${action === 'pulls' ? 'pull requests' : 'issues'} in ${repo}`, rows.join('\n') || 'None.', (Array.isArray(d) ? d : []).filter(i => action === 'pulls' || !i.pull_request).map(i => ({ number: i.number, state: i.state, title: i.title || '', user: i.user?.login || '', updated: i.updated_at || '', url: i.html_url || '', text: String(i.body || '').slice(0, 4000) })));
     }
     if (action === 'issue') {
-      const repo = repoOf(a.repo); need(a, 'number');
-      const i = await get(svc, ctx, `${H}/repos/${repo}/issues/${Number(a.number)}`);
-      const c = await get(svc, ctx, `${H}/repos/${repo}/issues/${Number(a.number)}/comments?per_page=30`);
+      const repo = repoOf(a.repo), n = numOf(a.number);
+      const [i, c] = await Promise.all([get(svc, ctx, `${H}/repos/${repo}/issues/${n}`), get(svc, ctx, `${H}/repos/${repo}/issues/${n}/comments?per_page=30`)]);
       return out(`#${i.number} ${i.title}`, `#${i.number} ${i.title} (${i.state}${i.pull_request ? ', pull request' : ''}) by ${i.user?.login}\n\n${i.body || ''}\n\n` + (Array.isArray(c) ? c : []).map(x => `--- ${x.user?.login} ${x.created_at?.slice(0, 10)}\n${x.body}`).join('\n'));
     }
     if (action === 'file') {
@@ -400,10 +408,10 @@ export async function runAction(svc, action, a, ctx) {
       return out(`read ${repo}/${a.path}`, await ctx.extract(buf, d.name, ''));
     }
     if (action === 'close_issue') {
-      const repo = repoOf(a.repo); need(a, 'number');
-      if (a.text) await post(svc, ctx, `${H}/repos/${repo}/issues/${Number(a.number)}/comments`, { body: String(a.text).slice(0, 60000) });
-      const d = await post(svc, ctx, `${H}/repos/${repo}/issues/${Number(a.number)}`, { state: 'closed' }, 'PATCH');
-      return out(`closed #${a.number} in ${repo}`, `Closed #${a.number}: ${d.html_url || ''}`, { number: Number(a.number), url: d.html_url || '' });
+      const repo = repoOf(a.repo), n = numOf(a.number);
+      if (a.text) await post(svc, ctx, `${H}/repos/${repo}/issues/${n}/comments`, { body: String(a.text).slice(0, 60000) });
+      const d = await post(svc, ctx, `${H}/repos/${repo}/issues/${n}`, { state: 'closed' }, 'PATCH');
+      return out(`closed #${n} in ${repo}`, `Closed #${n}: ${d.html_url || ''}`, { number: n, url: d.html_url || '' });
     }
     if (action === 'create_issue') {
       const repo = repoOf(a.repo); need(a, 'title');
@@ -411,9 +419,9 @@ export async function runAction(svc, action, a, ctx) {
       return out(`opened #${d.number} in ${repo}`, `Opened #${d.number}: ${d.html_url || ''}`, { number: d.number, url: d.html_url || '' });
     }
     if (action === 'comment') {
-      const repo = repoOf(a.repo); need(a, 'number', 'text');
-      const d = await post(svc, ctx, `${H}/repos/${repo}/issues/${Number(a.number)}/comments`, { body: String(a.text).slice(0, 60000) });
-      return out(`commented on #${a.number}`, `Commented: ${d.html_url || ''}`, { url: d.html_url || '' });
+      const repo = repoOf(a.repo), n = numOf(a.number); need(a, 'text');
+      const d = await post(svc, ctx, `${H}/repos/${repo}/issues/${n}/comments`, { body: String(a.text).slice(0, 60000) });
+      return out(`commented on #${n}`, `Commented: ${d.html_url || ''}`, { url: d.html_url || '' });
     }
   }
 
@@ -426,8 +434,7 @@ export async function runAction(svc, action, a, ctx) {
       return out(`${rows.length} Notion pages`, rows.join('\n') || 'Nothing found. Is the integration added to those pages?', (d.results || []).map(p => ({ id: p.id, title: title(p), database: p.object === 'database', edited: p.last_edited_time || '', url: p.url || '' })));
     }
     if (action === 'page') {
-      need(a, 'id'); const p = await get(svc, ctx, `${N}/pages/${enc(a.id)}`);
-      const b = await get(svc, ctx, `${N}/blocks/${enc(a.id)}/children?page_size=100`);
+      need(a, 'id'); const [p, b] = await Promise.all([get(svc, ctx, `${N}/pages/${enc(a.id)}`), get(svc, ctx, `${N}/blocks/${enc(a.id)}/children?page_size=100`)]);
       const lines = (b.results || []).map(x => { const v = x[x.type] || {}; const t = (v.rich_text || []).map(r => r.plain_text).join(''); return x.type.startsWith('heading') ? '\n# ' + t : x.type.includes('list_item') ? '- ' + t : x.type === 'to_do' ? `[${v.checked ? 'x' : ' '}] ${t}` : t; });
       return out(`read ${title(p)}`, `${title(p)}\n\n${lines.join('\n')}`);
     }

@@ -30,3 +30,8 @@ test('finds passages by keywords, and by meaning when vectors are there',async t
   files['farm.md']='Now the farm grows potatoes.';
   const again=make(null);assert.equal((await again.search('potatoes'))[0].name,'farm.md','changed files are read again');
 });
+
+test('a DuckDuckGo link that cannot be decoded is skipped, not the whole search',()=>{
+  const html='<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=%E0%A4%A">bad</a></div><div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fok">good</a></div>';
+  assert.deepEqual(parseDuckDuckGo(html).map(r=>r.url),['https://example.com/ok']);
+});

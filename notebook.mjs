@@ -92,7 +92,13 @@ export class Kernel {
     }
     this.buffer = ''; this.stray = ''; this.waiting = null;
     this.child.stdout.setEncoding('utf8');
-    this.child.stdout.on('data', d => { this.buffer += d; let i; while ((i = this.buffer.indexOf('\n')) >= 0) { const line = this.buffer.slice(0, i); this.buffer = this.buffer.slice(i + 1); this.line(line); } });
+    this.child.stdout.on('data', d => {
+      this.buffer += d; let start = 0, i;
+      while ((i = this.buffer.indexOf('\n', start)) >= 0) { this.line(this.buffer.slice(start, i)); start = i + 1; }
+      this.buffer = this.buffer.slice(start);
+      // A cell that writes a huge line to the real output, without a line break, is not kept in memory.
+      if (this.buffer.length > 64e6) { this.stray = (this.stray + this.buffer.slice(0, 2000)).slice(-4000); this.buffer = ''; }
+    });
     this.child.stderr.setEncoding('utf8'); this.child.stderr.on('data', d => { this.stray = (this.stray + d).slice(-4000); });
     this.child.once('exit', code => { this.dead = true; const w = this.waiting; this.waiting = null; w?.reject(new Error(`The kernel stopped (exit code ${code}). ${this.stray.trim().split('\n').slice(-2).join(' ')}`.trim())); });
     this.child.once('error', e => { this.dead = true; const w = this.waiting; this.waiting = null; w?.reject(e); });
