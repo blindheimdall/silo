@@ -81,6 +81,7 @@ SILO includes **88 app connectors**, **350 app connector operations**, **37 webh
 | **Slack** | Read channels and post messages with a configured account. |
 | **GitHub** | Read files, issues and pull requests. Create, comment on or close issues. |
 | **Notion** | Search and read pages, append text, and create pages in a connected database. |
+| **App catalog** | Browse every app in one place, about 110 tiles: sign in to an account, add a built-in API with its key, add an MCP connector, or start workflows from its events. Search by name or by what it does. |
 | **App connectors** | Configure supported operations for Stripe, Shopify, Linear, Jira, Airtable, Sentry, Cloudflare and other services. |
 | **Incoming events** | Trigger workflows from configured webhooks for services such as GitHub, Slack, Stripe, Shopify, Sentry and Typeform. |
 | **Phone and notifications** | Pair a Telegram bot to talk to residents, start workflows or respond to approvals. Send notifications to Slack, Discord, email or a webhook. |

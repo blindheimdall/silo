@@ -841,7 +841,7 @@ function runHistory(){return state.runs.length?`<div class="section-card">${stat
 const providerInfo={openai:['OpenAI','◎','Uses the OpenAI Responses API.','OpenAI model ID'],anthropic:['Anthropic','✳','Uses the Anthropic Messages API.','Claude model ID'],ollama:['Ollama','◉','Local models through Ollama at 127.0.0.1:11434.','Installed Ollama model name'],compatible:['Custom provider','⌘','Any HTTPS endpoint that speaks the OpenAI chat completions format.','Provider model ID']};
 function itBoard(){const count=p=>state.agents.filter(a=>a.provider===p).length,runs=state.runs.filter(r=>Date.now()-r.started<86400000).length,flows=state.workflows.filter(w=>w.enabled).length,working=state.agents.filter(a=>a.status==='working').length;
   return `<div class="it-board"><table><thead><tr><th>LINE</th><th>PROVIDER</th><th>STATUS</th><th>MODEL</th><th>RESIDENTS</th></tr></thead><tbody>${Object.entries(providerInfo).map(([id,[name]],i)=>{const c=state.connections[id]||{};return `<tr><td>${String(i+1).padStart(2,'0')}</td><td>${esc(name).toUpperCase()}</td><td class="${c.configured?'':'off'}">${c.configured?'ONLINE':'OFFLINE'}</td><td class="${c.model?'':'off'}">${esc(c.model||'NONE')}</td><td>${count(id)}</td></tr>`;}).join('')}<tr><td>--</td><td>DEMO</td><td>BUILT IN</td><td class="off">SCRIPTED</td><td>${count('demo')}</td></tr></tbody></table><div class="it-summary"><span>RESIDENTS <b>${state.agents.length}</b></span><span>AT WORK <b>${working}</b></span><span>RUNS IN 24H <b>${runs}</b></span><span>SCHEDULED FLOWS <b>${flows}</b></span><span>SILO <b>${state.paused?'PAUSED':'RUNNING'}</b></span></div></div>`;}
-function renderConnections(){return heading('IT / Uplink','Connect a model provider, then pick it in a resident\'s settings.','','IT DEPARTMENT')+itBoard()+`<div class="info-banner">${icon('connections')}<span><strong>Keys.</strong> Keys are saved encrypted on this computer and are never sent back to the browser. Saving a connection does not check it, so run a test after saving.</span></div><div class="connection-grid">${Object.entries(providerInfo).map(([id,[name,mark,desc]])=>{const c=state.connections[id];return `<article class="connection-card"><div class="connection-brand"><span class="connection-logo">${mark}</span><h3>${name}</h3><span class="connection-state"><span class="dot ${c.configured?'green':''}"></span>${c.configured?'CONFIGURED':'NOT CONNECTED'}</span></div><p>${desc}</p>${c.model?`<div class="provider-badge">${esc(c.model)}</div>`:''}<div style="display:flex;gap:8px">${button(c.configured?'Configure':'Connect provider','connect',false,`data-provider="${id}"`)}${c.configured?button('Test connection','test-connection',false,`data-provider="${id}"`):''}</div></article>`;}).join('')}</div><h2 class="section-title">Apps</h2><div class="info-banner">${icon('connections')}<span><strong>Your own accounts.</strong> Residents with the matching permission read your mail, calendar, files, channels, issues and pages. Sending, posting and creating always wait for your OK. Google and Microsoft use your own free app registration, so no outside company stands between SILO and your account.</span></div><div class="connection-grid" id="apps-grid"><div class="empty small">Loading apps...</div></div><h2 class="section-title">MCP connectors <small>${(state.mcp||[]).length}</small></h2><div class="info-banner">${icon('connections')}<span><strong>Tools from other services.</strong> A connector gives residents the tools of an MCP server: GitHub, Notion, Slack, a database, or your own program. A program connector runs on this computer with your rights, so add only servers you trust. Calls that change something wait for your OK in Signals.</span></div><div class="connection-grid" id="mcp-list">${mcpCards()}</div><div class="heading-actions" style="margin:10px 0 24px">${button(icon('plus')+'Add connector','mcp-new',true)}${state.hosted?.tenant?'':button(icon('plus')+'Add Python tool','python-tool-new')}</div>${spendingSection()}<h2 class="section-title">Notifications <small>${(state.channels||[]).length}</small></h2><div class="info-banner">${icon('activity')}<span><strong>Messages that leave the silo.</strong> Telegram, Slack, Discord, email or a webhook of your own. Each channel picks what it hears about. Secrets stay on the server.</span></div><div class="connection-grid">${channelCards()}</div><div class="heading-actions" style="margin:10px 0 24px">${button(icon('plus')+'Add channel','channel-new',true)}</div>${phoneSection()}${talkSection()}<h2 class="section-title">Desktop apps</h2><div class="info-banner"><span>These buttons open Windows apps when you click them. Residents cannot control the desktop. File access is set per resident. Services like GitHub or Notion connect through MCP connectors above.</span></div><div class="desktop-apps">${[['notepad','Notepad','Opens Notepad','files'],['calculator','Calculator','Opens Calculator','grid'],['workspace','Workspace folder','Opens the workspace folder in Explorer','files']].map(([id,name,desc,ic])=>`<div class="desktop-app">${icon(ic)}<div><h4>${name}</h4><p>${desc}</p></div>${button('Open','open-app',false,`data-app="${id}"`)}</div>`).join('')}</div>`;}
+function renderConnections(){return heading('IT / Uplink','Connect a model provider, then pick it in a resident\'s settings.','','IT DEPARTMENT')+itBoard()+`<div class="info-banner">${icon('connections')}<span><strong>Keys.</strong> Keys are saved encrypted on this computer and are never sent back to the browser. Saving a connection does not check it, so run a test after saving.</span></div><div class="connection-grid">${Object.entries(providerInfo).map(([id,[name,mark,desc]])=>{const c=state.connections[id];return `<article class="connection-card"><div class="connection-brand"><span class="connection-logo">${mark}</span><h3>${name}</h3><span class="connection-state"><span class="dot ${c.configured?'green':''}"></span>${c.configured?'CONFIGURED':'NOT CONNECTED'}</span></div><p>${desc}</p>${c.model?`<div class="provider-badge">${esc(c.model)}</div>`:''}<div style="display:flex;gap:8px">${button(c.configured?'Configure':'Connect provider','connect',false,`data-provider="${id}"`)}${c.configured?button('Test connection','test-connection',false,`data-provider="${id}"`):''}</div></article>`;}).join('')}</div><h2 class="section-title">Apps</h2><div class="info-banner">${icon('connections')}<span><strong>Your own accounts.</strong> Residents with the matching permission read your mail, calendar, files, channels, issues and pages. Sending, posting and creating always wait for your OK. Google and Microsoft use your own free app registration, so no outside company stands between SILO and your account.</span></div><div class="connection-grid" id="apps-grid"><div class="empty small">Loading apps...</div></div>${catalogSection()}<h2 class="section-title">MCP connectors <small>${(state.mcp||[]).length}</small></h2><div class="info-banner">${icon('connections')}<span><strong>Tools from other services.</strong> A connector gives residents the tools of an MCP server: GitHub, Notion, Slack, a database, or your own program. A program connector runs on this computer with your rights, so add only servers you trust. Calls that change something wait for your OK in Signals.</span></div><div class="connection-grid" id="mcp-list">${mcpCards()}</div><div class="heading-actions" style="margin:10px 0 24px">${button(icon('plus')+'Add connector','mcp-new',true)}${state.hosted?.tenant?'':button(icon('plus')+'Add Python tool','python-tool-new')}</div>${spendingSection()}<h2 class="section-title">Notifications <small>${(state.channels||[]).length}</small></h2><div class="info-banner">${icon('activity')}<span><strong>Messages that leave the silo.</strong> Telegram, Slack, Discord, email or a webhook of your own. Each channel picks what it hears about. Secrets stay on the server.</span></div><div class="connection-grid">${channelCards()}</div><div class="heading-actions" style="margin:10px 0 24px">${button(icon('plus')+'Add channel','channel-new',true)}</div>${phoneSection()}${talkSection()}<h2 class="section-title">Desktop apps</h2><div class="info-banner"><span>These buttons open Windows apps when you click them. Residents cannot control the desktop. File access is set per resident. Services like GitHub or Notion connect through MCP connectors above.</span></div><div class="desktop-apps">${[['notepad','Notepad','Opens Notepad','files'],['calculator','Calculator','Opens Calculator','grid'],['workspace','Workspace folder','Opens the workspace folder in Explorer','files']].map(([id,name,desc,ic])=>`<div class="desktop-app">${icon(ic)}<div><h4>${name}</h4><p>${desc}</p></div>${button('Open','open-app',false,`data-app="${id}"`)}</div>`).join('')}</div>`;}
 function mcpCards(){
   const list=state.mcp||[];if(!list.length)return '<div class="empty small">No connectors yet. Add one to give residents tools from other services.</div>';
   return list.map(c=>{const users=state.agents.filter(a=>a.tools?.includes('mcp:'+c.id)).length;return `<article class="connection-card"><div class="connection-brand"><span class="connection-logo">${c.transport==='openapi'?'API':c.transport==='http'?'WEB':'PRG'}</span><h3>${esc(c.name)}</h3><span class="connection-state"><span class="dot ${c.status==='ok'?'green':''}"></span>${c.enabled===false?'OFF':c.needsSignIn?'SIGN IN NEEDED':c.status==='ok'?(c.tools||[]).length+' TOOLS':c.status==='error'?'NOT REACHABLE':'NOT CHECKED'}</span></div><p class="mono-line">${esc(c.transport==='openapi'?[c.base,c.builtin?'built in':c.specFile?'pasted description':c.spec].filter(Boolean).join(' / '):c.transport==='http'?c.url:[c.command,...(c.args||[])].join(' '))}</p>${c.keyCheck?`<p class="key-check ${c.keyCheck.ok?'ok':'bad'}">${c.keyCheck.ok?'Works with your account':'The app refused the call'+(c.keyCheck.status?' ('+c.keyCheck.status+')':'')+(c.keyCheck.detail?': '+esc(c.keyCheck.detail.slice(0,140)):'')}. Checked ${age(c.keyCheck.at)}.</p>`:''}${c.error?`<p class="modal-error">${esc(c.error)}</p>`:''}<p>${users} resident${users===1?'':'s'} may use it. ${c.ask==='never'?'Never asks first.':c.ask==='always'?'Asks before every call.':'Asks before calls that change something.'}</p>${(c.tools||[]).length?`<div class="flow-mini">${c.tools.slice(0,12).map(t=>`<span class="${t.readOnly?'':'review'}" title="${esc(t.description)}">${esc(t.name)}</span>`).join('')}${c.tools.length>12?`<span>+${c.tools.length-12}</span>`:''}</div>`:''}<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${c.transport==='http'?(c.signedIn?button('Sign out','mcp-signout',false,`data-id="${c.id}"`):button('Sign in','mcp-signin',!!c.needsSignIn,`data-id="${c.id}" title="Sign in with your account on this service"`)):''}${button('Test','mcp-test',false,`data-id="${c.id}"`)}${button('Edit','mcp-edit',false,`data-id="${c.id}"`)}${button('Remove','mcp-remove',false,`data-id="${c.id}"`)}</div></article>`;}).join('');
@@ -945,7 +945,7 @@ function updateClock(){const el=$('#chrome-clock');if(el&&view!=='silo')el.textC
 function bindView(){
   if(view==='agents'){$('#agent-search').addEventListener('input',e=>{filter=e.target.value;agentLimit=PAGE;$('#agent-grid').innerHTML=agentGrid();});$('#floor-filter').addEventListener('change',e=>{floorFilter=e.target.value;agentLimit=PAGE;$('#agent-grid').innerHTML=agentGrid();});}
   if(view==='files'){loadFiles();loadKnowledge();$('#kn-ask').onsubmit=e=>{e.preventDefault();const q=$('#kn-q').value.trim();if(q)askArchive(q);};}
-  if(view==='connections')loadApps();
+  if(view==='connections'){bindCatalog();loadApps();}
   if(view==='security')mountSecurity();
 }
 function selectAgent(agentId){selected=agentId;const a=getAgent(agentId);if(!a)return;residentOpen=true;$('#agent-panel').hidden=false;$('#agent-panel').innerHTML=agentPanel();world?.update(state.agents,selected,state.paused);syncLevel(a.level||SECTORS[a.floor].home);setFloor(a.floor,false);}
@@ -1931,10 +1931,92 @@ let editingProposal=null;
 async function decideProposal(id,action,extra={}){try{await post('/proposals/'+id,{action,...extra});await refresh();if(view==='files'){$('#proposal-list').innerHTML=proposalList();loadFiles();}syncStatus();if(modal.open&&modalKind==='proposal')modal.close();toast(action==='save'?'File saved to the workspace.':action==='revert'?'Reverted to previous version.':'Proposal discarded.');}catch(e){toast(e.message,true);}}
 // Apps: Google, Microsoft 365, Slack, GitHub, Notion.
 let appList=[];
+// The app catalog: every app SILO reaches, one tile each, whichever way it connects: your account, a built-in API,
+// an MCP connector, a program on this computer, or its events starting workflows. A tile opens the ways it has.
+const CAT_ACCOUNT_GROUP={google:'Email and messages',microsoft:'Email and messages',slack:'Email and messages',github:'Code and servers',notion:'Work and projects'};
+const CAT_MCP_GROUP={gateway:'Gateways to many apps',program:'Programs on this computer',open:'Code and servers',huggingface:'AI and data'};
+const CAT_GROUPS=['Gateways to many apps',...PACK_GROUP_ORDER,'Programs on this computer'];
+const CAT_PAGE=30;
+let catQuery='',catGroup='',catAll=false;
+const catKey=k=>k.replace(/local$/,'');
+// Two letters for a tile: the capitals of one word (GitHub, ClickUp), or the first letters of two.
+function monogram(name){
+  const w=String(name).replace(/\(.*?\)/g,'').split(/[\s.\-]+/).filter(x=>/[a-z]/i.test(x));
+  if(w.length===1){const caps=w[0].match(/[A-Z0-9]/g)||[];return (caps.length>=2?caps.slice(0,2).join(''):w[0].slice(0,2)).toUpperCase();}
+  return (w[0][0]+(w[1]?.[0]||'')).toUpperCase();
+}
+function hookApps(){return (state.appTriggers||[]).find(t=>t.instant==='any')?.fields.find(f=>f.options)?.options||[];}
+function catalogEntries(){
+  const out=new Map(),hosted=!!state.hosted?.tenant,mcp=state.mcp||[];
+  const at=(key,name,group)=>{let e=out.get(key);if(!e)out.set(key,e={key,name,group,ways:[],words:''});return e;};
+  for(const s of appList)at(s.id,s.name,CAT_ACCOUNT_GROUP[s.id]||'Work and projects').ways.push({kind:'account',id:s.id,on:s.connected&&!s.problem,warn:!!s.problem,text:s.what});
+  for(const [id,p] of Object.entries(APP_PACKS)){
+    const e=at(id,p.name.replace(/ API$/,''),p.group),ops=p.ops.map(o=>o[2].replace(/_/g,' '));
+    e.ways.push({kind:'pack',id,on:mcp.find(c=>c.builtin===id),open:p.auth.kind==='none',ops,text:p.key});e.words+=' '+ops.join(' ');
+  }
+  for(const [id,p] of Object.entries(MCP_CATALOG)){
+    if(p.group==='start'||(hosted&&p.transport==='stdio'))continue;
+    const e=at(catKey(id),p.label.replace(/\s*\(.*\)$/,''),CAT_MCP_GROUP[id]||CAT_MCP_GROUP[p.group]||'Work and projects');
+    e.ways.push({kind:p.transport==='stdio'?'program':'mcp',id,label:p.label,on:p.name&&mcp.find(c=>c.name.toLowerCase()===p.name.toLowerCase()&&!c.builtin),text:p.note||''});
+  }
+  for(const h of hookApps()){
+    if(['basic','hmac','token','svix'].includes(h.value))continue;
+    const e=at(h.value,h.label.replace(/\s*\(any event\)$/,''),h.group);
+    e.ways.push({kind:'trigger',id:h.value,on:(state.workflows||[]).some(w=>w.app?.app===h.value),text:h.setup});
+  }
+  const order=new Map(CAT_GROUPS.map((g,i)=>[g,i]));
+  return [...out.values()].map(e=>({...e,on:e.ways.some(w=>w.on),warn:e.ways.some(w=>w.warn),words:(e.name+' '+e.group+' '+e.ways.map(w=>w.kind+' '+(w.label||'')+' '+w.text).join(' ')+e.words).toLowerCase()}))
+    // Your accounts first, in their usual order; then the rest by kind.
+    .sort((a,b)=>{const x=a.ways[0].kind==='account',y=b.ways[0].kind==='account';return (b.on-a.on)||(y-x)||(x?0:(order.get(a.group)??99)-(order.get(b.group)??99));});
+}
+const CAT_BADGE={account:'SIGN IN',pack:'KEY',mcp:'MCP',program:'PROGRAM',trigger:'TRIGGERS'};
+function catBadges(e){const k=[...new Set(e.ways.map(w=>w.kind==='pack'&&w.open?'NO ACCOUNT':CAT_BADGE[w.kind]))];return k.map(b=>`<i>${b}</i>`).join('');}
+function catDesc(e){
+  const w=e.ways.find(x=>x.kind==='account')||e.ways.find(x=>x.kind==='pack')||e.ways[0];
+  if(w.kind==='account')return w.text[0].toUpperCase()+w.text.slice(1)+'.';
+  if(w.kind==='pack')return `${w.ops.length} operation${w.ops.length===1?'':'s'}: ${w.ops.join(', ')}.`;
+  if(w.kind==='trigger')return 'Its events start workflows.';
+  return w.text.split(/(?<=\.)\s/)[0];
+}
+function catalogSection(){
+  return `<div class="section-head"><h2 class="section-title">App catalog <small id="cat-count"></small></h2></div><div class="info-banner">${icon('grid')}<span><strong>Every app SILO reaches, in one place.</strong> Sign in with your account, add a built-in API with its key, add an MCP connector, or let an app's events start workflows. Pick an app to see the ways it connects; nothing is added until you save it.</span></div><div class="cat-bar"><input class="field" id="cat-find" maxlength="60" placeholder="Find an app: stripe, invoices, weather..." aria-label="Find an app" autocomplete="off" spellcheck="false" value="${esc(catQuery)}"><div class="cat-chips" role="group" aria-label="Kind of app">${[['','All'],['on','Connected'],...CAT_GROUPS.map(g=>[g,g])].map(([v,l])=>`<button type="button" class="cat-chip" data-action="cat-group" data-group="${esc(v)}" aria-pressed="${catGroup===v}">${esc(l)}</button>`).join('')}</div></div><div class="cat-grid" id="cat-grid"></div>`;
+}
+function syncCatalog(){
+  const grid=$('#cat-grid');if(!grid)return;
+  const all=catalogEntries(),q=catQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const list=all.filter(e=>(!catGroup||(catGroup==='on'?e.on:e.group===catGroup))&&q.every(w=>e.words.includes(w)));
+  const shown=catAll||q.length||catGroup?list:list.slice(0,CAT_PAGE);
+  $('#cat-count').textContent=all.length;
+  const html=(shown.map(e=>`<button type="button" class="cat-tile${e.on?' on':''}" data-action="cat-open" data-key="${esc(e.key)}"><span class="cat-mono" aria-hidden="true">${esc(monogram(e.name))}</span><span class="cat-body"><b>${esc(e.name)}</b><small>${esc(e.group)}</small><span class="cat-desc">${esc(catDesc(e))}</span><span class="cat-badges">${catBadges(e)}</span></span>${e.on||e.warn?`<span class="cat-led${e.warn?' warn':''}" title="${e.warn?'Sign in again':'Connected'}"></span>`:''}</button>`).join('')||`<div class="empty small">No app matches${q.length?' "'+esc(catQuery.trim())+'"':''}. Add connector also looks in the MCP registry and about 2,500 web APIs.</div>`)
+    +(shown.length<list.length?`<button type="button" class="btn cat-more" data-action="cat-more">Show all ${list.length} apps</button>`:'');
+  if(grid.dataset.html!==html){grid.innerHTML=html;grid.dataset.html=html;}
+}
+function bindCatalog(){
+  const f=$('#cat-find');if(!f)return;
+  f.oninput=()=>{catQuery=f.value;syncCatalog();};
+  syncCatalog();
+}
+function openCatalogApp(key){
+  const e=catalogEntries().find(x=>x.key===key);if(!e)return;
+  const mcp=state.mcp||[],owner=!me||me.role==='owner';
+  const row=(w,title,text,btn)=>`<div class="cat-way${w.on?' on':''}"><div><div class="cat-way-head"><strong>${title}</strong>${w.on?`<span class="ws-state tag-ok">${w.kind==='trigger'?'IN USE':w.kind==='account'?'CONNECTED':'ADDED'}</span>`:''}${w.warn?'<span class="ws-state tag-warn">SIGN IN AGAIN</span>':''}</div><p>${text}</p></div>${owner&&btn?btn:''}</div>`;
+  const ways=e.ways.map(w=>{
+    if(w.kind==='account')return row(w,'Sign in with your account',esc(w.text[0].toUpperCase()+w.text.slice(1))+'. Residents with the permission read it; sending and changing wait for your OK.',button(w.on?'Connect again':'Connect','app-connect',!w.on,`data-id="${w.id}"`));
+    if(w.kind==='pack'){const c=mcp.find(x=>x.builtin===w.id),more=w.ops.length>14?` and ${w.ops.length-14} more`:'';return row(w,`Built-in API, ${w.ops.length} operation${w.ops.length===1?'':'s'}`,`<span class="cat-ops">${w.ops.slice(0,14).map(o=>`<i>${esc(o)}</i>`).join('')}${more}</span>${w.open?'No account or key needed.':esc(w.text)}`,c?button('Edit','mcp-edit',false,`data-id="${c.id}"`):button('Add','cat-preset',true,`data-preset="pack:${w.id}"`));}
+    if(w.kind==='trigger')return row(w,'Start workflows on its events',esc(w.text)+' In a workflow: Triggers, App event, then choose '+esc(e.name)+'.',button('Open Flows','search-nav',false,'data-view="workflows"'));
+    const c=w.on;return row(w,w.kind==='program'?`Program on this computer: ${esc(w.label)}`:`MCP connector: ${esc(w.label)}`,esc(w.text),c?button('Edit','mcp-edit',false,`data-id="${c.id}"`):button('Add','cat-preset',true,`data-preset="${w.id}"`));
+  }).join('');
+  showModal(`${modalHead(`<span class="cat-mono small" aria-hidden="true">${esc(monogram(e.name))}</span>${esc(e.name)}`,esc(e.group)+' · '+e.ways.length+' way'+(e.ways.length===1?'':'s')+' to connect')}<div class="modal-body cat-ways">${ways}${owner?'':'<p class="kn-hint">Only owners connect apps.</p>'}</div>`,'catalog');
+}
+function addFromPreset(key){
+  openMcpEditor();const p=$('#mcp-preset');if(!p||!PRESETS[key])return;
+  p.value=key;p.dispatchEvent(new Event('change'));$('#mcp-name')?.focus();
+}
+
 const APP_MARK={google:'G',microsoft:'M',slack:'S',github:'GH',notion:'N'};
 async function loadApps(){
   try{appList=(await api('/services')).services;}catch(e){const g=$('#apps-grid');if(g)g.innerHTML=`<div class="empty small">${esc(e.message)}</div>`;return;}
-  const g=$('#apps-grid');if(!g)return;
+  const g=$('#apps-grid');if(!g)return;syncCatalog();
   g.innerHTML=appList.map(s=>`<article class="connection-card"><div class="connection-brand"><span class="connection-logo">${APP_MARK[s.id]}</span><h3>${esc(s.name)}</h3><span class="connection-state"><span class="dot ${s.connected&&!s.problem?'green':''}"></span>${s.connected?(s.problem?'SIGN IN AGAIN':'CONNECTED'):'NOT CONNECTED'}</span></div><p>${esc(s.what[0].toUpperCase()+s.what.slice(1))}.${s.connected&&s.account?' Signed in as <strong>'+esc(s.account)+'</strong>.':''} ${s.users} resident${s.users===1?'':'s'} may use it.</p>${s.problem?`<p class="modal-error">${esc(s.problem)}</p>`:''}<div style="display:flex;gap:8px;flex-wrap:wrap">${button(s.connected?'Connect again':'Connect','app-connect',!s.connected,`data-id="${s.id}"`)}${s.connected?button('Disconnect','app-disconnect',false,`data-id="${s.id}"`):''}</div></article>`).join('');
 }
 function openAppConnect(id){
@@ -2227,6 +2309,8 @@ async function refresh(fromPoll=false){
   sendCouriers();if(!getAgent(selected))selected=state.agents[0]?.id;syncStatus();return true;
 }
 const actions={
+  'cat-open':el=>openCatalogApp(el.dataset.key),'cat-preset':el=>addFromPreset(el.dataset.preset),'cat-more':()=>{catAll=true;syncCatalog();},
+  'cat-group':el=>{catGroup=catGroup===el.dataset.group?'':el.dataset.group;$$('.cat-chip').forEach(c=>c.setAttribute('aria-pressed',String(c.dataset.group===catGroup)));syncCatalog();},
   'kn-add':()=>openKnowledgeForm(),'kn-edit':el=>{const s=knowledge?.sources.find(x=>x.id===el.dataset.id);if(s)openKnowledgeForm(s);},'open-cite':el=>openCite(el.dataset.name,Number(el.dataset.a),Number(el.dataset.b)),
   'kn-sync':async el=>{el.disabled=true;try{await post('/knowledge/'+el.dataset.id+'/sync',{});}catch(e){toast(e.message,true);}loadKnowledge();},
   'kn-remove':async el=>{const s=knowledge?.sources.find(x=>x.id===el.dataset.id);if(!s||!confirm(`Remove ${s.name}? Its copies in ${s.folder}/ are deleted. The documents where they came from are not touched.`))return;try{await api('/knowledge/'+s.id,{method:'DELETE'});toast(s.name+' removed.');}catch(e){toast(e.message,true);}loadKnowledge();loadFiles();},
