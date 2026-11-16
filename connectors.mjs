@@ -243,7 +243,7 @@ const enc = v => { const s = String(v ?? ''); if (/^\.{1,2}$/.test(s.trim())) th
 // Runs one action. ctx: { token(), expired(), extract(buffer, name, mime) for documents }.
 // Returns { summary, text }.
 export async function runAction(svc, action, a, ctx) {
-  const act = ACTIONS[svc]?.[action]; if (!act) throw new Error(`Unknown action. Use one of: ${Object.keys(ACTIONS[svc] || {}).join(', ')}.`);
+  const act = Object.hasOwn(ACTIONS, svc) && Object.hasOwn(ACTIONS[svc], action) ? ACTIONS[svc][action] : null; if (!act) throw new Error(`Unknown action. Use one of: ${Object.keys(ACTIONS[svc] || {}).join(', ')}.`);
   const out = (summary, text, data) => ({ summary: one(summary, 120), text: `<${svc} action="${action}" trust="untrusted">\n${clip(text)}\n</${svc}>`, ...(data !== undefined && { data }) });
 
   if (svc === 'google') {

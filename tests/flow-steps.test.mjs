@@ -83,6 +83,10 @@ test('app steps try a busy app again, repeat for each item, and wait, also acros
   await bad([list('plain'), { type: 'action', app, op: 'getCustomer', fields: { id: 'x' }, retries: 9 }], /0 to 5 times/);
   await bad([list('plain'), { type: 'wait', unit: 'hours', amount: 0 }], /wait 1 to 720 hours/);
   await bad([list('plain'), { type: 'wait', unit: 'until', time: '25:00' }], /like 09:00/);
+  // Names that every object has are not units, apps or operations.
+  await bad([list('plain'), { type: 'wait', unit: 'constructor', amount: 99999 }], /wait 1 to 43200 minutes/);
+  await bad([{ type: 'action', app: 'svc:constructor', op: 'keys' }], /there is no app called constructor/);
+  await bad([{ type: 'action', app: 'svc:github', op: 'constructor' }], /cannot constructor/);
   await bad([{ type: 'wait', unit: 'minutes', amount: 5 }], /at least one resident step or app step/);
   await bad([{ type: 'action', app, op: 'getCustomer', fields: { id: '{{step 2.id}}' } }, list('plain')], /Step 1: \{\{step 2\}\} is not a step above this one/);
   // A review that sends work back past an app step that changes something would repeat that change every round.

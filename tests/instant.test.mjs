@@ -39,6 +39,7 @@ test('every built-in app compiles into tools, with safe names and the right read
 
 test('trigger timing and instant settings', () => {
   assert.equal(triggerConfig({ kind: 'github.issue', repo: 'a/b' }).every, 60);
+  assert.throws(() => triggerConfig({ kind: 'constructor' }), /Pick what should start/);
   assert.equal(triggerConfig({ kind: 'github.issue', repo: 'a/b', every: '15' }).every, 15);
   assert.equal(triggerConfig({ kind: 'github.issue', repo: 'a/b', every: '7' }).every, 60, 'only 15, 60 or 300');
   assert.equal(triggerConfig({ kind: 'web.feed', url: 'https://x.example/f', every: 15 }).every, 60, 'other people\'s sites at most once a minute');

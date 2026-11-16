@@ -44,21 +44,24 @@ export async function dockerAvailable(){
   dockerCache={ok:r.code===0&&!!r.stdout.trim(),at:Date.now()};return dockerCache.ok;
 }
 // The local programs that run each language. Windows has a store alias called python that only prints a message.
-const localCache={};
+// A program that was not found is looked for again after a minute, so one installed while SILO runs is found.
+const localCache={},localMissed={};
 export async function localCommand(language){
-  if(language in localCache)return localCache[language];
+  if(localCache[language])return localCache[language];
+  if(Date.now()-(localMissed[language]||0)<60000)return null;
   const win=process.platform==='win32';
   const candidates={python:win?[['python',[]],['py',['-3']]]:[['python3',[]],['python',[]]],javascript:[[process.execPath,[]]],shell:win?[['powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File']]]:[['sh',[]]]}[language];
   // Python installed from python.org is often not on the PATH, so the usual folders are checked too.
   if(language==='python'&&win)for(const base of [path.join(process.env.LOCALAPPDATA||'','Programs','Python'),process.env.ProgramFiles||'C:\\Program Files']){
-    try{for(const d of (await fs.readdir(base)).filter(d=>/^Python3\d+$/i.test(d)).sort().reverse())candidates.push([path.join(base,d,'python.exe'),[]]);}catch{}
+    // Newest first, by number: Python313 before Python39.
+    try{for(const d of (await fs.readdir(base)).filter(d=>/^Python3\d+$/i.test(d)).sort((a,b)=>Number(b.slice(7))-Number(a.slice(7))))candidates.push([path.join(base,d,'python.exe'),[]]);}catch{}
   }
   for(const [cmd,pre] of candidates){
     if(language!=='python'){localCache[language]={cmd,pre};return localCache[language];}
     const r=await run(cmd,[...pre,'--version'],{timeout:8000});
     if(r.code===0&&/Python 3/.test(r.stdout+r.stderr)){localCache[language]={cmd,pre};return localCache[language];}
   }
-  return localCache[language]=null;
+  localMissed[language]=Date.now();return null;
 }
 export async function sandboxInfo(mode='auto'){
   const docker=await dockerAvailable();

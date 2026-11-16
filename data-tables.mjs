@@ -43,7 +43,8 @@ export function cellValue(col, v) {
       const eu = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
       if (eu) return cellValue(col, `${eu[3]}-${eu[2].padStart(2, '0')}-${eu[1].padStart(2, '0')}`);
       const t = typeof v === 'number' ? v : /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s) ? Date.parse(s.replace(' ', 'T')) : NaN;
-      if (!Number.isFinite(t)) fail(`${col.name} takes a date like 2026-11-15 or 2026-11-15T09:30, not "${short(v)}".`);
+      // A number past the year 275760 is no date either; toISOString would throw on it.
+      if (!Number.isFinite(t) || Number.isNaN(new Date(t).getTime())) fail(`${col.name} takes a date like 2026-11-15 or 2026-11-15T09:30, not "${short(v)}".`);
       return new Date(t).toISOString();
     }
     case 'json': {

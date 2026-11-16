@@ -730,7 +730,7 @@ function waitStep(s,i){
     if(!Number.isInteger(day)||day<-1||day>6)fail(`Step ${i+1}: pick a day of the week, or any day.`);
     return {unit:'until',time,day};
   }
-  const unit=WAIT_MAX[s.unit]?s.unit:'minutes',amount=Number(s.amount);
+  const unit=Object.hasOwn(WAIT_MAX,s.unit)?s.unit:'minutes',amount=Number(s.amount);
   if(!Number.isInteger(amount)||amount<1||amount>WAIT_MAX[unit])fail(`Step ${i+1}: wait 1 to ${WAIT_MAX[unit]} ${unit}.`);
   return {unit,amount};
 }
@@ -2264,7 +2264,7 @@ const appStepName=st=>st.app.startsWith('table:')?tables.meta.get(st.app.slice(6
 function actionStep(st,i){
   const app=string(st.app||'',80),op=string(st.op||'',120);
   if(!app||!op)fail(`Step ${i+1}: pick the app and what it should do.`);
-  if(app.startsWith('svc:')){const svc=app.slice(4);if(!SERVICES[svc])fail(`Step ${i+1}: there is no app called ${svc}.`);if(!ACTIONS[svc][op])fail(`Step ${i+1}: ${SERVICES[svc].name} cannot ${op}.`);}
+  if(app.startsWith('svc:')){const svc=app.slice(4);if(!Object.hasOwn(SERVICES,svc))fail(`Step ${i+1}: there is no app called ${svc}.`);if(!Object.hasOwn(ACTIONS[svc]||{},op))fail(`Step ${i+1}: ${SERVICES[svc].name} cannot ${op}.`);}
   else if(app.startsWith('mcp:')){const c=state.mcp.find(x=>x.id===app.slice(4));if(!c)fail(`Step ${i+1}: that connector was removed. Add it again in IT / Uplink, or pick another app.`);if(c.tools?.length&&!c.tools.some(t=>t.name===op))fail(`Step ${i+1}: ${c.name} has no operation ${op}.`);}
   else if(app.startsWith('table:')){if(!tables.meta.has(app.slice(6)))fail(`Step ${i+1}: that table was deleted. Pick another table.`);if(!Object.hasOwn(TABLE_OPS,op))fail(`Step ${i+1}: a table cannot ${op}.`);}
   else fail(`Step ${i+1}: pick the app.`);

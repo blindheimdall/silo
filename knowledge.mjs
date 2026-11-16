@@ -33,7 +33,7 @@ export function fileNameFor(title, used, max = 80, dir = '') {
 
 export function cleanSource(b, was = null) {
   const kind = was?.kind || String(b.kind || '');
-  if (!SOURCE_KINDS[kind]) throw fault('Choose a Google Drive folder, a OneDrive folder, Notion pages or web pages.');
+  if (!Object.hasOwn(SOURCE_KINDS, kind)) throw fault('Choose a Google Drive folder, a OneDrive folder, Notion pages or web pages.');
   const name = one(b.name ?? was?.name, 60);
   if (!name) throw fault('Give the source a name.');
   const every = b.every === undefined ? was?.every ?? 360 : Number(b.every);

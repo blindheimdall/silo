@@ -63,6 +63,7 @@ test('rules: written one per line, refused with the line that is wrong, and appl
   assert.equal(toolRule(rules,'github',{action:'delete_file',note:'close'}).action,'block','a block wins over an ask');
   assert.equal(toolRule(rules,'read_file',{name:'a.md'}),null);
   assert.throws(()=>parseRules('answer ask x'),/Line 1: for answer choose block or redact/);
+  assert.throws(()=>parseRules('constructor block x'),/Line 1: "constructor" is not answer or tool/);
   assert.throws(()=>parseRules('ok\nsomewhere block x'),/Line 1/);
   assert.throws(()=>parseRules('tool block /(/'),/does not work/);
   assert.throws(()=>parseRules(Array.from({length:41},(_,i)=>'tool block x'+i).join('\n')),/40 rules/);

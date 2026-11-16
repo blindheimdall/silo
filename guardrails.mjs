@@ -187,7 +187,7 @@ export function parseRules(text) {
     const m = line.match(/^(\S+)\s+(\S+)\s+(.+)$/);
     if (!m) fail(`Line ${i + 1}: write where (answer or tool), what to do, and the words or /pattern/.`);
     const where = m[1].toLowerCase(), action = m[2].toLowerCase(), pat = m[3].trim();
-    if (!RULE_ACTIONS[where]) fail(`Line ${i + 1}: "${m[1]}" is not answer or tool.`);
+    if (!Object.hasOwn(RULE_ACTIONS, where)) fail(`Line ${i + 1}: "${m[1]}" is not answer or tool.`);
     if (!RULE_ACTIONS[where].includes(action)) fail(`Line ${i + 1}: for ${where} choose ${RULE_ACTIONS[where].join(' or ')}.`);
     if (pat.length > 300) fail(`Line ${i + 1}: keep the pattern under 300 characters.`);
     const re = pat.match(/^\/(.+)\/([imsu]*)$/);

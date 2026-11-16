@@ -19,6 +19,7 @@ const until=async(fn,ms,what)=>{const end=Date.now()+ms;for(;;){const v=await fn
 test('sources, names and headers',()=>{
   assert.deepEqual(cleanSource({kind:'gdrive',name:' Policies ',ref:'https://drive.google.com/drive/folders/1AbCdEfGhIjKlMn?usp=sharing'}),{name:'Policies',kind:'gdrive',ref:'1AbCdEfGhIjKlMn',every:360});
   assert.equal(cleanSource({kind:'notion',name:'Wiki',ref:'https://www.notion.so/team/Handbook-0123456789abcdef0123456789ABCDEF?pvs=4',every:60}).ref,'0123456789abcdef0123456789abcdef');
+  assert.throws(()=>cleanSource({kind:'constructor',name:'x',ref:'y'}),/Choose a Google Drive folder/);
   assert.equal(cleanSource({kind:'onedrive',name:'Docs',ref:'Documents\\Policies\\'}).ref,'/Documents/Policies');
   assert.equal(cleanSource({kind:'web',name:'Site',ref:'https://a.example/x\nhttps://a.example/x\nhttps://a.example/y'}).ref,'https://a.example/x\nhttps://a.example/y');
   for(const bad of [{kind:'ftp',name:'x',ref:'y'},{kind:'gdrive',name:'',ref:'1AbCdEfGhIjKlMn'},{kind:'gdrive',name:'x',ref:'nope'},{kind:'web',name:'x',ref:'file:///etc/passwd'},{kind:'web',name:'x',ref:'https://u:p@a.example/'},{kind:'onedrive',name:'x',ref:'/a/../b'},{kind:'web',name:'x',ref:'https://a.example',every:5}])

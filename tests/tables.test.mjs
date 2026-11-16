@@ -26,6 +26,7 @@ test('the table store', async t => {
     assert.equal(cellValue(day, '2026-11-15'), '2026-11-15'); assert.equal(cellValue(day, '5.1.2026'), '2026-01-05');
     assert.equal(cellValue(day, '2026-11-15T09:30:00Z'), '2026-11-15T09:30:00.000Z');
     assert.throws(() => cellValue(day, '2026-02-31'), /date like/); assert.throws(() => cellValue(day, 'tomorrow'), /date like/);
+    assert.throws(() => cellValue(day, 1e20), /date like/);
     assert.deepEqual(cellValue({ name: 'j', type: 'json' }, '{"a":[1]}'), { a: [1] });
     assert.equal(cellValue({ name: 't', type: 'text' }, '   '), null, 'empty is no value');
     assert.throws(() => cellValue({ name: 't', type: 'text' }, 'x'.repeat(5001)), /longer than 5000/);

@@ -221,7 +221,7 @@ export const TRIGGERS={
 
 // The settings a trigger keeps, checked against its fields.
 export function triggerConfig(b){
-  const kind=String(b?.kind||''),t=TRIGGERS[kind];if(!t)throw new Error('Pick what should start the workflow.');
+  const kind=String(b?.kind||''),t=Object.hasOwn(TRIGGERS,kind)?TRIGGERS[kind]:null;if(!t)throw new Error('Pick what should start the workflow.');
   const cfg={kind};
   for(const f of t.fields){
     const v=String(b[f.key]??'').trim().slice(0,500);
