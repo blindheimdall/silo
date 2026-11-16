@@ -119,3 +119,10 @@ test('the old single radio becomes the first silo in the list',async t=>{
   assert.equal(peers.length,1);assert.equal(peers[0].url,'http://127.0.0.1:14000');assert.equal(st.settings.radio.url,undefined);
   assert.equal(st.access.radioKeys[peers[0].id],true,'the old key moved with it');assert.equal(st.settings.radio.enabled,true);
 });
+
+test('a signature with letters outside ASCII is refused, not thrown on', () => {
+  const key = 'radio-secret-18-long-enough-key', good = signRequest(key, 'body');
+  assert.equal(checkRequest(key, 'body', good), true);
+  assert.equal(checkRequest(key, 'body', 'é'.repeat(good.length)), false);
+  assert.equal(checkReply(key, 'body', 'é'.repeat(signReply(key, 'body').length)), false);
+});

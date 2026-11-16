@@ -2192,15 +2192,17 @@ function paintTable(){
   const v=tableView,t=v.table,grid=$('#tbl-grid');if(!grid||!t)return;
   const head=(name,label,num=false)=>`<th${num?' class="num"':''}><button type="button" class="tbl-sort" data-action="table-sort" data-col="${esc(name)}" aria-label="Sort by ${esc(label)}">${esc(label)}${v.sort===name?(v.desc?' ▼':' ▲'):''}</button></th>`;
   $('#tbl-count').textContent=`${t.rows} row${t.rows===1?'':'s'}`;
-  grid.innerHTML=v.rows.length?`<table class="data-table"><thead><tr>${head('id','#')}${t.columns.map(c=>head(c.name,c.name,c.type==='number')).join('')}${head('updated','Changed')}</tr></thead><tbody>${v.rows.map(r=>`<tr data-action="table-row" data-row="${r.id}" tabindex="0"><td class="tbl-id">${r.id}</td>${t.columns.map(c=>{const s=cellText(c,r[c.name]);return `<td class="${c.type==='number'?'num':''}" title="${esc(s.length>60?s.slice(0,600):'')}">${esc(s.length>120?s.slice(0,120)+'...':s)}</td>`;}).join('')}<td class="tbl-when">${age(r.updated)}</td></tr>`).join('')}</tbody></table>`:`<div class="empty">${v.search?'No row has these words.':'No rows yet.'}</div>`;
+  grid.innerHTML=v.rows.length?`<table class="data-table"><thead><tr>${head('id','#')}${t.columns.map(c=>head(c.name,c.name,c.type==='number')).join('')}${head('updated','Changed')}</tr></thead><tbody>${v.rows.map(r=>`<tr data-action="table-row" data-row="${r.id}" tabindex="0"><td class="tbl-id">${r.id}</td>${t.columns.map(c=>{const s=cellText(c,cellOf(r,c.name));return `<td class="${c.type==='number'?'num':''}" title="${esc(s.length>60?s.slice(0,600):'')}">${esc(s.length>120?s.slice(0,120)+'...':s)}</td>`;}).join('')}<td class="tbl-when">${age(r.updated)}</td></tr>`).join('')}</tbody></table>`:`<div class="empty">${v.search?'No row has these words.':'No rows yet.'}</div>`;
   grid.onkeydown=e=>{if(e.key==='Enter'&&e.target.matches('tr[data-row]'))openTableRow(e.target.dataset.row);};
   $('#tbl-more').innerHTML=v.rows.length<v.total?`<span>${v.rows.length} of ${v.total} shown</span>${button('Show more','table-more')}`:v.search&&v.total?`<span>${v.total} row${v.total===1?'':'s'} found</span>`:'';
 }
 // One row: every column as a field. Empty clears a value.
+// A row's own value: a column named constructor or toString reads as empty, not as what every object has.
+const cellOf=(r,k)=>r&&Object.hasOwn(r,k)?r[k]:undefined;
 function openTableRow(id){
   const v=tableView,t=v?.table;if(!t)return;
   const r=id?v.rows.find(x=>x.id===Number(id)):null,edit=tablesEdit(),ro=edit?'':' readonly';
-  const field=c=>{const val=r?.[c.name],fid='tr-'+c.name,lab=`<label for="${fid}">${esc(c.name)}${c.required?' <b>needed</b>':''}<small>${esc(TABLE_TYPES[c.type])}${c.unique?' · unique':''}</small></label>`;
+  const field=c=>{const val=cellOf(r,c.name),fid='tr-'+c.name,lab=`<label for="${fid}">${esc(c.name)}${c.required?' <b>needed</b>':''}<small>${esc(TABLE_TYPES[c.type])}${c.unique?' · unique':''}</small></label>`;
     if(c.type==='boolean')return `<div class="form-group">${lab}<select class="select" id="${fid}" data-col="${esc(c.name)}"${edit?'':' disabled'}><option value=""></option><option value="yes" ${val===true?'selected':''}>yes</option><option value="no" ${val===false?'selected':''}>no</option></select></div>`;
     if(c.type==='json')return `<div class="form-group">${lab}<textarea class="field" id="${fid}" data-col="${esc(c.name)}" rows="3" spellcheck="false" maxlength="5000"${ro}>${esc(val===undefined?'':JSON.stringify(val,null,2))}</textarea></div>`;
     const s=val===undefined||val===null?'':String(val),long=c.type==='text'&&s.length>80;

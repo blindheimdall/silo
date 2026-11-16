@@ -62,6 +62,11 @@ test('the table store', async t => {
     assert.throws(() => T.change('Leads', { columns: [{ name: 'mail', type: 'text', required: true }, { name: 'note', type: 'text', required: true }] }), /row 1 has no note/);
     assert.equal(T.remove('Leads', [2]), 1);
     assert.equal(T.add('Leads', { mail: 'cy@x.ro' }).id, 3, 'the id of a deleted row is not given again');
+    // A column named like something every object has is a column like any other.
+    T.create({ name: 'Races', columns: [{ name: 'constructor', type: 'text', required: true }, { name: 'toString', type: 'text', unique: true }] });
+    assert.throws(() => T.add('Races', { toString: 'a' }), /needs constructor/);
+    T.add('Races', { constructor: 'Ferrari' }); T.add('Races', { constructor: 'McLaren' });
+    assert.match(T.csv('Races').text, /^1,Ferrari,,/m);
     T.close();
     const again = new Tables(dir).open();
     assert.equal(again.list().find(x => x.id === leads.id).rows, 2, 'kept after closing');

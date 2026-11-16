@@ -7,7 +7,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 export const RADIO_VERSION = '2';
 export const WINDOW_MS = 5 * 60_000;
 const hmac = (key, text) => createHmac('sha256', key).update(text, 'utf8').digest('hex');
-const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a, b) => { if (typeof a !== 'string' || typeof b !== 'string') return false; const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 
 export const keyId = key => hmac(key, 'silo-radio-key-id').slice(0, 16);
 export const newKey = () => randomBytes(32).toString('base64url');

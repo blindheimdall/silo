@@ -315,14 +315,16 @@ const PUBLIC_URL=(()=>{const e=process.env,u=e.SILO_PUBLIC_URL||e.RENDER_EXTERNA
 // gave this workspace at start, and the visitor's address in its own headers. Only the host itself knows the control
 // token, for the status of the workspace and its budget.
 const HOSTED=String(process.env.SILO_HOSTED_TOKEN||''),HOSTED_CONTROL=String(process.env.SILO_HOSTED_CONTROL||'');
-const sameSecret=(a,b)=>!!b&&a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
+// Secrets are compared as bytes: a letter like é is one character but two bytes, and unequal lengths would throw.
+const sameBytes=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&timingSafeEqual(x,y);};
+const sameSecret=(a,b)=>!!b&&sameBytes(a,b);
 // What the host lets this workspace spend in a month, in dollars, all providers together. 0 is no budget.
 let hostedBudget=Math.max(0,Number(process.env.SILO_WORKSPACE_BUDGET)||0);
 // The owner of the workspaces, in the main one: the host's control address.
 const HOST_CONTROL=String(process.env.SILO_HOST_CONTROL||''),HOST_CONTROL_TOKEN=String(process.env.SILO_HOST_CONTROL_TOKEN||'');
 const LISTEN=HOSTED?'127.0.0.1':HOST_ENV||(NETWORK?'0.0.0.0':'127.0.0.1'),WIDE=NETWORK||!!HOSTED||!/^(127\.|localhost$|::1$)/.test(LISTEN);
 const SETUP_CODE=WIDE&&!state.users.length?randomBytes(16).toString('hex'):'';
-const setupOk=c=>!!SETUP_CODE&&typeof c==='string'&&c.length===32&&timingSafeEqual(Buffer.from(c),Buffer.from(SETUP_CODE));
+const setupOk=c=>!!SETUP_CODE&&typeof c==='string'&&sameBytes(c,SETUP_CODE);
 // Remote access through a Cloudflare Tunnel (tunnel.mjs). SILO stays on 127.0.0.1 and it always needs an account.
 state.settings.remote||={enabled:false,mode:'quick',hostname:'',path:''};
 const BIN=path.join(DATA,'bin');let remoteDownloading=false;
@@ -1669,7 +1671,8 @@ async function phoneUpdate(u){
     if(code){
       if(msg.chat.type!=='private')return reply('Pair from a private chat with the bot, not a group.');
       if(!phonePair||phonePair.expires<Date.now())return reply('There is no pairing code waiting. In SILO open IT, then Phone, and press Pair a phone.');
-      const ok=code.length===phonePair.code.length&&timingSafeEqual(Buffer.from(code),Buffer.from(phonePair.code));
+      // Compared as bytes: a letter like é is one character but two bytes, and unequal lengths would throw.
+      const got=Buffer.from(code),want=Buffer.from(phonePair.code),ok=got.length===want.length&&timingSafeEqual(got,want);
       if(!ok){if(++phonePair.tries>=5)phonePair=null;return reply('That code is wrong.');}
       phonePair=null;
       if(state.phone.chats.length>=5)return reply('SILO already has 5 paired phones. Remove one first.');
@@ -2167,6 +2170,7 @@ function schemaFields(schema){
   const walk=(props,req,prefix,depth)=>{
     for(const [name,p] of Object.entries(props||{})){
       if(out.length>=60)return;
+      if(UNSAFE_KEY.has(name))continue;
       const t=Array.isArray(p?.type)?p.type.find(x=>x!=='null'):p?.type||(p?.properties?'object':undefined),full=prefix+name;
       if(t==='object'&&p?.properties&&Object.keys(p.properties).length&&depth<2){walk(p.properties,new Set(Array.isArray(p.required)?p.required:[]),full+'.',depth+1);continue;}
       out.push({name:full,type:['string','integer','number','boolean','array','object'].includes(t)?t:'string',required:req.has(name),description:String(p?.description||'').replace(/\s+/g,' ').slice(0,200),...(Array.isArray(p?.enum)&&{options:p.enum.slice(0,60).map(String)})});
@@ -2175,8 +2179,11 @@ function schemaFields(schema){
   walk(schema?.properties,new Set(Array.isArray(schema?.required)?schema.required:[]),'',0);
   return out;
 }
-const setPath=(o,p,v)=>{const keys=p.split('.');let x=o;for(const k of keys.slice(0,-1))x=(x[k]&&typeof x[k]==='object')?x[k]:(x[k]={});x[keys.at(-1)]=v;};
-const getPath=(o,p)=>p.split('.').reduce((x,k)=>x==null?undefined:x[k],o);
+// A path of field names, like body.customer.name. Only the object's own keys are followed, and __proto__, constructor and
+// prototype are refused, so a field named after them in an API description cannot reach what every object shares.
+const UNSAFE_KEY=new Set(['__proto__','constructor','prototype']);
+const setPath=(o,p,v)=>{const keys=p.split('.');if(keys.some(k=>UNSAFE_KEY.has(k)))return;let x=o;for(const k of keys.slice(0,-1))x=(Object.hasOwn(x,k)&&x[k]&&typeof x[k]==='object')?x[k]:(x[k]={});x[keys.at(-1)]=v;};
+const getPath=(o,p)=>p.split('.').reduce((x,k)=>x!=null&&typeof x==='object'&&Object.hasOwn(x,k)?x[k]:undefined,o);
 function accountFields(svc,action){
   const props=toolSchema(svc).properties||{};
   return String(ACTIONS[svc][action]?.args||'').split(',').map(x=>x.trim().split(/[\s(]/)[0]).filter(n=>n&&n!=='action'&&props[n]).map(name=>({name,type:props[name].type||'string',required:false,description:String(props[name].description||'').slice(0,200)}));
@@ -4434,7 +4441,8 @@ function jsonOf(text){
   for(const end of [t.lastIndexOf('}'),t.lastIndexOf(']')].filter(e=>e>a).sort((x,y)=>y-x)){try{return JSON.parse(t.slice(a,end+1));}catch{}}
   return undefined;
 }
-function pickPath(value,p){for(const k of p.match(/[^.[\]]+/g)||[]){if(value==null)return undefined;value=value[Array.isArray(value)&&/^\d+$/.test(k)?Number(k):k];}return value;}
+// Only what the answer itself holds: .length of a list or text works, .constructor or .__proto__ find nothing.
+function pickPath(value,p){for(const k of p.match(/[^.[\]]+/g)||[]){if(value==null||!Object.hasOwn(Object(value),k))return undefined;value=value[Array.isArray(value)&&/^\d+$/.test(k)?Number(k):k];}return value;}
 function fillField(template,run,index){
   const valueOf=(whole,kind,n,p)=>{
     const k=kind.toLowerCase(),src=k==='brief'?run.input:k==='previous'?previousOutput(run,index):k==='item'?run.item:run.outputs[Number(n)-1];

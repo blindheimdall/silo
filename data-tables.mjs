@@ -14,6 +14,9 @@ export const FILTER_OPS = ['eq', 'ne', 'contains', 'starts', 'gt', 'gte', 'lt', 
 const NAME = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), {status}); };
+// A row's own value in a column. A column named like something every object has, such as constructor, reads as empty
+// when the row has no value there, not as that built-in.
+const own = (o, k) => Object.hasOwn(o, k) ? o[k] : undefined;
 const short = v => { const s = typeof v === 'string' ? v : JSON.stringify(v) ?? String(v); return s.length > 40 ? s.slice(0, 40) + '...' : s; };
 
 // A value as the column keeps it. Empty means no value. A value that does not fit the column is refused, never guessed.
@@ -222,7 +225,7 @@ export class Tables {
       for (const r of this.sql.all.all(t.id)) {
         const data = JSON.parse(r.data), out = {};
         next.forEach((c, i) => {
-          const src = from[i];if (!src || data[src.name] === undefined) { if (c.required) problem(`row ${r.id} has no ${c.name}`); return; }
+          const src = from[i];if (!src || own(data, src.name) === undefined) { if (c.required) problem(`row ${r.id} has no ${c.name}`); return; }
           let v;
           try { v = src.type === c.type ? data[src.name] : cellValue(c, src.type === 'json' && typeof data[src.name] === 'object' ? JSON.stringify(data[src.name]) : data[src.name]); }
           catch (e) { problem(`row ${r.id}: ${e.message.replace(/[.]$/, '')}`); return; }
@@ -255,8 +258,8 @@ export class Tables {
       const c = this.column(t, k), x = cellValue(c, v);
       if (x === null) delete out[c.name]; else out[c.name] = x;
     }
-    for (const c of t.columns) if (c.required && out[c.name] === undefined) fail(`${t.name} needs ${c.name}.`);
-    const ordered = {};for (const c of t.columns) if (out[c.name] !== undefined) ordered[c.name] = out[c.name];
+    for (const c of t.columns) if (c.required && own(out, c.name) === undefined) fail(`${t.name} needs ${c.name}.`);
+    const ordered = {};for (const c of t.columns) if (own(out, c.name) !== undefined) ordered[c.name] = out[c.name];
     if (JSON.stringify(ordered).length > ROW_SIZE_MAX) fail(`A row holds at most ${ROW_SIZE_MAX} characters.`);
     return ordered;
   }
@@ -275,7 +278,7 @@ export class Tables {
     return this.prep(`SELECT * FROM silo_rows WHERE tid = ? AND id <> ? AND ${text ? `lower(${sql}) = lower(?)` : `${sql} = ?`} ORDER BY id LIMIT 2`).all(t.id, except, text ? String(v) : this.bind(c, c.type === 'json' ? JSON.stringify(v) : v));
   }
   unique(t, data, except = 0) {
-    for (const c of t.columns) if (c.unique && data[c.name] !== undefined && this.matching(t, c, data[c.name], except).length) fail(`${t.name} already has a row with ${c.name} ${short(data[c.name])}.`, 409);
+    for (const c of t.columns) if (c.unique && own(data, c.name) !== undefined && this.matching(t, c, data[c.name], except).length) fail(`${t.name} already has a row with ${c.name} ${short(data[c.name])}.`, 409);
   }
   rowView(r) { return {id: r.id, ...JSON.parse(r.data), created: r.created, updated: r.updated}; }
 
@@ -351,7 +354,7 @@ export class Tables {
   // Changes the row whose match_on column has this value, or adds one when there is none. Two such rows are refused.
   upsert(ref, matchOn, values) {
     const t = this.table(ref), c = this.column(t, matchOn), probe = this.clean({...t, columns: t.columns.map(x => ({...x, required: false}))}, values);
-    const v = probe[c.name];if (v === undefined) fail(`Give a value for ${c.name}, the column that finds the row.`);
+    const v = own(probe, c.name);if (v === undefined) fail(`Give a value for ${c.name}, the column that finds the row.`);
     const found = this.matching(t, c, v);
     if (found.length > 1) fail(`${t.name} has more than one row with ${c.name} ${short(v)} (rows ${found.map(r => r.id).join(' and ')}), so it is not clear which to change.`, 409);
     if (found.length) return {row: this.update(t.id, found[0].id, values), added: false};
@@ -400,8 +403,8 @@ export class Tables {
         try { rows.push(this.clean(t, values)); } catch (e) { fail(`Line ${n + 2}: ${e.message}`); }
       });
       // Unique columns: against the rows there and the rows before in the file, without asking the database each time.
-      const uniq = t.columns.filter(c => c.unique).map(c => ({c, seen: new Set(this.sql.all.all(t.id).map(r => JSON.parse(r.data)[c.name]).filter(v => v !== undefined).map(v => this.key(c, v)))}));
-      rows.forEach((d, n) => { for (const {c, seen} of uniq) { if (d[c.name] === undefined) continue; const k = this.key(c, d[c.name]); if (seen.has(k)) fail(`Line ${n + 2}: ${t.name} already has a row with ${c.name} ${short(d[c.name])}.`, 409); seen.add(k); } });
+      const uniq = t.columns.filter(c => c.unique).map(c => ({c, seen: new Set(this.sql.all.all(t.id).map(r => own(JSON.parse(r.data), c.name)).filter(v => v !== undefined).map(v => this.key(c, v)))}));
+      rows.forEach((d, n) => { for (const {c, seen} of uniq) { if (own(d, c.name) === undefined) continue; const k = this.key(c, d[c.name]); if (seen.has(k)) fail(`Line ${n + 2}: ${t.name} already has a row with ${c.name} ${short(d[c.name])}.`, 409); seen.add(k); } });
       const now = Date.now();
       this.tx(() => { for (const d of rows) this.insert(t, d, now); });
       this.added(t, rows.length);
@@ -413,7 +416,7 @@ export class Tables {
     const t = this.table(ref), cols = t.columns.map(c => c.name), out = [['id', ...cols, 'created', 'updated'].join(',')];
     for (const r of this.db.prepare('SELECT * FROM silo_rows WHERE tid = ? ORDER BY id').iterate(t.id)) {
       const d = JSON.parse(r.data);
-      out.push([r.id, ...cols.map(c => csvCell(d[c])), new Date(r.created).toISOString(), new Date(r.updated).toISOString()].join(','));
+      out.push([r.id, ...cols.map(c => csvCell(own(d, c))), new Date(r.created).toISOString(), new Date(r.updated).toISOString()].join(','));
     }
     return {name: t.name, text: out.join('\r\n') + '\r\n'};
   }

@@ -91,7 +91,7 @@ p{margin:0}.wait{margin-top:16px;color:#5ec557}.wait b{animation:b 1s steps(1) i
 const lines = (stream, onLine) => { let buf = ''; stream.setEncoding('utf8'); stream.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i).replace(/\r$/, '')); buf = buf.slice(i + 1); } }); };
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.unref(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const hex = n => randomBytes(n).toString('hex');
-const same = (a, b) => !!b && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a, b) => { if (!b) return false; const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
 
 // One workspace and the SILO that serves it.
 class Space extends EventEmitter {

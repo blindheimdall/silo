@@ -18,6 +18,8 @@ test('app steps try a busy app again, repeat for each item, and wait, also acros
     '/customers': { get: { operationId: 'listCustomers', parameters: [{ name: 'shape', in: 'query', schema: { type: 'string' } }], responses: {} } },
     '/customers/{id}': { get: { operationId: 'getCustomer', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: {} } },
     '/emails': { post: { operationId: 'sendEmail', requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['to'], properties: { to: { type: 'string' }, text: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } } } } } }, responses: {} } } } };
+  // An API description with a field named __proto__: it is left out, so it can never reach what every object shares.
+  spec.paths['/tags'] = { post: { operationId: 'tagCustomer', requestBody: { content: { 'application/json': { schema: JSON.parse('{"type":"object","properties":{"__proto__":{"type":"object","properties":{"polluted":{"type":"string"}}},"note":{"type":"string"}}}') } } }, responses: {} } };
   const people = [{ id: 'c1', email: 'ana@example.com', name: 'Ana', since: 'Mon, 9 Nov 2026' }, { id: 'c2', email: 'ion@example.com', name: 'Ion', since: 'Tue, 10 Nov 2026' }, { id: 'c3', email: 'eva@example.com', name: 'Eva', since: 'Wed, 11 Nov 2026' }];
   const fake = http.createServer((req, res) => {
     let raw = ''; req.on('data', c => { raw += c; }); req.on('end', () => {
@@ -83,6 +85,8 @@ test('app steps try a busy app again, repeat for each item, and wait, also acros
   await bad([list('plain'), { type: 'action', app, op: 'getCustomer', fields: { id: 'x' }, retries: 9 }], /0 to 5 times/);
   await bad([list('plain'), { type: 'wait', unit: 'hours', amount: 0 }], /wait 1 to 720 hours/);
   await bad([list('plain'), { type: 'wait', unit: 'until', time: '25:00' }], /like 09:00/);
+  const tagged = await make('Tags', [{ type: 'action', app, op: 'tagCustomer', fields: { 'body.__proto__.polluted': 'yes', 'body.note': 'hi' } }]);
+  assert.deepEqual((await request('/state')).data.workflows.find(w => w.id === tagged).steps[0].fields, { 'body.note': 'hi' });
   // Names that every object has are not units, apps or operations.
   await bad([list('plain'), { type: 'wait', unit: 'constructor', amount: 99999 }], /wait 1 to 43200 minutes/);
   await bad([{ type: 'action', app: 'svc:constructor', op: 'keys' }], /there is no app called constructor/);
