@@ -151,6 +151,13 @@ globalThis.fetch=async (url,options)=>{
   else if(kind==='anthropic')text='Anthropic fixture: '+last;
   else if(kind==='ollama')text='Ollama fixture';
   else text='Compatible fixture';
+  // 'cache-probe' says what it was sent about caching and answers as if most of the input came from a cache.
+  if(b.model==='cache-probe'){
+    text=JSON.stringify({system:b.system??b.instructions??null,top:b.cache_control||null,key:b.prompt_cache_key||null});
+    const au={input_tokens:10,cache_creation_input_tokens:200,cache_read_input_tokens:800},ou={input_tokens:1000,input_tokens_details:{cached_tokens:800},output_tokens:7};
+    if(kind==='anthropic')return b.stream?sse([{type:'message_start',message:{usage:au}},{type:'content_block_delta',delta:{type:'text_delta',text}},{type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:7}}]):Response.json({content:[{type:'text',text}],stop_reason:'end_turn',usage:{...au,output_tokens:7}});
+    if(kind==='openai')return b.stream?sse([{type:'response.output_text.delta',delta:text},{type:'response.completed',response:{usage:ou}}]):Response.json({output:[{content:[{type:'output_text',text}]}],usage:ou});
+  }
   if(b.stream)return streamed(kind,text,cut);
   if(kind==='openai')return Response.json({output:[{content:[{type:'output_text',text}]}],usage:{total_tokens:17},...(cut&&{status:'incomplete',incomplete_details:{reason:'max_output_tokens'}})});
   if(kind==='anthropic')return Response.json({content:[{type:'text',text}],stop_reason:cut?'max_tokens':'end_turn',usage:{input_tokens:5,output_tokens:7}});

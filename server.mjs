@@ -150,7 +150,7 @@ if(state.version===3){
 }
 for(const agent of state.agents) agent.status='idle';
 const DEFAULT_PACT='1. Never invent file contents, web addresses or numbers.\n2. Never expose secrets, keys or passwords.\n3. Propose files to the Archive; never claim a file is saved before the operator approves it.';
-state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};try{state.settings.guardrails=cleanGuardrails({},state.settings.guardrails);}catch{state.settings.guardrails=cleanGuardrails({},DEFAULT_GUARDRAILS);}state.guardEvents=Array.isArray(state.guardEvents)?state.guardEvents.slice(0,40):[];state.usage||={days:{}};state.usage.warned||={};state.prices||={};state.limits||={};state.channels||=[];
+state.apiTokens=(Array.isArray(state.apiTokens)?state.apiTokens:[]).filter(t=>t&&/^[a-f0-9]{64}$/.test(t.hash||'')&&(t.userId?state.users?.some(u=>u.id===t.userId):!state.users?.length));state.meetings=[];state.proposals||=[];state.requests||=[];state.mcp||=[];state.jobs||=[];state.goals||=[];state.grants||=[];state.settings||={};state.settings.sandbox||='auto';state.settings.search||={engine:'duckduckgo',url:''};state.settings.embeddings||={provider:'off',model:''};state.settings.pact||={enabled:true,rules:DEFAULT_PACT,maxChars:0};if(state.settings.whispers===undefined)state.settings.whispers=true;state.settings.cafeteria||='auto';if(!Array.isArray(state.settings.power)||state.settings.power.length!==6)state.settings.power=[1,1,1,1,1,1];state.settings.radio||={enabled:false,siloId:'Silo 18',peers:[]};state.settings.radio.peers=Array.isArray(state.settings.radio.peers)?state.settings.radio.peers:[];state.settings.queue||={maxConcurrent:4,defaultMaxAttempts:1,baseBackoffMs:300,autoRecover:true};state.settings.context||={maxTokens:6000,keepRecent:4};state.settings.routing||={mode:'fixed',models:[]};state.settings.caching={prompt:true,...(state.settings.caching||{}),answers:{enabled:false,minutes:60,...(state.settings.caching?.answers||{})}};try{state.settings.guardrails=cleanGuardrails({},state.settings.guardrails);}catch{state.settings.guardrails=cleanGuardrails({},DEFAULT_GUARDRAILS);}state.guardEvents=Array.isArray(state.guardEvents)?state.guardEvents.slice(0,40):[];state.usage||={days:{}};state.usage.warned||={};state.prices||={};state.limits||={};state.channels||=[];
 for(const o of [...state.workflows,...state.agents]){for(const e of o.evals||[])if(e.status==='running'||e.status==='waiting'){e.status='interrupted';e.error='The server restarted during the tests.';}if(o.candidate?.status==='testing')Object.assign(o.candidate,{status:'error',error:'The server restarted during the tests. Test it again.'});}
 state.settings.expose={mcp:false,a2a:false,residents:[],workflows:[],front:'',description:'',...(state.settings.expose||{})};
 for(const k of ['residents','workflows'])if(!Array.isArray(state.settings.expose[k]))state.settings.expose[k]=[];
@@ -1312,19 +1312,51 @@ function limitRatios(provider,includeInflight=false){
 }
 function budgetRatio(){let r=0;for(const p of PROVIDERS)for(const x of limitRatios(p,true))r=Math.max(r,x[1]);return Math.min(1.5,r);}
 const money=n=>'$'+(n<1?n.toFixed(4):n.toFixed(2));
-function recordUsage(provider,model,input,output){
+// What a call cost. Input read from a provider's cache costs its own price when you set one, otherwise a share of the
+// input price (a tenth at Anthropic; half at OpenAI, the least it takes off, so savings are never overstated). Anthropic
+// charges a quarter more for input it writes to its cache. saved is what the cache took off, and can be below zero when
+// written input was never read again.
+const CACHE_READ_SHARE={anthropic:.1,openai:.5,compatible:1};
+function costOf(provider,model,{input=0,output=0,cached=0,written=0}={}){
+  const price=priceFor(provider,model);if(!price)return null;
+  const read=price.cached??price.input*(CACHE_READ_SHARE[provider]??1),plain=Math.max(0,input-cached-written);
+  return {cost:(plain*price.input+cached*read+written*price.input*1.25+output*price.output)/1e6,saved:(cached*(price.input-read)-written*price.input*.25)/1e6};
+}
+function recordUsage(provider,model,input,output,{cached=0,written=0}={}){
   stateRev++;
   tokenLog.push([Date.now(),(input||0)+(output||0)]);if(tokenLog.length>2000)tokenLog.splice(0,1000);
   const d=state.usage.days[today()]||={};const u=d[provider]||={input:0,output:0,cost:0,calls:0};
   // A call to a model without a price has an unknown cost: it is counted as such, never as free.
-  const price=priceFor(provider,model),cost=price?((input||0)*price.input+(output||0)*price.output)/1e6:0;
+  const price=priceFor(provider,model),c=costOf(provider,model,{input,output,cached,written}),cost=c?.cost||0;
   u.input+=input||0;u.output+=output||0;u.cost=(u.cost||0)+cost;u.calls++;if(!price)u.unpriced=(u.unpriced||0)+1;
+  if(cached||written){u.cached=(u.cached||0)+cached;u.written=(u.written||0)+written;u.saved=(u.saved||0)+(c?.saved||0);}
   const m=(u.models||={})[model||'default']||={input:0,output:0,cost:0,calls:0};m.input+=input||0;m.output+=output||0;m.cost+=cost;m.calls++;if(!price)m.unpriced=(m.unpriced||0)+1;
+  if(cached)m.cached=(m.cached||0)+cached;
   const days=Object.keys(state.usage.days).sort();for(const k of days.slice(0,-62))delete state.usage.days[k];
   // A warning at 80 percent and another when a limit is reached, once a day each.
   for(const [kind,ratio,used,limit] of limitRatios(provider)){
     const level=ratio>=1?'reached':ratio>=.8?'near':null;if(level)warnLimit(provider,kind,level,kind==='token'?`${used} of ${limit} tokens`:`${money(used)} of ${money(limit)}`);
   }
+}
+// An answer given again from the answer cache: no call, and what the first one cost counts as saved.
+function recordReuse(provider,model,was){
+  stateRev++;
+  const d=state.usage.days[today()]||={},u=d[provider]||={input:0,output:0,cost:0,calls:0},c=costOf(provider,model,was);
+  u.reused=(u.reused||0)+1;u.reusedTokens=(u.reusedTokens||0)+(was.input||0)+(was.output||0);u.saved=(u.saved||0)+(c?.cost||0);
+}
+// Answers kept for the same question, in memory only: they can hold personal data and are gone when SILO stops.
+// The key is everything the model would get (provider, model, instructions, the conversation, the tools offered), so
+// a new tool result, a new note or a changed file list asks the model again. Tests and judges always ask, since
+// they measure the model, and an answer that called tools or was cut off is never kept.
+const answerCache=new Map(),ANSWER_CACHE_MAX=300;
+function answerKey(p,model,sys,messages,opts){
+  const a=state.settings.caching.answers;
+  if(!a.enabled||opts.ctx?.test||/^(Judge|Test)\b/.test(opts.ctx?.source||''))return null;
+  return createHash('sha256').update(JSON.stringify([p,model,sys,messages,(opts.tools||[]).map(t=>[t.name,t.schema])])).digest('base64url');
+}
+function keepAnswer(key,entry){
+  answerCache.delete(key);answerCache.set(key,{...entry,until:Date.now()+state.settings.caching.answers.minutes*60000});
+  while(answerCache.size>ANSWER_CACHE_MAX)answerCache.delete(answerCache.keys().next().value);
 }
 function warnLimit(provider,kind,level,show){
   const key=`${today()}:${provider}:${kind}:${level}`;if(state.usage.warned[key])return;state.usage.warned[key]=Date.now();
@@ -2333,7 +2365,7 @@ function complianceSetup(){
 // Every model call that went out is in the audit log: who, which model, the host it was sent to, how much, what was
 // hidden, and from where in SILO. Never what was said. The compliance report is built from these records.
 function auditModel(agent,opts,r){
-  const p=r?.routed?.provider||opts.routed?.provider||agent.provider;if(p==='demo')return;
+  const p=r?.routed?.provider||opts.routed?.provider||agent.provider;if(p==='demo'||r?.reused)return;
   const m=r?.routed?.model||opts.routed?.model||agent.model||secrets.get(p)?.model||'',c=secrets.get(p);
   let host=p==='openai'?'api.openai.com':p==='anthropic'?'api.anthropic.com':'';
   if(!host)try{host=new URL(p==='ollama'?(c?.endpoint||'http://127.0.0.1:11434'):c?.endpoint).host;}catch{host=p;}
@@ -2348,7 +2380,7 @@ function providerCall(agent,messages,signal,onText,opts={}){
     if(sp){
       const p=r.routed?.provider||agent.provider,m=r.routed?.model||agent.model||secrets.get(p)?.model||'';
       sp.name=p==='demo'?'demo reply (no model)':`${p}${m?':'+m:''}`;sp.provider=p;sp.model=m;sp.input=r.input||0;sp.output=r.output||0;sp.tokens=r.tokens||0;sp.messages=messages.length;
-      const price=p==='demo'?null:priceFor(p,m);sp.cost=price?(sp.input*price.input+sp.output*price.output)/1e6:0;
+      sp.cost=p==='demo'||r.reused?0:costOf(p,m,r)?.cost||0;if(r.cached)sp.cached=r.cached;if(r.written)sp.written=r.written;if(r.reused)sp.reused=true;
       if(r.calls?.length)sp.toolCalls=r.calls.length;if(r.truncated)sp.truncated=true;if(r.masked)sp.masked=r.masked;if(opts._usedModelFallback)sp.fallback=true;
     }
     return r;
@@ -2377,6 +2409,12 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
   const masker=piiMasker(p);
   const activeMessages=masker?masker.messages(comp.messages):comp.messages,sys=masker?masker.instructions(instructions):instructions;
   const emit=masker&&onText?masker.stream(onText):onText;
+  const reuseKey=answerKey(p,model,instructions,comp.messages,opts),hit=reuseKey&&answerCache.get(reuseKey);
+  if(hit&&hit.until>Date.now()){
+    answerCache.delete(reuseKey);answerCache.set(reuseKey,hit);recordReuse(p,model,hit);
+    if(onText)onText(hit.text);
+    return {text:hit.text,tokens:0,input:0,output:0,truncated:false,calls:[],routed,compacted:comp.compacted,reused:true};
+  }
   const estIn=Math.max(5,estimateTokens(instructions)+activeMessages.reduce((s,m)=>s+estimateMessageTokens(m),0));
   // The whole question and the longest answer allowed are held against the limits. When less is left, the answer is
   // asked to be shorter, so the provider cannot write past the limit.
@@ -2385,8 +2423,9 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
   try{
     const stream=!!onText,tools=toolsFor(p,opts.tools);
     let url,headers={'Content-Type':'application/json'},body;
-    if(p==='openai'){url='https://api.openai.com/v1/responses';headers.Authorization=`Bearer ${config.key}`;body={model,instructions:sys,input:openaiInput(activeMessages),store:false,max_output_tokens:outLimit};}
-    if(p==='anthropic'){url='https://api.anthropic.com/v1/messages';headers['x-api-key']=config.key;headers['anthropic-version']='2023-06-01';body={model,system:sys,messages:anthropicMessages(activeMessages),max_tokens:outLimit};}
+    const caching=state.settings.caching.prompt!==false;
+    if(p==='openai'){url='https://api.openai.com/v1/responses';headers.Authorization=`Bearer ${config.key}`;body={model,instructions:sys,input:openaiInput(activeMessages),store:false,max_output_tokens:outLimit,...(caching&&{prompt_cache_key:'silo-'+agent.id})};}
+    if(p==='anthropic'){url='https://api.anthropic.com/v1/messages';headers['x-api-key']=config.key;headers['anthropic-version']='2023-06-01';body={model,system:caching&&sys?[{type:'text',text:sys,cache_control:{type:'ephemeral'}}]:sys,messages:anthropicMessages(activeMessages),max_tokens:outLimit,...(caching&&(opts.tools?.length||activeMessages.length>1)&&{cache_control:{type:'ephemeral'}})};}
     if(p==='ollama'){url=(config?.endpoint||'http://127.0.0.1:11434')+'/api/chat';body={model,messages:chatMessages(activeMessages,sys,'ollama'),stream:false,...(outLimit<maxOut&&{options:{num_predict:outLimit}})};}
     if(p==='compatible'){
       url=config.endpoint;
@@ -2399,7 +2438,8 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     // The time limit counts from the last piece of text, so a long answer that keeps coming is never cut off.
     const idle=new AbortController();let timer;const arm=()=>{clearTimeout(timer);timer=setTimeout(()=>idle.abort(),180000);};arm();
     const combined=signal?AbortSignal.any([signal,idle.signal]):idle.signal;
-    let text='',input=0,output=0,truncated=false;const collector=new CallCollector(p);
+    let text='',input=0,output=0,truncated=false,cached=0,written=0;const collector=new CallCollector(p);
+    const anthropicUse=u=>{written=u?.cache_creation_input_tokens||0;cached=u?.cache_read_input_tokens||0;input=(u?.input_tokens||0)+written+cached;};
     try{
       let r;
       sent=true;
@@ -2423,12 +2463,12 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
             collector.event(ev);
             if(p==='openai'){
               if(ev.type==='response.output_text.delta')add(ev.delta);
-              else if(ev.type==='response.completed'||ev.type==='response.incomplete'){completed=true;const u=ev.response?.usage||{};input=u.input_tokens||0;output=u.output_tokens||Math.max(0,(u.total_tokens||0)-input);truncated=ev.response?.incomplete_details?.reason==='max_output_tokens';}
+              else if(ev.type==='response.completed'||ev.type==='response.incomplete'){completed=true;const u=ev.response?.usage||{};input=u.input_tokens||0;cached=u.input_tokens_details?.cached_tokens||0;output=u.output_tokens||Math.max(0,(u.total_tokens||0)-input);truncated=ev.response?.incomplete_details?.reason==='max_output_tokens';}
               else if(ev.type==='response.failed')throw providerError(p,'an error',ev.response?.error?.message,config);
               else if(ev.type==='error')throw providerError(p,'an error',ev.message||ev.error?.message,config);
             }else if(p==='anthropic'){
               if(ev.type==='content_block_delta'&&ev.delta?.type==='text_delta')add(ev.delta.text);
-              else if(ev.type==='message_start')input=ev.message?.usage?.input_tokens||0;
+              else if(ev.type==='message_start')anthropicUse(ev.message?.usage);
               else if(ev.type==='message_delta'){completed=true;output=ev.usage?.output_tokens||output;truncated=ev.delta?.stop_reason==='max_tokens';}
               else if(ev.type==='message_stop')completed=true;
               else if(ev.type==='error'){const e=providerError(p,'an error',ev.error?.message,config);e.retry=/overloaded|rate_limit|api_error/.test(ev.error?.type||'');throw e;}
@@ -2439,17 +2479,17 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
               if(ev.error)throw providerError(p,'an error',ev.error.message||ev.error,config);
               const c=ev.choices?.[0];add(c?.delta?.content);
               if(c?.finish_reason){completed=true;if(c.finish_reason==='length')truncated=true;}
-              if(ev.usage){input=ev.usage.prompt_tokens||0;output=ev.usage.completion_tokens||Math.max(0,(ev.usage.total_tokens||0)-input);}
+              if(ev.usage){input=ev.usage.prompt_tokens||0;cached=ev.usage.prompt_tokens_details?.cached_tokens||0;output=ev.usage.completion_tokens||Math.max(0,(ev.usage.total_tokens||0)-input);}
             }
           }
           if(!completed)throw Object.assign(new Error(`Stream from ${p} closed before a terminal completion event arrived.`),{status:502,retry:true});
         }catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} stopped answering for 3 minutes.`,504);if(e.status)throw e;throw Object.assign(new Error(`The answer from ${p} broke off. ${e.message}`),{status:502,retry:true});}
       }else{
         const data=await r.json();collector.whole(data);
-        if(p==='openai'){text=(data.output||[]).flatMap(o=>o.content||[]).filter(c=>c.type==='output_text').map(c=>c.text).join('\n');truncated=data.incomplete_details?.reason==='max_output_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;}
-        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;}
+        if(p==='openai'){text=(data.output||[]).flatMap(o=>o.content||[]).filter(c=>c.type==='output_text').map(c=>c.text).join('\n');truncated=data.incomplete_details?.reason==='max_output_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;cached=data.usage?.input_tokens_details?.cached_tokens||0;}
+        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens';anthropicUse(data.usage);output=data.usage?.output_tokens||0;}
         else if(p==='ollama'){text=data.message?.content||'';truncated=data.done_reason==='length';input=data.prompt_eval_count||0;output=data.eval_count||0;}
-        else{text=data.choices?.[0]?.message?.content||'';truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;}
+        else{text=data.choices?.[0]?.message?.content||'';truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;cached=data.usage?.prompt_tokens_details?.cached_tokens||0;}
         if(!input&&!output&&data.usage?.total_tokens)output=data.usage.total_tokens;
         if(text&&onText)emit(text);
       }
@@ -2458,9 +2498,10 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     let calls=tools?collector.calls():[];
     if(masker){text=masker.unmask(text);calls=calls.map(c=>({...c,args:masker.unmaskDeep(c.args)}));if(masker.size){guardTally.calls++;for(const [k,n] of Object.entries(masker.counts()))guardTally[k]=(guardTally[k]||0)+n;}}
     releaseSpend();
-    recordUsage(p,model,input,output);
+    recordUsage(p,model,input,output,{cached,written});
+    if(reuseKey&&text&&!calls.length&&!truncated)keepAnswer(reuseKey,{text,input,output,cached,written});
     if(!text&&!calls.length&&!opts.allowEmpty)fail('Provider returned no text. Check model support and output limits.',502);
-    return {text,tokens:input+output,input,output,truncated,calls,routed,compacted:comp.compacted,...(masker?.size&&{masked:masker.counts()})};
+    return {text,tokens:input+output,input,output,truncated,calls,routed,compacted:comp.compacted,...(cached&&{cached}),...(written&&{written}),...(masker?.size&&{masked:masker.counts()})};
   }catch(e){if(sent&&e&&typeof e==='object')e.modelSent=true;throw e;}
   finally{releaseSpend();}
 }
@@ -6463,9 +6504,15 @@ const server=http.createServer(async(req,res)=>{
         for(const [key,v] of Object.entries(b.prices||{})){
           if(!/^(openai|anthropic|ollama|compatible):[\w.:\/@*-]{1,100}$/.test(key))fail('A price needs a provider and a model.');
           if(v===null){delete state.prices[key];continue;}
-          const input=Number(v?.input),output=Number(v?.output);
-          if(!(input>=0&&input<10000&&output>=0&&output<10000))fail('Prices are dollars per million tokens, from 0 to 10000.');
-          state.prices[key]={input,output};
+          const input=Number(v?.input),output=Number(v?.output),cached=v?.cached===undefined||v?.cached===null||v?.cached===''?null:Number(v.cached);
+          if(!(input>=0&&input<10000&&output>=0&&output<10000)||cached!==null&&!(cached>=0&&cached<10000))fail('Prices are dollars per million tokens, from 0 to 10000.');
+          state.prices[key]={input,output,...(cached!==null&&{cached})};
+        }
+        if(b.caching){
+          const c=b.caching,a=c.answers||{},was=state.settings.caching,minutes=a.minutes===undefined?was.answers.minutes:Math.round(Number(a.minutes));
+          if(!(minutes>=1&&minutes<=10080))fail('Keep answers for 1 minute to 7 days (10080 minutes).');
+          state.settings.caching={prompt:c.prompt===undefined?was.prompt:c.prompt!==false,answers:{enabled:a.enabled===undefined?was.answers.enabled:a.enabled===true,minutes}};
+          if(!state.settings.caching.answers.enabled)answerCache.clear();
         }
         for(const [p,v] of Object.entries(b.limits||{})){
           if(!PROVIDERS.includes(p))fail('Unknown provider.');
