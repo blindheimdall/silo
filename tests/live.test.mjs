@@ -121,3 +121,10 @@ test('the live channel sends the state once, then patches, the text residents wr
   });
   assert.equal(errors.trim(),'');
 });
+
+test('a key or id named __proto__ travels in a patch like any other',()=>{
+  const a=JSON.parse('{"m":{"x":1},"l":[{"id":"a","v":1}]}'),b=JSON.parse('{"m":{"x":1,"__proto__":{"evil":1}},"l":[{"id":"__proto__","v":2},{"id":"a","v":3}]}');
+  const out=applyPatch(JSON.parse(JSON.stringify(a)),JSON.parse(JSON.stringify(diffState(a,b))));
+  assert.equal(JSON.stringify(out),JSON.stringify(b));
+  assert.equal(Object.getPrototypeOf(out.m),Object.prototype);assert.equal(({}).evil,undefined);
+});

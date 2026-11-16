@@ -5142,7 +5142,10 @@ function testRegexSafe(pattern,flags,text,timeoutMs=150){
   const slice=String(text||'').slice(0,100000);
   return new Promise(resolve=>{
     const w=new Worker(`const {parentPort,workerData}=require('node:worker_threads');try{const ok=new RegExp(workerData.p,workerData.f).test(workerData.t);parentPort.postMessage({ok});}catch(e){parentPort.postMessage({ok:false,error:e.message});}`,{eval:true,workerData:{p:pattern,f:flags,t:slice}});
-    const timer=setTimeout(()=>{w.terminate();resolve({ok:false,timedOut:true});},timeoutMs);
+    // The time limit is for the pattern, so it starts when the worker is up: a busy computer that is slow to start a
+    // thread does not make a simple pattern look like catastrophic backtracking. Starting has its own, longer limit.
+    let timer=setTimeout(()=>{w.terminate();resolve({ok:false,timedOut:true});},5000);
+    w.once('online',()=>{clearTimeout(timer);timer=setTimeout(()=>{w.terminate();resolve({ok:false,timedOut:true});},timeoutMs);});
     w.once('message',msg=>{clearTimeout(timer);w.terminate();resolve(msg);});
     w.once('error',()=>{clearTimeout(timer);w.terminate();resolve({ok:false});});
   });

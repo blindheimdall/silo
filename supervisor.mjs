@@ -63,6 +63,9 @@ function start() {
     }
   });
   lines(child.stderr, l => { log('! ' + l); if (/EADDRINUSE/.test(l)) portBusy = true; });
+  // A server that cannot be started, or a message to one that just ended, is written to the log; the supervisor goes on
+  // (exit follows, and with it the restart).
+  child.on('error', e => log('! ' + e.message));
   child.on('exit', async (code, signal) => {
     child = null; writePid();
     if (stopping) { log('SILO stopped.'); process.exit(0); }
