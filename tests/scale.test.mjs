@@ -40,6 +40,21 @@ test('a save serializes only rows that can have changed, and still writes every 
   assert.ok(st.stats.saves>10&&st.stats.maxMs>=st.stats.lastMs&&st.stats.bytes>0);
 });
 
+test('a finished row that changes while it settles is written, and its text is let go once it has settled',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-scale-store-'));let st;t.after(()=>{st?.close();return fs.rm(dir,{recursive:true,force:true});});
+  const read=()=>{const r=new StateStore(dir);try{return r.reconstructFromTables();}finally{r.db.close();r.db=null;r.closed=true;}};
+  st=new StateStore(dir,{settled:(c,x)=>c==='runs'&&x.status==='completed',settleMs:50,verifyEvery:3600000,jsonEvery:3600000,snapshotEvery:3600000});
+  const s=st.load(()=>({agents:[],events:[],runs:[{id:'done',status:'completed',n:1,out:'x'.repeat(2000)}]}));
+  await st.save(s);await st.save(s);assert.equal(st.stats.written,0,'the same text is not written again');
+  assert.equal(typeof st.quiet.get(s.runs[0]).json,'string','its text is kept while it settles');
+  // Changed, unnamed and the same length: the text differs, so it is hashed and written.
+  s.runs[0].out='y'.repeat(2000);await st.save(s);assert.equal(st.stats.written,1);assert.equal(read().runs[0].out[0],'y');
+  s.runs[0].n=2;await st.save(s);assert.equal(read().runs[0].n,2);
+  await wait(80);await st.save(s);await st.save(s);
+  assert.equal(st.stats.skipped,1,'then it is skipped');assert.equal(st.quiet.get(s.runs[0]).json,undefined,'and its text is no longer held');
+  st.close();
+});
+
 test('a change to a settled row reaches SQLite without another save, and one that was not named is reported',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-scale-store-'));let st;t.after(()=>{st?.close();return fs.rm(dir,{recursive:true,force:true});});
   const read=()=>{const r=new StateStore(dir);try{return r.reconstructFromTables();}finally{r.db.close();r.db=null;r.closed=true;}};

@@ -211,7 +211,9 @@ export class StateStore {
           const done = obj && this.settled ? this.settled(col, item) : false, q = done ? this.quiet.get(item) : null;
           const quiet = q && q.key === cacheKey && q.seen - q.since >= this.settleMs && !touched.has(item) && this.rowHashes.get(cacheKey) === q.hash;
           if (!verify && quiet) { skipped++; continue; }
-          const json = JSON.stringify(item ?? null), h = sha256(json);
+          // A finished row in its settle window is serialized on every save; while its text is the same as last time, so
+          // is its hash, and comparing the text is far cheaper than hashing it again.
+          const json = JSON.stringify(item ?? null), h = q && q.key === cacheKey && q.json === json ? q.hash : sha256(json);
           serialized++; bytes += json.length;
           // A row that would have been skipped but changed: the code that changed it did not name it. It is written now,
           // and counted, so the place that forgot can be found (the tests fail on it).
@@ -221,7 +223,12 @@ export class StateStore {
             changed = true; written++;
             this.rowHashes.set(cacheKey, h);
           }
-          if (done) { if (q && q.key === cacheKey && q.hash === h) q.seen = now; else this.quiet.set(item, {key: cacheKey, hash: h, since: now, seen: now}); }
+          // The text is kept only until the row settles; after that it is skipped, so the text would only hold memory.
+          if (done) {
+            const e = q && q.key === cacheKey && q.hash === h ? q : {key: cacheKey, hash: h, since: now};
+            e.seen = now; e.json = e.seen - e.since < this.settleMs ? json : undefined;
+            if (e !== q) this.quiet.set(item, e);
+          }
           else if (obj) this.quiet.delete(item);
         }
         const order = present ? JSON.stringify(keys) : 'null';
