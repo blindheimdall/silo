@@ -5839,10 +5839,11 @@ const pathPart=p=>{try{return decodeURIComponent(p);}catch{fail('Not found.',404
 // Bodies that are not JSON: a file added to the workspace, a voice note, and CSV for a table.
 const rawBodyOk=(p,type='')=>((p==='/api/upload'||p==='/api/voice/transcribe')&&type==='application/octet-stream')||(TABLE_IMPORT.test(p)&&/^text\/csv\b/.test(type));
 // The values of a request: always an object, so a body of null, a list or a bare value is refused here and not read
-// field by field later.
-async function readBody(req){
+// field by field later. rpc: the MCP server and the A2A agent, which take any JSON (a list is a JSON-RPC batch) and
+// answer what is not a request with a JSON-RPC error of their own.
+async function readBody(req,{rpc=false}={}){
   const body=await readText(req,300000);let v;try{v=JSON.parse(body||'{}');}catch{fail('Invalid JSON.');}
-  if(!v||typeof v!=='object'||Array.isArray(v))fail('Send the values as a JSON object.');
+  if(!rpc&&(!v||typeof v!=='object'||Array.isArray(v)))fail('Send the values as a JSON object.');
   return v;
 }
 const server=http.createServer(async(req,res)=>{
@@ -6225,7 +6226,7 @@ const server=http.createServer(async(req,res)=>{
         if(!/^[a-f0-9]{64}$/.test(token)||!timingSafeEqual(Buffer.from(token),Buffer.from(expected)))fail('Invalid session token.',403);
         if(!req.headers['content-type']?.startsWith('application/json')&&!rawBodyOk(url.pathname,req.headers['content-type']))fail('JSON required.',415);
       }
-      const b=req.method==='GET'||url.pathname==='/api/upload'||url.pathname==='/api/voice/transcribe'||TABLE_IMPORT.test(url.pathname)?{}:await readBody(req);const route=url.pathname;
+      const b=req.method==='GET'||url.pathname==='/api/upload'||url.pathname==='/api/voice/transcribe'||TABLE_IMPORT.test(url.pathname)?{}:await readBody(req,{rpc:url.pathname==='/api/serve/mcp'||url.pathname==='/api/serve/a2a'});const route=url.pathname;
       const via=viaTunnel?'internet':loopback(clientIp)?'local':'network';
       if(TENANT&&TENANT_OFF.test(route))fail(NO_PROGRAMS+' This part of SILO is not in hosted workspaces.',403);
       if(HOSTED&&/^\/api\/remote(\/|$)/.test(route))fail('With workspaces on, people reach SILO through the workspace host, so a tunnel to this workspace is off. Put the host behind your HTTPS proxy, or a tunnel to its port.',409);

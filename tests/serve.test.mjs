@@ -119,6 +119,10 @@ test('outside programs: MCP server, A2A agent and client, notebooks and Python t
     assert.ok(!roNames.includes('ask_clerk')&&!roNames.includes('silo_decide')&&roNames.includes('silo_pending'));
     const denied=await ro.callTool('ask_clerk',{message:'hi'});assert.equal(denied.isError,true);assert.match(denied.content[0].text,/run scope/);
     assert.equal((await fetch(origin+'/api/serve/mcp',{headers:{authorization:'Bearer '+full}})).status,405,'no event stream to open');
+    // A JSON-RPC batch: two answers, the notification gets none.
+    const batch=await rpc('/api/serve/mcp',[{jsonrpc:'2.0',id:1,method:'ping'},{jsonrpc:'2.0',method:'notifications/initialized'},{jsonrpc:'2.0',id:2,method:'tools/list'}],full);
+    assert.equal(batch.status,200);const answers=await batch.json();assert.deepEqual(answers.map(a=>a.id),[1,2]);assert.ok(answers[1].result.tools.length);
+    const nothing=await rpc('/api/serve/mcp',null,full);assert.equal(nothing.status,200);assert.equal((await nothing.json()).error.code,-32600,'null is not a request, said in JSON-RPC');
     const audit=JSON.stringify((await request('/audit')).data);assert.match(audit,/POST \/api\/serve\/mcp/);
   });
 
@@ -132,6 +136,7 @@ test('outside programs: MCP server, A2A agent and client, notebooks and Python t
     assert.equal(r.result.artifacts[0].parts[0].text,'Compatible fixture');
     const id=r.result.id,ctxId=r.result.contextId;
     assert.equal((await (await rpc('/api/serve/a2a',{jsonrpc:'2.0',id:8,method:'tasks/get',params:{id}},full)).json()).result.id,id);
+    for(const odd of [null,[msg('hi')]]){const x=await rpc('/api/serve/a2a',odd,full);assert.equal(x.status,200);assert.equal((await x.json()).error.code,-32600,'answered in JSON-RPC: '+JSON.stringify(odd).slice(0,20));}
     assert.equal((await (await rpc('/api/serve/a2a',{jsonrpc:'2.0',id:8,method:'tasks/get',params:{id}},other)).json()).error.code,-32001,'another token cannot read the task');
     assert.equal((await (await rpc('/api/serve/a2a',{jsonrpc:'2.0',id:9,method:'tasks/cancel',params:{id}},full)).json()).error.code,-32002);
     assert.equal((await (await rpc('/api/serve/a2a',{jsonrpc:'2.0',id:9,method:'tasks/pushNotificationConfig/set',params:{}},full)).json()).error.code,-32003);
