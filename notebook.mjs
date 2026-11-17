@@ -59,8 +59,18 @@ def run(code):
     res['stdout'] = so.getvalue()[:20000] + res['stdout']
     res['stderr'] = se.getvalue()[:8000] + res['stderr']
     return res
+# Requests are read on their own thread. When SILO ends, even killed at once, the pipe closes and the kernel ends with it,
+# also in the middle of a long cell that would otherwise run on alone.
+import queue, threading
+LINES = queue.Queue()
+def reader():
+    for l in IN:
+        LINES.put(l)
+    os._exit(0)
+threading.Thread(target=reader, daemon=True).start()
 OUT.write(MARK + json.dumps({'ready': True, 'python': sys.version.split()[0]}) + '\n'); OUT.flush()
-for line in IN:
+while True:
+    line = LINES.get()
     try:
         req = json.loads(line)
     except ValueError:

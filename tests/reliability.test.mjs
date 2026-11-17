@@ -10,7 +10,8 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {TRIGGERS} from '../app-triggers.mjs';
-import {Kernels} from '../notebook.mjs';
+import {Kernels, Kernel} from '../notebook.mjs';
+import {localCommand} from '../sandbox.mjs';
 import {McpClient} from '../mcp-client.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -80,6 +81,16 @@ test('a new notebook kernel never stops one that is still running a cell',async(
   k.close();
 });
 
+// When SILO ends, even killed at once, the kernel's input pipe closes; the kernel ends too, also in a cell that never stops.
+test('a kernel ends when its pipe closes, also in the middle of a cell',async t=>{
+  if(!await localCommand('python'))return t.skip('Python 3 is not installed on this computer');
+  const work=await fs.mkdtemp(path.join(os.tmpdir(),'silo-kpipe-'));t.after(()=>fs.rm(work,{recursive:true,force:true}));
+  const k=await new Kernel({key:'pipe',work,mode:'local'}).start();t.after(()=>k.stop());
+  assert.equal((await k.exec('y = 5'+String.fromCharCode(10)+'y * 3')).result,'15');
+  k.exec('while True:'+String.fromCharCode(10)+'    pass',{timeout:600000}).catch(()=>{});
+  await new Promise(r=>setTimeout(r,500));k.child.stdin.end();
+  assert.ok(await new Promise(r=>{k.child.once('exit',()=>r(true));setTimeout(()=>r(false),8000);}),'the kernel ended by itself');
+});
 test('an MCP request that times out or is stopped ends its HTTP request and tells the server',async t=>{
   const seen=[];let open=0,closed=0;
   const server=http.createServer(async(req,res)=>{
