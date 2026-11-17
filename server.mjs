@@ -2562,7 +2562,8 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     // The time limit counts from the last piece of text, so a long answer that keeps coming is never cut off.
     const idle=new AbortController();let timer;const arm=()=>{clearTimeout(timer);timer=setTimeout(()=>idle.abort(),180000);};arm();
     const combined=signal?AbortSignal.any([signal,idle.signal]):idle.signal;
-    let text='',input=0,output=0,truncated=false,cached=0,written=0;const collector=new CallCollector(p);
+    // refusal: what the model said when it declined, so that is shown instead of "no text".
+    let text='',input=0,output=0,truncated=false,cached=0,written=0,refusal='';const collector=new CallCollector(p);
     const anthropicUse=u=>{written=u?.cache_creation_input_tokens||0;cached=u?.cache_read_input_tokens||0;input=(u?.input_tokens||0)+written+cached;};
     try{
       let r;
@@ -2587,13 +2588,14 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
             collector.event(ev);
             if(p==='openai'){
               if(ev.type==='response.output_text.delta')add(ev.delta);
+              else if(ev.type==='response.refusal.delta'&&typeof ev.delta==='string')refusal+=ev.delta;
               else if(ev.type==='response.completed'||ev.type==='response.incomplete'){completed=true;const u=ev.response?.usage||{};input=u.input_tokens||0;cached=u.input_tokens_details?.cached_tokens||0;output=u.output_tokens||Math.max(0,(u.total_tokens||0)-input);truncated=ev.response?.incomplete_details?.reason==='max_output_tokens';}
               else if(ev.type==='response.failed')throw providerError(p,'an error',ev.response?.error?.message,config);
               else if(ev.type==='error')throw providerError(p,'an error',ev.message||ev.error?.message,config);
             }else if(p==='anthropic'){
               if(ev.type==='content_block_delta'&&ev.delta?.type==='text_delta')add(ev.delta.text);
               else if(ev.type==='message_start')anthropicUse(ev.message?.usage);
-              else if(ev.type==='message_delta'){completed=true;output=ev.usage?.output_tokens||output;truncated=ev.delta?.stop_reason==='max_tokens';}
+              else if(ev.type==='message_delta'){completed=true;output=ev.usage?.output_tokens||output;truncated=ev.delta?.stop_reason==='max_tokens';if(ev.delta?.stop_reason==='refusal')refusal||='It stopped for safety reasons.';}
               else if(ev.type==='message_stop')completed=true;
               else if(ev.type==='error'){const e=providerError(p,'an error',ev.error?.message,config);e.retry=/overloaded|rate_limit|api_error/.test(ev.error?.type||'');throw e;}
             }else if(p==='ollama'){
@@ -2601,7 +2603,7 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
               add(ev.message?.content);if(ev.done){completed=true;input=ev.prompt_eval_count||0;output=ev.eval_count||0;truncated=ev.done_reason==='length';}
             }else{
               if(ev.error)throw providerError(p,'an error',ev.error.message||ev.error,config);
-              const c=ev.choices?.[0];add(c?.delta?.content);
+              const c=ev.choices?.[0];add(c?.delta?.content);if(typeof c?.delta?.refusal==='string')refusal+=c.delta.refusal;
               if(c?.finish_reason){completed=true;if(c.finish_reason==='length')truncated=true;}
               if(ev.usage){input=ev.usage.prompt_tokens||0;cached=ev.usage.prompt_tokens_details?.cached_tokens||0;output=ev.usage.completion_tokens||Math.max(0,(ev.usage.total_tokens||0)-input);}
             }
@@ -2609,11 +2611,15 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
           if(!completed)throw Object.assign(new Error(`Stream from ${p} closed before a terminal completion event arrived.`),{status:502,retry:true});
         }catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} stopped answering for 3 minutes.`,504);if(e.status)throw e;throw Object.assign(new Error(`The answer from ${p} broke off. ${e.message}`),{status:502,retry:true});}
       }else{
-        const data=await r.json();collector.whole(data);
-        if(p==='openai'){text=(data.output||[]).flatMap(o=>o.content||[]).filter(c=>c.type==='output_text').map(c=>c.text).join('\n');truncated=data.incomplete_details?.reason==='max_output_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;cached=data.usage?.input_tokens_details?.cached_tokens||0;}
-        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens';anthropicUse(data.usage);output=data.usage?.output_tokens||0;}
+        // A proxy or sign-in page instead of an answer, or a gateway that puts its error in a 200 answer, is said as such.
+        let data;try{data=await r.json();}catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} stopped answering for 3 minutes.`,504);throw Object.assign(new Error(`${p} answered with something that is not JSON. Check the address of the provider.`),{status:502});}
+        if(!data||typeof data!=='object')throw Object.assign(new Error(`${p} answered with something that is not an answer. Check the address of the provider.`),{status:502});
+        if(data.error&&!data.choices&&!data.output&&!data.content&&!data.message)throw providerError(p,'an error',data.error.message||data.error,config);
+        collector.whole(data);
+        if(p==='openai'){const parts=(data.output||[]).flatMap(o=>o.content||[]);text=parts.filter(c=>c.type==='output_text').map(c=>c.text).join('\n');refusal=parts.filter(c=>c.type==='refusal').map(c=>c.refusal).join('\n');truncated=data.incomplete_details?.reason==='max_output_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;cached=data.usage?.input_tokens_details?.cached_tokens||0;}
+        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens';if(data.stop_reason==='refusal')refusal='It stopped for safety reasons.';anthropicUse(data.usage);output=data.usage?.output_tokens||0;}
         else if(p==='ollama'){text=data.message?.content||'';truncated=data.done_reason==='length';input=data.prompt_eval_count||0;output=data.eval_count||0;}
-        else{text=data.choices?.[0]?.message?.content||'';truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;cached=data.usage?.prompt_tokens_details?.cached_tokens||0;}
+        else{text=data.choices?.[0]?.message?.content||'';if(typeof data.choices?.[0]?.message?.refusal==='string')refusal=data.choices[0].message.refusal;truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;cached=data.usage?.prompt_tokens_details?.cached_tokens||0;}
         if(!input&&!output&&data.usage?.total_tokens)output=data.usage.total_tokens;
         if(text&&onText)emit(text);
       }
@@ -2624,6 +2630,7 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
     releaseSpend();
     recordUsage(p,model,input,output,{cached,written});
     if(reuseKey&&text&&!calls.length&&!truncated)keepAnswer(reuseKey,{text,input,output,cached,written});
+    if(!text&&!calls.length&&refusal&&!opts.allowEmpty)fail(`The model declined to answer: ${String(refusal).trim().slice(0,500)}`,422);
     if(!text&&!calls.length&&!opts.allowEmpty)fail('Provider returned no text. Check model support and output limits.',502);
     return {text,tokens:input+output,input,output,truncated,calls,routed,compacted:comp.compacted,...(cached&&{cached}),...(written&&{written}),...(masker?.size&&{masked:masker.counts()})};
   }catch(e){if(sent&&e&&typeof e==='object')e.modelSent=true;throw e;}
@@ -4867,6 +4874,8 @@ async function drive(run){
   }finally{
     delete run.current;if(!retryScheduled)run.finished=Date.now();
     controllers.delete(run.id);approvals.delete(run.id);live.delete(run.id);
+    // Stopped or failed while it waited: the phone message loses its buttons and the desktop links stop working.
+    settleAnnounced('run',run.id,run.status==='stopped'?'The run was stopped.':run.status==='failed'?'The run failed.':'The run ended.');
     await persist();
     queueMicrotask(()=>{drainWorkflowQueues().catch(()=>{});pumpJobQueue().catch(()=>{});});
   }

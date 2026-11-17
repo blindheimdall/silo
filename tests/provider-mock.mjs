@@ -103,6 +103,16 @@ globalThis.fetch=async (url,options)=>{
   if(kind==='compatible'&&(!h.Authorization||!b.messages))throw Error('Invalid compatible request');
   if(kind==='ollama'&&b.stream!==false&&b.stream!==true)throw Error('Expected an explicit Ollama stream flag');
   if(b.model==='slow')await new Promise(r=>setTimeout(r,7000));
+  // 'refuse' declines the way each provider says so; 'html' is a proxy page instead of an answer; 'error-200' is a gateway
+  // that puts its error in a 200 answer.
+  if(b.model==='refuse'){
+    const no='I cannot help with that.';
+    if(kind==='openai')return b.stream?sse([{type:'response.refusal.delta',delta:no},{type:'response.completed',response:{usage:{input_tokens:3,output_tokens:4}}}]):Response.json({output:[{content:[{type:'refusal',refusal:no}]}],usage:{input_tokens:3,output_tokens:4}});
+    if(kind==='anthropic')return b.stream?sse([{type:'message_start',message:{usage:{input_tokens:3}}},{type:'message_delta',delta:{stop_reason:'refusal'},usage:{output_tokens:0}}]):Response.json({content:[],stop_reason:'refusal',usage:{input_tokens:3,output_tokens:0}});
+    if(kind==='compatible')return b.stream?sse([{choices:[{delta:{refusal:no}}]},{choices:[{delta:{},finish_reason:'stop'}]}]):Response.json({choices:[{message:{content:null,refusal:no},finish_reason:'stop'}]});
+  }
+  if(b.model==='html')return new Response('<html><body>Gateway login</body></html>',{status:200,headers:{'Content-Type':'application/json'}});
+  if(b.model==='error-200')return Response.json({error:{message:'Model is overloaded, try later'}});
   let text,cut=false;
   if(b.model==='cut'&&!last.startsWith('Your answer was cut off')){text='First half, ';cut=true;}
   else if(b.model==='cut')text='second half.';

@@ -46,6 +46,19 @@ test('SILO local runtime integration',async t=>{
     let seen='';for(let i=0;i<40&&!seen;i++){seen=Object.values((await request('/runs/'+started.id+'/live')).data.feeds||{})[0]?.text||'';await new Promise(r=>setTimeout(r,50));}
     assert.match(seen,/DEMO/);assert.equal((await finish(started.id)).status,'completed');
   });
+  await t.test('a refusal, a page instead of an answer and an error in a 200 answer are said as such',async()=>{
+    for(const provider of ['openai','anthropic','compatible']){
+      const no=await resident('Refuser '+provider,provider,'refuse');
+      const chat=await request('/agents/'+no.id+'/chat',{message:'Do it'});
+      assert.equal(chat.status,422,provider);assert.match(chat.data.error,/declined to answer/,provider);
+      const run=await finish((await request('/workflows/'+(await flow('Refused '+provider,[{agentId:no.id,prompt:'Do it'}])).id+'/run',{input:'Brief'})).data.id);
+      assert.equal(run.status,'failed',provider);assert.match(run.error,/declined to answer/,provider);
+    }
+    const page=await request('/agents/'+(await resident('Behind a gateway','compatible','html')).id+'/chat',{message:'Hi'});
+    assert.equal(page.status,502);assert.match(page.data.error,/not JSON/);
+    const busy=await request('/agents/'+(await resident('Busy gateway','compatible','error-200')).id+'/chat',{message:'Hi'});
+    assert.ok(busy.status>=400);assert.match(busy.data.error,/overloaded/);
+  });
   await t.test('fills variables, loops through a review, waits for approval and passes the operator note',async()=>{
     await request('/connections',{provider:'openai',key:'fixture-key-openai',model:'fixture-model'});
     const writer=await resident('Writer','openai','echo'),reviewer=await resident('Reviewer','openai','review-once');
