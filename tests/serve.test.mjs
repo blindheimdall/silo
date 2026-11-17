@@ -155,6 +155,7 @@ test('outside programs: MCP server, A2A agent and client, notebooks and Python t
 
   await t.test('A2A client: a resident asks an outside agent after your OK, and the answer is marked untrusted',async()=>{
     assert.equal((await request('/a2a/peers',{address:'http://example.org'})).status,502);
+    for(const body of [{},{address:''},{address:null}]){const r=await request('/a2a/peers',body);assert.equal(r.status,400);assert.match(r.data.error,/Give the address/);}
     const add=await request('/a2a/peers',{address:origin,name:'Self',token:other});
     assert.equal(add.status,201,JSON.stringify(add.data));assert.equal(add.data.peer.endpoint,origin+'/api/serve/a2a');
     const state=await st();assert.equal(state.access.a2aKeys[add.data.peer.id],true);assert.ok(!JSON.stringify(state).includes(other),'the token never comes back');

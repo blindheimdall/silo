@@ -6358,7 +6358,10 @@ const server=http.createServer(async(req,res)=>{
         if(apm[1]&&!old)fail('That agent is not in the list.',404);
         if(!old&&peers.length>=30)fail('At most 30 outside agents.',409);
         let card=null;
-        if(!old||b.refresh===true||(b.address!==undefined&&b.address!==old.cardUrl)){try{card=await fetchCard(b.address??old.cardUrl);}catch(e){fail(e.message,502);}}
+        if(!old||b.refresh===true||(b.address!==undefined&&b.address!==old.cardUrl)){
+          const address=b.address!==undefined&&b.address!==null?String(b.address).trim():old?.cardUrl;if(!address)fail('Give the address of the outside agent.');
+          try{card=await fetchCard(address);}catch(e){fail(e.message,502);}
+        }
         const name=b.name!==undefined?string(String(b.name||'').trim(),40):'';
         const peer={...(old||{id:randomBytes(8).toString('hex'),added:Date.now()}),...(card&&{endpoint:card.endpoint,cardUrl:card.cardUrl,description:card.description,version:card.version,skills:card.skills,cardName:card.name})};
         peer.name=name||old?.name||card.name;
