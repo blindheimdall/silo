@@ -5,12 +5,21 @@ import fs from 'node:fs/promises';
 import fss from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { createInterface } from 'node:readline';
 
 const FILE = /^audit-(\d{4})-(\d{2})\.jsonl$/;
 export const AUDIT_FIELDS = ['seq', 'time', 'action', 'outcome', 'actor', 'role', 'ip', 'via', 'target', 'detail', 'status', 'hash'];
 const canonical = v => Array.isArray(v) ? '[' + v.map(canonical).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}' : JSON.stringify(v);
 const clip = (v, n) => v === undefined || v === null || v === '' ? undefined : String(v).replace(/[\r\n\t]+/g, ' ').slice(0, n);
 export const monthOf = ms => new Date(ms).toISOString().slice(0, 7);
+// The lines of one month, one at a time: a busy month is never one string in memory (a string cannot be longer than
+// about 512 MB). Only what the file held when reading began is read, so a record being added meanwhile is left out.
+async function* linesOf(file) {
+  const size = (await fs.stat(file)).size;
+  if (!size) return;
+  const input = fss.createReadStream(file, { encoding: 'utf8', end: size - 1, highWaterMark: 1 << 20 });
+  try { for await (const line of createInterface({ input, crlfDelay: Infinity })) yield line; } finally { input.destroy(); }
+}
 export function chainHash(key, prev, body) { return crypto.createHmac('sha256', key || 'silo-audit').update(String(prev || '') + '\n' + canonical(body)).digest('hex'); }
 
 export class AuditLog {
@@ -27,11 +36,28 @@ export class AuditLog {
   async open() {
     await fs.mkdir(this.dir, { recursive: true });
     const files = await this.files(); if (!files.length) return;
-    const f = path.join(this.dir, files.at(-1)), text = await fs.readFile(f, 'utf8');
-    const lines = text.split('\n'); if (lines.at(-1) === '') lines.pop();
-    let last = null;
-    while (lines.length) { try { last = JSON.parse(lines.at(-1)); break; } catch { const bad = lines.pop(); await fs.appendFile(path.join(this.dir, 'damaged.txt'), bad + '\n'); } }
-    if (lines.length !== text.split('\n').filter(Boolean).length) await fs.writeFile(f, lines.map(l => l + '\n').join(''));
+    // Only the end of the file is read, more of it only while no whole record is found there: a busy month can be
+    // hundreds of megabytes, and the last record is all that is needed.
+    const f = path.join(this.dir, files.at(-1)), size = (await fs.stat(f)).size;
+    let last = null, bad = [], end = size;
+    const h = await fs.open(f, 'r');
+    try {
+      for (let span = 65536; ; span *= 4) {
+        const from = Math.max(0, size - span), buf = Buffer.alloc(size - from);
+        await h.read(buf, 0, buf.length, from);
+        last = null; bad = []; end = size;
+        let pos = buf.length; if (buf[pos - 1] === 0x0a) pos--;
+        while (pos > 0) {
+          const nl = buf.lastIndexOf(0x0a, pos - 1);
+          if (nl < 0 && from > 0) break; // a line that starts before what was read: read more
+          const line = buf.toString('utf8', nl + 1, pos);
+          try { last = JSON.parse(line); break; } catch { bad.push(line); end = from + nl + 1; pos = nl; }
+        }
+        if (last || from === 0) break;
+      }
+    } finally { await h.close(); }
+    for (const line of bad) await fs.appendFile(path.join(this.dir, 'damaged.txt'), line + '\n');
+    if (bad.length) await fs.truncate(f, Math.max(0, end));
     if (last) { this.seq = last.seq || 0; this.prev = last.hash || ''; }
   }
   // Adds a record. Returns it once it is on disk.
@@ -61,7 +87,7 @@ export class AuditLog {
     const first = monthOf(from), last = monthOf(to);
     for (const n of await this.files()) {
       const m = n.slice(6, 13); if (m < first || m > last) continue;
-      for (const line of (await fs.readFile(path.join(this.dir, n), 'utf8')).split('\n')) {
+      for await (const line of linesOf(path.join(this.dir, n))) {
         if (!line) continue; let r; try { r = JSON.parse(line); } catch { continue; }
         const t = Date.parse(r.time); if (t < from || t > to) continue;
         if (f && ![r.action, r.actor, r.target, r.detail, r.ip].some(x => String(x || '').toLowerCase().includes(f))) continue;
@@ -76,11 +102,11 @@ export class AuditLog {
   async verify() {
     await this.queue; const key = this.key(); let prev = null, seq = null, count = 0, first = null;
     for (const n of await this.files()) {
-      const lines = (await fs.readFile(path.join(this.dir, n), 'utf8')).split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (!lines[i]) continue;
-        const where = { file: n, line: i + 1 };
-        let r; try { r = JSON.parse(lines[i]); } catch { return { ok: false, records: count, broken: { ...where, reason: 'A line is not a record.' } }; }
+      let i = 0;
+      for await (const line of linesOf(path.join(this.dir, n))) {
+        i++; if (!line) continue;
+        const where = { file: n, line: i };
+        let r; try { r = JSON.parse(line); } catch { return { ok: false, records: count, broken: { ...where, reason: 'A line is not a record.' } }; }
         const { hash, ...body } = r;
         if (prev !== null && r.prev !== prev) return { ok: false, records: count, broken: { ...where, seq: r.seq, reason: 'A record is missing or out of order before this one.' } };
         if (seq !== null && r.seq !== seq + 1) return { ok: false, records: count, broken: { ...where, seq: r.seq, reason: `Record ${seq + 1} is missing.` } };

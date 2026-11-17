@@ -52,6 +52,27 @@ test('the audit chain shows a changed, removed or added record',async t=>{
   assert.equal((await again.read({filter:'item 4'})).length,1);
 });
 
+test('a big month picks up its chain from the end, and a last line cut by a crash is set aside',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-audit-big-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const log=new AuditLog(dir,{key:()=>'k1'});
+  for(let i=0;i<400;i++)await log.record({action:'model.call',actor:'Ștefan',target:'item '+i,detail:'Țuțu '.repeat(60)});
+  const file=path.join(dir,(await fs.readdir(dir)).find(n=>n.endsWith('.jsonl'))),whole=await fs.readFile(file);
+  assert.ok(whole.length>65536*2,'more than the first piece that is read');
+  // A cut line, and after it a long line of noise bigger than the first piece, so more has to be read.
+  await fs.appendFile(file,'{"seq":401,"time":"2026');await fs.appendFile(file,'\n'+'x'.repeat(100000));
+  const again=new AuditLog(dir,{key:()=>'k1'});await again.ready;
+  assert.equal(again.seq,400);
+  assert.deepEqual(await fs.readFile(file),whole,'the file ends with its last whole record again');
+  const damaged=(await fs.readFile(path.join(dir,'damaged.txt'),'utf8')).split('\n');
+  assert.equal(damaged.length,3);assert.equal(damaged[0].length,100000);assert.equal(damaged[1],'{"seq":401,"time":"2026');
+  const r=await again.record({action:'after the crash'});assert.equal(r.seq,401);
+  const v=await again.verify();assert.equal(v.ok,true,JSON.stringify(v));assert.equal(v.records,401);
+  assert.equal((await again.read({filter:'Ștefan'})).length,400);
+  // A month with nothing whole in it starts empty.
+  await fs.writeFile(file,'not a record\n');const empty=new AuditLog(dir,{key:()=>'k1'});await empty.ready;
+  assert.equal(empty.seq,0);assert.equal((await fs.readFile(file,'utf8')),'');
+});
+
 test('traces become OTLP spans in the GenAI conventions, without prompts',()=>{
   const t={id:'11111111-2222-3333-4444-555555555555',kind:'chat',name:'Chat with Ana',started:1000,ended:5000,status:'ok',totals:{input:10,output:20,cost:0.01},spans:[
     {id:'aaaaaaaa-0000-0000-0000-000000000001',parent:null,kind:'model',name:'openai:gpt-x',provider:'openai',model:'gpt-x',input:10,output:20,start:1100,end:2000,status:'ok',agent:'Ana'},
