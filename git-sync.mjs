@@ -59,12 +59,14 @@ export class GitSync {
   // without the branch, starts the branch from nothing.
   async prepare({remote, branch}) {
     mkdirSync(this.dir, {recursive: true});
-    const fresh = async () => { rmSync(this.repo, {recursive: true, force: true}); mkdirSync(this.repo, {recursive: true}); await this.git(['init', '--quiet']); await this.git(['remote', 'add', 'origin', '--', remote]); };
+    // Made from nothing at most once: a copy just made needs no second start for a branch that is not there yet.
+    let made = false;
+    const fresh = async () => { made = true; rmSync(this.repo, {recursive: true, force: true}); mkdirSync(this.repo, {recursive: true}); await this.git(['init', '--quiet']); await this.git(['remote', 'add', 'origin', '--', remote]); };
     if (!existsSync(path.join(this.repo, '.git'))) await fresh();
     else if (!(await this.git(['remote', 'set-url', 'origin', '--', remote], {allowFail: true})).ok) await fresh();
     const ls = await this.git(['ls-remote', '--heads', 'origin', 'refs/heads/' + branch]);
     const there = ls.out.trim().length > 0;
-    if (!there) await fresh();
+    if (!there && !made) await fresh();
     if (there) {
       await this.git(['fetch', '--quiet', '--depth', '50', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
       await this.git(['checkout', '--quiet', '-B', branch, 'origin/' + branch]);

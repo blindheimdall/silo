@@ -138,12 +138,5 @@ export function verifyChain(token, { root, presenter, revoked = new Set(), now =
 export function attenuation(rights) {
   return { strict: true, tools: rights.tools, operations: rights.ops.flatMap(o => CAP_OPS[o]), connectors: [], folderChain: rights.folders.includes('*') ? [] : [rights.folders] };
 }
-// One link on its own, its signature checked: for revocations, which name a single link.
-export function readLink(encoded) {
-  const [body, sig] = String(encoded || '').split('.');
-  let p; try { p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { fail('The link cannot be read.', 400); }
-  if (!p || p.v !== 1 || !isPublicKey(p.iss) || !verifyText(p.iss, 'silocap\n' + body, sig)) fail('The link is not signed by the silo it names.');
-  return { payload: p, hash: linkHash(encoded) };
-}
 // A revocation: the silo that signed a link says it no longer stands. Sent to the root silo, which keeps the hash.
 export const revocationText = (hash, time) => `silocap-revoke\n${hash}\n${time}`;

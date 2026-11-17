@@ -3,7 +3,7 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID, randomBytes, timingSafeEqual, createHash, createHmac } from 'node:crypto';
+import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
@@ -19,7 +19,7 @@ import { Vault, hashPassword, checkPassword, roleAllows, ROLES } from './vault.m
 import { TokenStore, bearerFrom, scopeFor, scopesForRole, publicToken, SCOPES } from './api-tokens.mjs';
 import { openApiSpec } from './openapi-spec.mjs';
 import { RADIO_VERSION, WINDOW_MS, keyId, newKey, signRequest, signReply, checkRequest, checkReply, checkKey, cleanPeer, pickResident, RadioGuard, readLimited, checkUrl as checkRadioUrl } from './radio.mjs';
-import { newIdentity, isPublicKey, checkPublicKey, fingerprint, signText, verifyText, issue, readChain, verifyChain, attenuation, revocationText, CAP_TOOLS } from './capability.mjs';
+import { newIdentity, isPublicKey, checkPublicKey, fingerprint, signText, verifyText, issue, readChain, verifyChain, attenuation, revocationText } from './capability.mjs';
 import { TelegramBot } from './telegram-bot.mjs';
 import { Tracer, redact, totals } from './trace.mjs';
 import { checkMail } from './mail-watch.mjs';

@@ -1,6 +1,6 @@
 import './pixel-avatar.js';
 import {appearanceFor,residentAtlas,FRAMES,CELL_W,CELL_H} from './resident-sprite.js';
-import {WIDTH as W,HEIGHT as H,LEVEL_COUNT,PITCH,SECTORS,clamp,levelBase,surfaceY,residentPose,stairPoint,visibleLevels,sectorForLevel} from './world-geometry.js';
+import {WIDTH as W,HEIGHT as H,PITCH,SECTORS,clamp,levelBase,surfaceY,residentPose,stairPoint,visibleLevels,sectorForLevel} from './world-geometry.js';
 
 const signs=[['settings','CONTROL'],['connections','IT / UPLINK'],['agents','THE MIDS'],['workflows','ENGINEERING'],['activity','SUPPLY'],['files','MECHANICAL']];
 const bands=[[15,203],[210,341],[350,481],[490,617],[625,781],[790,1018]];

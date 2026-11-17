@@ -11,8 +11,10 @@ const vm = require('node:vm');
 const { code, data, timeout } = workerData;
 let out;
 try {
-  const ctx = vm.createContext({}, { codeGeneration: { strings: false, wasm: false }, microtaskMode: 'afterEvaluate' });
-  const src = '(function(){"use strict";const D=' + JSON.stringify(data) + ';' +
+  // The data goes in as one string and is read with JSON.parse inside the context: faster and smaller than making V8
+  // parse it as source code, which matters when earlier steps answered with a lot of text.
+  const ctx = vm.createContext({ __data: JSON.stringify(data ?? null) }, { codeGeneration: { strings: false, wasm: false }, microtaskMode: 'afterEvaluate' });
+  const src = '(function(){"use strict";const D=JSON.parse(globalThis.__data);delete globalThis.__data;' +
     'const json=t=>{if(typeof t!=="string")return t;try{return JSON.parse(t)}catch{const a=t.search(/[\\\\[{]/);if(a<0)return null;for(const e of [t.lastIndexOf("}"),t.lastIndexOf("]")].filter(e=>e>a).sort((x,y)=>y-x)){try{return JSON.parse(t.slice(a,e+1))}catch{}}return null}};' +
     'let r;try{r=(function(input,steps,previous,item,json){"use strict";\\n' + code + '\\n})(D.input,D.steps,D.previous,D.item,json);}' +
     'catch(e){return {error:String(e&&e.message||e)}}' +

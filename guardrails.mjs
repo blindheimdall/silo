@@ -198,7 +198,6 @@ export function parseRules(text) {
   }
   return rules;
 }
-export const rulesText = rules => (rules || []).map(r => r.line).join('\n');
 const compiled = new Map();
 const regex = (r, g = '') => { const k = r.source + '/' + r.flags + g; let re = compiled.get(k); if (!re) { re = new RegExp(r.source, r.flags + g); compiled.set(k, re); } re.lastIndex = 0; return re; };
 

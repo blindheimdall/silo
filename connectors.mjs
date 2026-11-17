@@ -207,7 +207,16 @@ async function http(svc, ctx, method, url, { body, headers = {}, raw = false } =
   if (svc === 'notion') h['Notion-Version'] = '2022-06-28';
   let payload;
   if (body !== undefined) { h['Content-Type'] = svc === 'slack' ? 'application/json; charset=utf-8' : 'application/json'; payload = JSON.stringify(body); }
-  const r = await fetch(url, { method, headers: h, body: payload, signal: AbortSignal.timeout(45000) });
+  // "Too many requests" (Notion allows about three a second) is asked again a few times, after the wait the service names.
+  // A 429 means the request was not done, so asking again is safe for every method.
+  let r;
+  for (let attempt = 0; ; attempt++) {
+    r = await fetch(url, { method, headers: h, body: payload, signal: AbortSignal.timeout(45000) });
+    if (r.status !== 429 || attempt >= 3) break;
+    const said = r.headers.get('retry-after'), ra = said === null ? NaN : Number(said);
+    r.body?.cancel().catch(() => {});
+    await new Promise(res => setTimeout(res, Math.min(10000, Number.isFinite(ra) && ra >= 0 ? ra * 1000 : 1000 * 2 ** attempt)));
+  }
   if (raw && r.ok) { const len = Number(r.headers.get('content-length') || 0); if (len > 15e6) { r.body?.cancel().catch(() => {}); throw new Error('That file is larger than 15 MB.'); } return { buf: await readUpTo(r, 15e6, 'That file is larger than 15 MB.'), type: r.headers.get('content-type') || '' }; }
   const text = (await readUpTo(r, 20e6, `${SERVICES[svc].name} sent an answer larger than 20 MB.`)).toString('utf8'); let d; try { d = text ? JSON.parse(text) : {}; } catch { d = { text }; }
   if (r.status === 401) { ctx.expired?.(); throw new Error(`${SERVICES[svc].name} refused the sign-in. Connect it again in Connections.`); }

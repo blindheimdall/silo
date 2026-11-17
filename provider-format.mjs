@@ -6,7 +6,6 @@
 // and turns it into the request body each provider expects. Stream readers collect the tool calls again.
 import { randomUUID } from 'node:crypto';
 
-export const TOOL_NAME=/^[a-zA-Z0-9_-]{1,64}$/;
 
 export function parseArgs(raw){
   if(raw&&typeof raw==='object')return raw;

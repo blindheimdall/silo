@@ -12,7 +12,8 @@ export const SOURCE_KINDS = {
   web: { name: 'Web pages', service: '', ref: 'Addresses, one a line, or the address of a sitemap.xml' },
 };
 export const EVERY = [0, 60, 360, 1440];
-export const MAX_DOCS = 1000, MAX_DEPTH = 4, MAX_WEB = 200, DOC_MAX = 15e6;
+// MAX_DEPTH: pages under pages. BLOCK_DEPTH: blocks inside blocks on one Notion page.
+export const MAX_DOCS = 1000, MAX_DEPTH = 4, MAX_WEB = 200, DOC_MAX = 15e6, BLOCK_DEPTH = 4;
 const TEXT = /\.(txt|md|markdown|csv|json|html?|xml|ya?ml)$/i, OFFICE = /\.(pdf|docx|xlsx|xlsm|pptx|odt|ods|odp)$/i;
 const fault = (message, status = 400) => Object.assign(new Error(message), { status });
 const one = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -144,7 +145,8 @@ export async function listDocs(src, deps) {
         for (const x of d.results || []) {
           if (x.type === 'child_page') { children.push(x.id); continue; }
           out.push({ block: x, depth });
-          if (x.has_children && depth < 2 && x.type !== 'child_database') await blocksOf(x.id, depth + 1, out, children);
+          // Five levels: a list inside a toggle inside a callout still comes in. Deeper is rare and costs a request a block.
+          if (x.has_children && depth < BLOCK_DEPTH && x.type !== 'child_database') await blocksOf(x.id, depth + 1, out, children);
         }
         cursor = d.has_more ? d.next_cursor : '';
       } while (cursor && out.length < 5000);

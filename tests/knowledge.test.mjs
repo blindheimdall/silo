@@ -137,7 +137,7 @@ test('knowledge in a running SILO',async t=>{
     {id:'d2',name:'Travel.docx',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',modifiedTime:'2026-11-01T10:00:00Z',size:docx.length,webViewLink:'https://drive.google.com/file/d/d2/view'},
     {id:'sub',name:'Finance',mimeType:'application/vnd.google-apps.folder'},
     {id:'d3',name:'Budget',mimeType:'application/vnd.google-apps.document',modifiedTime:'2026-11-01T10:00:00Z',webViewLink:'https://docs.google.com/document/d/d3/edit',parent:'sub',text:'The marketing budget for 2027 is 40,000 euro.'}];
-  const reads=[],seen=[];
+  const reads=[],seen=[];let busyOnce=false;
   const fake=http.createServer(async(req,res)=>{
     let body='';for await(const c of req)body+=c;
     const u=new URL(req.url,'http://x'),p=u.pathname;seen.push(p);
@@ -152,7 +152,10 @@ test('knowledge in a running SILO',async t=>{
     if(p==='/notion/pages/0123456789abcdef0123456789abcdef')return json(page('0123456789abcdef0123456789abcdef','Handbook','2026-11-02'));
     if(p==='/notion/pages/child-1')return json(page('child-1','On-call','2026-11-02'));
     if(p==='/notion/blocks/0123456789abcdef0123456789abcdef/children')return json({results:[{id:'b1',type:'paragraph',paragraph:{rich_text:[{plain_text:'Welcome to the team handbook.'}]}},{id:'child-1',type:'child_page',child_page:{title:'On-call'}}],has_more:false});
-    if(p==='/notion/blocks/child-1/children')return json({results:[{id:'b2',type:'bulleted_list_item',bulleted_list_item:{rich_text:[{plain_text:'The on-call phone is answered within 15 minutes.'}]}}],has_more:false});
+    if(p==='/notion/blocks/child-1/children')return json({results:[{id:'b2',type:'bulleted_list_item',has_children:true,bulleted_list_item:{rich_text:[{plain_text:'The on-call phone is answered within 15 minutes.'}]}}],has_more:false});
+    // A list three levels under the page: it comes in, also after Notion says once that it is asked too often.
+    if(p==='/notion/blocks/b2/children')return json({results:[{id:'b3',type:'bulleted_list_item',has_children:true,bulleted_list_item:{rich_text:[{plain_text:'Keys'}]}}],has_more:false});
+    if(p==='/notion/blocks/b3/children'){if(!busyOnce){busyOnce=true;res.writeHead(429,{'Content-Type':'application/json','Retry-After':'0'});return res.end('{"message":"rate limited"}');}return json({results:[{id:'b4',type:'bulleted_list_item',bulleted_list_item:{rich_text:[{plain_text:'The spare keys are in the red box.'}]}}],has_more:false});}
     if(p==='/site/sitemap.xml'){res.writeHead(200,{'Content-Type':'application/xml'});return res.end('<urlset><url><loc>'+site+'/site/faq</loc></url></urlset>');}
     if(p==='/site/faq'){res.writeHead(200,{'Content-Type':'text/html'});return res.end('<html><head><title>FAQ</title></head><body><main><h1>FAQ</h1><p>Our office opens at 8:30 on weekdays and closes at 17:00, so call before then about deliveries and visits to the warehouse.</p><p>Parking is free for visitors in the yard behind the building, and there are two spaces kept for vans.</p></main></body></html>');}
     json({error:'not found '+p},404);
@@ -197,7 +200,8 @@ test('knowledge in a running SILO',async t=>{
     assert.equal((await request('/services/notion',{token:'secret_fixture'})).status,200);
     const r=await request('/knowledge',{kind:'notion',name:'Handbook',ref:'https://www.notion.so/Handbook-0123456789abcdef0123456789abcdef'});assert.equal(r.status,201);
     notion=await synced(r.data.id);assert.equal(notion.last.added,2,JSON.stringify(notion.last));
-    assert.match(await fs.readFile(path.join(work,'knowledge','handbook','Handbook','On-call.md'),'utf8'),/within 15 minutes/);
+    const oncall=await fs.readFile(path.join(work,'knowledge','handbook','Handbook','On-call.md'),'utf8');
+    assert.match(oncall,/within 15 minutes/);assert.match(oncall,/spare keys are in the red box/,'blocks three levels down come in');assert.ok(busyOnce,'asked again after a 429');
   });
   await t.test('the search finds documents, says where they came from and how to cite them',async()=>{
     const hits=(await request('/archive/search',{query:'on-call phone answered'})).data.hits;

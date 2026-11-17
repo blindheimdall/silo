@@ -113,4 +113,3 @@ export function judgeTrust(cal) {
 }
 
 // Checks as people write them, one per line: "op: text" or "op x3: text" for a weight of 3.
-export function checkLine(c) { return c.op + (weightOf(c) > 1 ? ' x' + weightOf(c) : '') + ': ' + c.text; }
