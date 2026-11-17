@@ -113,6 +113,19 @@ globalThis.fetch=async (url,options)=>{
   }
   if(b.model==='html')return new Response('<html><body>Gateway login</body></html>',{status:200,headers:{'Content-Type':'application/json'}});
   if(b.model==='error-200')return Response.json({error:{message:'Model is overloaded, try later'}});
+  // 'parts' answers the way some reasoning servers do, with the content as a list of thinking and text parts.
+  // 'vllm-error' refuses with the reason at the top ({object:'error', message}); 'code-error' with an error that has no message.
+  if(b.model==='parts'&&kind==='compatible'){
+    const parts=[{type:'thinking',thinking:[{type:'text',text:'Hidden reasoning.'}]},{type:'text',text:'Visible '},{type:'text',text:'answer.'}];
+    return b.stream?sse([{choices:[{delta:{content:[parts[0]]}}]},{choices:[{delta:{content:[parts[1]]}}]},{choices:[{delta:{content:'answer.'},finish_reason:'stop'}]}]):Response.json({choices:[{message:{content:parts},finish_reason:'stop'}],usage:{prompt_tokens:3,completion_tokens:4}});
+  }
+  if(b.model==='vllm-error')return Response.json({object:'error',message:'This model maximum context length is 4096 tokens',type:'BadRequestError',code:400},{status:400});
+  if(b.model==='code-error')return Response.json({error:{code:'model_not_ready'}},{status:400});
+  // 'window' stops once at the end of its context window (Anthropic), like 'cut' at the output limit.
+  if(b.model==='window'&&kind==='anthropic'){
+    const again=last.startsWith('Your answer was cut off'),t=again?'second half.':'First half, ',stop=again?'end_turn':'model_context_window_exceeded';
+    return b.stream?sse([{type:'message_start',message:{usage:{input_tokens:5}}},{type:'content_block_delta',delta:{type:'text_delta',text:t}},{type:'message_delta',delta:{stop_reason:stop},usage:{output_tokens:4}}]):Response.json({content:[{type:'text',text:t}],stop_reason:stop,usage:{input_tokens:5,output_tokens:4}});
+  }
   let text,cut=false;
   if(b.model==='cut'&&!last.startsWith('Your answer was cut off')){text='First half, ';cut=true;}
   else if(b.model==='cut')text='second half.';

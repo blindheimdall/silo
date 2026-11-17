@@ -120,5 +120,18 @@ export class CallCollector{
   }
 }
 
+// The answer text of a chat server. Most send a string; some reasoning and multimodal servers send a list of parts, where
+// only the text parts are the answer (thinking parts are left out).
+export const chatText=c=>typeof c==='string'?c:Array.isArray(c)?c.map(x=>typeof x==='string'?x:x&&typeof x==='object'&&(x.type==null||x.type==='text'||x.type==='output_text')&&typeof x.text==='string'?x.text:'').join(''):'';
+// The reason in an error answer, in any of the shapes servers use: {error:'...'}, {error:{message}}, {message}, {detail}.
+export function errorDetail(j){
+  if(typeof j==='string')return j;
+  if(!j||typeof j!=='object')return '';
+  const e=j.error??j.message??j.detail;
+  if(typeof e==='string')return e;
+  if(e&&typeof e==='object'){if(typeof e.message==='string'&&e.message)return e.message;try{return JSON.stringify(e).slice(0,300);}catch{return '';}}
+  return '';
+}
+
 // A tool error from a model that has no tool support. The server then falls back to the text protocol for that model.
 export const noToolSupport=detail=>/(does not support|doesn't support|not support(ed)?|unsupported|unknown).{0,40}(tool|function)|(tool|function)s?.{0,30}(not supported|unsupported|not available)/i.test(String(detail||''));

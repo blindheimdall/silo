@@ -58,6 +58,21 @@ test('SILO local runtime integration',async t=>{
     assert.equal(page.status,502);assert.match(page.data.error,/not JSON/);
     const busy=await request('/agents/'+(await resident('Busy gateway','compatible','error-200')).id+'/chat',{message:'Hi'});
     assert.ok(busy.status>=400);assert.match(busy.data.error,/overloaded/);
+    // Content as a list of parts: only the text parts are the answer, streamed or not.
+    const parts=await resident('Parts','compatible','parts');
+    assert.equal((await request('/agents/'+parts.id+'/chat',{message:'Hi'})).data.text,'Visible answer.');
+    const pr=await finish((await request('/workflows/'+(await flow('Parts',[{agentId:parts.id,prompt:'Say'}])).id+'/run',{input:'Brief'})).data.id);
+    assert.equal(pr.status,'completed',pr.error);assert.equal(pr.steps[0].output,'Visible answer.');
+    // The reason of an error is said, whatever shape it comes in.
+    const vllm=await request('/agents/'+(await resident('vLLM','compatible','vllm-error')).id+'/chat',{message:'Hi'});
+    assert.ok(vllm.status>=400);assert.match(vllm.data.error,/maximum context length/);
+    const coded=await request('/agents/'+(await resident('Coded','compatible','code-error')).id+'/chat',{message:'Hi'});
+    assert.ok(coded.status>=400);assert.match(coded.data.error,/model_not_ready/);assert.doesNotMatch(coded.data.error,/object Object/);
+    // An Anthropic answer stopped by the end of the context window is finished like one cut at the output limit.
+    const win=await resident('Window','anthropic','window');
+    assert.equal((await request('/agents/'+win.id+'/chat',{message:'Talk'})).data.text,'First half, second half.');
+    const wr=await finish((await request('/workflows/'+(await flow('Window',[{agentId:win.id,prompt:'Write'}])).id+'/run',{input:'Brief'})).data.id);
+    assert.equal(wr.steps[0].output,'First half, second half.');
   });
   await t.test('fills variables, loops through a review, waits for approval and passes the operator note',async()=>{
     await request('/connections',{provider:'openai',key:'fixture-key-openai',model:'fixture-model'});

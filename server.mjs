@@ -53,7 +53,7 @@ import { HOOK_APPS, readWebhook } from './webhook-apps.mjs';
 import { handleMcp, toolSlug, uniqueNames } from './mcp-server.mjs';
 import { agentCard, messageText, TaskStore, view, fetchCard, sendTask, A2aError, TERMINAL, ERR as A2A_ERR } from './a2a.mjs';
 import { Kernels, notebookName, emptyNotebook, cellFrom, markdownCell, cellText } from './notebook.mjs';
-import { toolsFor, openaiInput, anthropicMessages, chatMessages, CallCollector, noToolSupport } from './provider-format.mjs';
+import { toolsFor, openaiInput, anthropicMessages, chatMessages, CallCollector, noToolSupport, chatText, errorDetail } from './provider-format.mjs';
 import { runCode as runCodeStepScript, CODE_MAX } from './code-step.mjs';
 import { Tables, COLUMN_TYPES, FILTER_OPS, RESERVED as TABLE_RESERVED, CSV_MAX } from './data-tables.mjs';
 import { TALK_KINDS, PUBLIC_TALK, Conversations, Limits, Seen, cleanText, slackVerify, slackEvent, slackSend, whatsappHandshake, whatsappVerify, whatsappMessages, whatsappSend, teamsVerify, teamsMessage, teamsToken, teamsSend, forgetTeamsTokens, serviceUrlAllowed, widgetScript, widgetTryPage, WIDGET_COLOR } from './talk-channels.mjs';
@@ -2571,7 +2571,7 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
       try{r=await fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal:combined,redirect:'error'});}
       catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} did not answer for 3 minutes.`,504);throw Object.assign(new Error(`Could not reach ${p}. ${e.cause?.code||e.message}`),{status:502,retry:true});}
       if(!r.ok){
-        const raw=await r.text();let detail='';try{const j=JSON.parse(raw);detail=j.error?.message||j.error||'';}catch{detail=raw.slice(0,300);}
+        const raw=await r.text();let detail='';try{detail=errorDetail(JSON.parse(raw));}catch{detail=raw.slice(0,300);}
         if(tools&&(r.status===400||r.status===404||r.status===422)&&noToolSupport(detail))throw Object.assign(providerError(p,r.status,detail,config),{noTools:true});
         const ra=r.headers.get('retry-after');throw providerError(p,r.status,detail,config,ra==null?undefined:Math.min(30000,Math.max(0,(isNaN(ra)?Date.parse(ra)-Date.now():Number(ra)*1000)||0)));
       }
@@ -2595,15 +2595,15 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
             }else if(p==='anthropic'){
               if(ev.type==='content_block_delta'&&ev.delta?.type==='text_delta')add(ev.delta.text);
               else if(ev.type==='message_start')anthropicUse(ev.message?.usage);
-              else if(ev.type==='message_delta'){completed=true;output=ev.usage?.output_tokens||output;truncated=ev.delta?.stop_reason==='max_tokens';if(ev.delta?.stop_reason==='refusal')refusal||='It stopped for safety reasons.';}
+              else if(ev.type==='message_delta'){completed=true;output=ev.usage?.output_tokens||output;truncated=ev.delta?.stop_reason==='max_tokens'||ev.delta?.stop_reason==='model_context_window_exceeded';if(ev.delta?.stop_reason==='refusal')refusal||='It stopped for safety reasons.';}
               else if(ev.type==='message_stop')completed=true;
               else if(ev.type==='error'){const e=providerError(p,'an error',ev.error?.message,config);e.retry=/overloaded|rate_limit|api_error/.test(ev.error?.type||'');throw e;}
             }else if(p==='ollama'){
-              if(ev.error)throw providerError(p,'an error',ev.error,config);
+              if(ev.error)throw providerError(p,'an error',errorDetail(ev),config);
               add(ev.message?.content);if(ev.done){completed=true;input=ev.prompt_eval_count||0;output=ev.eval_count||0;truncated=ev.done_reason==='length';}
             }else{
-              if(ev.error)throw providerError(p,'an error',ev.error.message||ev.error,config);
-              const c=ev.choices?.[0];add(c?.delta?.content);if(typeof c?.delta?.refusal==='string')refusal+=c.delta.refusal;
+              if(ev.error)throw providerError(p,'an error',errorDetail(ev),config);
+              const c=ev.choices?.[0];add(chatText(c?.delta?.content));if(typeof c?.delta?.refusal==='string')refusal+=c.delta.refusal;
               if(c?.finish_reason){completed=true;if(c.finish_reason==='length')truncated=true;}
               if(ev.usage){input=ev.usage.prompt_tokens||0;cached=ev.usage.prompt_tokens_details?.cached_tokens||0;output=ev.usage.completion_tokens||Math.max(0,(ev.usage.total_tokens||0)-input);}
             }
@@ -2614,12 +2614,12 @@ async function providerCallRaw(agent,messages,signal,onText,opts={}){
         // A proxy or sign-in page instead of an answer, or a gateway that puts its error in a 200 answer, is said as such.
         let data;try{data=await r.json();}catch(e){if(signal?.aborted)throw signal.reason||e;if(idle.signal.aborted)fail(`${p} stopped answering for 3 minutes.`,504);throw Object.assign(new Error(`${p} answered with something that is not JSON. Check the address of the provider.`),{status:502});}
         if(!data||typeof data!=='object')throw Object.assign(new Error(`${p} answered with something that is not an answer. Check the address of the provider.`),{status:502});
-        if(data.error&&!data.choices&&!data.output&&!data.content&&!data.message)throw providerError(p,'an error',data.error.message||data.error,config);
+        if(data.error&&!data.choices&&!data.output&&!data.content&&!data.message)throw providerError(p,'an error',errorDetail(data),config);
         collector.whole(data);
         if(p==='openai'){const parts=(data.output||[]).flatMap(o=>o.content||[]);text=parts.filter(c=>c.type==='output_text').map(c=>c.text).join('\n');refusal=parts.filter(c=>c.type==='refusal').map(c=>c.refusal).join('\n');truncated=data.incomplete_details?.reason==='max_output_tokens';input=data.usage?.input_tokens||0;output=data.usage?.output_tokens||0;cached=data.usage?.input_tokens_details?.cached_tokens||0;}
-        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens';if(data.stop_reason==='refusal')refusal='It stopped for safety reasons.';anthropicUse(data.usage);output=data.usage?.output_tokens||0;}
+        else if(p==='anthropic'){text=(data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');truncated=data.stop_reason==='max_tokens'||data.stop_reason==='model_context_window_exceeded';if(data.stop_reason==='refusal')refusal='It stopped for safety reasons.';anthropicUse(data.usage);output=data.usage?.output_tokens||0;}
         else if(p==='ollama'){text=data.message?.content||'';truncated=data.done_reason==='length';input=data.prompt_eval_count||0;output=data.eval_count||0;}
-        else{text=data.choices?.[0]?.message?.content||'';if(typeof data.choices?.[0]?.message?.refusal==='string')refusal=data.choices[0].message.refusal;truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;cached=data.usage?.prompt_tokens_details?.cached_tokens||0;}
+        else{text=chatText(data.choices?.[0]?.message?.content);if(typeof data.choices?.[0]?.message?.refusal==='string')refusal=data.choices[0].message.refusal;truncated=data.choices?.[0]?.finish_reason==='length';input=data.usage?.prompt_tokens||0;output=data.usage?.completion_tokens||0;cached=data.usage?.prompt_tokens_details?.cached_tokens||0;}
         if(!input&&!output&&data.usage?.total_tokens)output=data.usage.total_tokens;
         if(text&&onText)emit(text);
       }

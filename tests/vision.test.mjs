@@ -1,7 +1,7 @@
 // Screenshots reach models that can see, in each provider's own shape.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openaiInput, anthropicMessages, chatMessages, CallCollector } from '../provider-format.mjs';
+import { openaiInput, anthropicMessages, chatMessages, CallCollector, chatText, errorDetail } from '../provider-format.mjs';
 
 const convo=[
   {role:'user',content:'Look at the page.'},
@@ -44,4 +44,20 @@ test('streamed tool calls are put together whatever shape the server sends them 
 });
 test('Anthropic never gets a message with no text',()=>{
   assert.deepEqual(anthropicMessages([{role:'user',content:'hi'},{role:'assistant',content:''},{role:'user',content:'again'}]),[{role:'user',content:[{type:'text',text:'hi'},{type:'text',text:'again'}]}]);
+});
+
+test('chat answers given as a list of parts keep only the text parts',()=>{
+  assert.equal(chatText('plain'),'plain');
+  assert.equal(chatText([{type:'thinking',thinking:'no'},{type:'text',text:'a'},'b',{text:'c'},{type:'image_url',image_url:{}}]),'abc');
+  assert.equal(chatText(null),'');assert.equal(chatText({text:'x'}),'');
+});
+
+test('the reason of an error is found in every shape servers send it',()=>{
+  assert.equal(errorDetail({error:'plain'}),'plain');
+  assert.equal(errorDetail({error:{message:'inside'}}),'inside');
+  assert.equal(errorDetail({object:'error',message:'top'}),'top');
+  assert.equal(errorDetail({detail:'fastapi'}),'fastapi');
+  assert.match(errorDetail({error:{code:'model_not_ready'}}),/model_not_ready/);
+  assert.match(errorDetail({detail:[{loc:['body'],msg:'field required'}]}),/field required/);
+  assert.equal(errorDetail(null),'');assert.equal(errorDetail(5),'');
 });
