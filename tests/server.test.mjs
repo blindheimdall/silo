@@ -239,6 +239,9 @@ test('SILO local runtime integration',async t=>{
     const old=(await request('/agents',{name:'Old local model',role:'Fixture',floor:3,provider:'ollama',model:'no-tools',instructions:'Fixture.',tools:['memory']})).data;
     const r=await request('/agents/'+old.id+'/chat',{message:'CALL {"tool":"remember","note":"text protocol works"}'});
     assert.equal(r.status,200,JSON.stringify(r.data));assert.equal((await request('/state')).data.agents.find(x=>x.id===old.id).memory[0].text,'text protocol works');
+    // Small models often wrap the arguments; that is read too.
+    const wrapped=await request('/agents/'+old.id+'/chat',{message:'CALL {"name":"remember","arguments":{"note":"wrapped call works"}}'});
+    assert.equal(wrapped.status,200,JSON.stringify(wrapped.data));assert.ok((await request('/state')).data.agents.find(x=>x.id===old.id).memory.some(m=>m.text==='wrapped call works'));
   });
   await t.test('sends notifications, counts money, enforces limits, keeps workflow versions, replays runs and tests workflows',async()=>{
     const http=await import('node:http'),net=await import('node:net'),{createHmac}=await import('node:crypto');

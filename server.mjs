@@ -3863,7 +3863,21 @@ async function instructionsFor(agent,native,ctx={}){
 }
 function toolCall(text){
   const m=String(text).match(/```silo-tool\s*\n([\s\S]*?)```/);if(!m)return null;
-  try{const call=JSON.parse(m[1]);if(call&&typeof call.tool==='string'){const {tool,...args}=call;return {id:id(),name:tool,args};}}catch{}
+  // Flat ({"tool":"files","path":"x"}) as asked, and the shapes small models often write instead:
+  // {"tool":"files","args":{...}} and {"name":"files","arguments":{...}}. A tool field called name stays a field when tool is given.
+  try{
+    const call=JSON.parse(m[1]);
+    if(call&&typeof call==='object'&&!Array.isArray(call)){
+      const byName=typeof call.tool!=='string'&&typeof call.name==='string',tool=byName?call.name:call.tool;
+      if(typeof tool==='string'&&tool){
+        let {tool:_t,...args}=call;if(byName)delete args.name;
+        const keys=Object.keys(args),inner=keys.length===1&&['args','arguments','parameters','input'].includes(keys[0])?args[keys[0]]:undefined;
+        if(inner&&typeof inner==='object'&&!Array.isArray(inner))args=inner;
+        else if(typeof inner==='string'){try{const v=JSON.parse(inner);if(v&&typeof v==='object'&&!Array.isArray(v))args=v;}catch{}}
+        return {id:id(),name:tool,args};
+      }
+    }
+  }catch{}
   return {id:id(),name:'invalid',args:{raw:m[1].slice(0,200)}};
 }
 function validateToolArgs(schema,args){

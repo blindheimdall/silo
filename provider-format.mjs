@@ -48,6 +48,9 @@ export function anthropicMessages(messages){
   for(const m of messages){
     if(m.role==='tool'){push('user',m.results.map(r=>({type:'tool_result',tool_use_id:r.id,content:r.images?.length?[{type:'text',text:r.content||'(empty)'},...r.images.map(i=>({type:'image',source:{type:'base64',media_type:i.mime,data:i.data}}))]:r.content||'(empty)',...(r.isError&&{is_error:true})})));continue;}
     if(m.role==='assistant'&&m.calls?.length){push('assistant',[...(text(m.content)?[{type:'text',text:m.content}]:[]),...m.calls.map(c=>({type:'tool_use',id:c.id,name:c.name,input:c.args||{}}))]);continue;}
+    // Anthropic refuses a message with no text, like an empty answer kept from before; it is left out, and the turns on
+    // both sides of it join.
+    if(!text(m.content))continue;
     push(m.role,text(m.content));
   }
   return out;
@@ -87,11 +90,23 @@ export class CallCollector{
     }else if(p==='ollama'){
       for(const c of ev.message?.tool_calls||[])this.done.push({id:randomUUID(),name:c.function?.name,args:parseArgs(c.function?.arguments)});
     }else{
+      // Servers differ: some send the name in every piece, some the arguments as an object, some no index at all.
       for(const d of ev.choices?.[0]?.delta?.tool_calls||[]){
-        const k=d.index??this.blocks.size,b=this.blocks.get(k)||{id:'',name:'',json:''};
-        if(d.id)b.id=d.id;if(d.function?.name)b.name+=d.function.name;if(d.function?.arguments)b.json+=d.function.arguments;this.blocks.set(k,b);
+        const k=Number.isInteger(d.index)?d.index:this.keyFor(d),b=this.blocks.get(k)||{id:'',name:'',json:''};
+        const n=d.function?.name,a=d.function?.arguments;
+        if(d.id)b.id=d.id;if(typeof n==='string'&&n&&n!==b.name)b.name+=n;
+        if(typeof a==='string')b.json+=a;else if(a&&typeof a==='object')b.input=a;
+        this.blocks.set(k,b);
       }
     }
+  }
+  // A piece without an index goes on with the last call, unless it starts another: a new id, another name, or the same
+  // name after arguments that are already whole.
+  keyFor(d){
+    const keys=[...this.blocks.keys()],last=keys.length?keys.at(-1):null,b=last===null?null:this.blocks.get(last),n=d.function?.name;
+    const whole=s=>{try{JSON.parse(s);return true;}catch{return false;}};
+    const fresh=!b||(d.id&&b.id&&d.id!==b.id)||(!d.id&&n&&(n!==b.name||whole(b.json)||b.input));
+    return fresh?(keys.length?Math.max(...keys.filter(Number.isFinite))+1:0):last;
   }
   whole(data){
     const p=this.provider;

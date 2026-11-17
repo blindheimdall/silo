@@ -1,7 +1,7 @@
 // Screenshots reach models that can see, in each provider's own shape.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openaiInput, anthropicMessages, chatMessages } from '../provider-format.mjs';
+import { openaiInput, anthropicMessages, chatMessages, CallCollector } from '../provider-format.mjs';
 
 const convo=[
   {role:'user',content:'Look at the page.'},
@@ -30,4 +30,18 @@ test('tool results without images stay plain text',()=>{
   assert.equal(openaiInput(plain).at(-1).output,'text');
   assert.equal(anthropicMessages(plain).at(-1).content[0].content,'text');
   assert.equal(chatMessages(plain,'','compatible').at(-1).role,'tool');
+});
+
+// Tool calls streamed by chat completion servers, in the shapes they really send.
+test('streamed tool calls are put together whatever shape the server sends them in',()=>{
+  const calls=pieces=>{const c=new CallCollector('compatible');for(const d of pieces)c.event({choices:[{delta:{tool_calls:[d]}}]});return c.calls().map(x=>[x.name,x.args]);};
+  const want=[['files',{path:'x'}]];
+  assert.deepEqual(calls([{index:0,id:'a',function:{name:'files',arguments:''}},{index:0,function:{arguments:'{"pa'}},{index:0,function:{arguments:'th":"x"}'}}]),want,'the name once');
+  assert.deepEqual(calls([{index:0,id:'a',function:{name:'files',arguments:'{"pa'}},{index:0,function:{name:'files',arguments:'th":"x"}'}}]),want,'the name in every piece');
+  assert.deepEqual(calls([{index:0,id:'a',function:{name:'files',arguments:{path:'x'}}}]),want,'arguments as an object');
+  assert.deepEqual(calls([{id:'a',function:{name:'files',arguments:'{"pa'}},{function:{arguments:'th":"x"}'}}]),want,'no index');
+  assert.deepEqual(calls([{function:{name:'files',arguments:'{"path":"x"}'}},{function:{name:'files',arguments:'{"path":"y"}'}}]),[['files',{path:'x'}],['files',{path:'y'}]],'two whole calls, no index or id');
+});
+test('Anthropic never gets a message with no text',()=>{
+  assert.deepEqual(anthropicMessages([{role:'user',content:'hi'},{role:'assistant',content:''},{role:'user',content:'again'}]),[{role:'user',content:[{type:'text',text:'hi'},{type:'text',text:'again'}]}]);
 });
