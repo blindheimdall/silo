@@ -179,8 +179,9 @@ export async function listDocs(src, deps) {
     if (list.length === 1 && /\.xml(\?|$)/i.test(list[0].url)) list = sitemapUrls((await deps.readPage(list[0].url, { raw: true, maxChars: 2_000_000 })).text).filter(x => web(x.url)).slice(0, MAX_WEB);
     for (const { url, modified } of list) {
       // A web page has no reliable date, so what it says decides: read() is cheap to compare by its hash.
+      // One request per page, also when the sync asks for it ahead of time and again in order.
       let got = null;
-      const fetchPage = async () => got ||= await deps.readPage(url, { maxChars: 400000 });
+      const fetchPage = () => got ||= deps.readPage(url, { maxChars: 400000 });
       const u = new URL(url);
       add({ id: url, title: '', path: [u.hostname], url, modified, web: true, fetchPage, read: async () => (await fetchPage()).text });
     }
@@ -195,6 +196,12 @@ export async function syncSource(src, manifest, deps) {
   const root = `${KNOWLEDGE_DIR}/${src.folder}`;
   // The names given before stay; a new document never takes one.
   for (const d of docs) if (manifest[d.id]) used.add(manifest[d.id].file.toLowerCase());
+  // Web pages are asked for four at a time ahead of the loop below. The loop still takes them in order, so names and
+  // counts come out as before; a page that fails is counted there, where its error is read.
+  const ahead = docs.filter(d => d.web);
+  let at = 0;
+  const fetcher = async () => { while (at < ahead.length) await Promise.resolve(ahead[at++].fetchPage()).catch(() => {}); };
+  const fetching = Promise.all(Array.from({ length: Math.min(4, ahead.length) }, fetcher));
   for (const d of docs) {
     const was = manifest[d.id];
     try {
@@ -216,6 +223,7 @@ export async function syncSource(src, manifest, deps) {
       if (was) next[d.id] = was;
     }
   }
+  await fetching;
   for (const [id, was] of Object.entries(manifest)) if (!next[id]) { await deps.remove(`${root}/${was.file}`).catch(() => {}); out.removed++; }
   return { manifest: next, ...out };
 }

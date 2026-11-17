@@ -91,6 +91,13 @@ test('a new document in a folder never takes the file of another, and a bad site
   const web={...deps,readPage:async(url,o)=>o?.raw?{text:xml}:{title:'Ok',text:'page '+url}};
   r=await syncSource({kind:'web',folder:'w',ref:'https://a.example/sitemap.xml'},{},web);
   assert.equal(r.docs,1);assert.equal(r.added,1);
+  // Pages are read four at a time, each once, and kept under the same names in the order they were given.
+  let open=0,most=0;const asked=[];
+  const slow={...deps,readPage:async url=>{asked.push(url);open++;most=Math.max(most,open);await new Promise(res=>setTimeout(res,url.endsWith('/1')?60:5));open--;if(url.endsWith('/3'))throw Error('The page answered 500.');return {title:'Same title',text:'page '+url};}};
+  const urls=Array.from({length:10},(_,i)=>'https://b.example/'+i);
+  r=await syncSource({kind:'web',folder:'b',ref:urls.join(String.fromCharCode(10))},{},slow);
+  assert.equal(most,4);assert.equal(asked.length,10);assert.equal(r.added,9);assert.equal(r.failed,1);assert.match(r.errors[0],/answered 500/);
+  assert.deepEqual(urls.filter(u=>!u.endsWith('/3')).map(u=>r.manifest[u].file),['b.example/Same title.md',...[2,3,4,5,6,7,8,9].map(n=>`b.example/Same title ${n}.md`)]);
 });
 
 test('search goes on by keywords when the embedding model cannot be reached',async()=>{

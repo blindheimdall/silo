@@ -96,6 +96,35 @@ test('the table store', async t => {
     T.close();
   });
 
+  await t.test('matching on a column uses an index of its own, made outside a transaction and gone with the column', () => {
+    const other = path.join(dir, 'indexed'), T = new Tables(other).open();
+    const idx = () => T.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'silo!_u!_%' ESCAPE '!'").all().map(r => r.name);
+    const tb = T.create({ name: 'Mail', columns: [{ name: 'Email', type: 'text', unique: true }, { name: 'n', type: 'number' }] });
+    // The first row is refused inside its transaction only after the index was made before it, so the rollback keeps it.
+    T.add('Mail', { Email: 'Ana@x.ro', n: 1 });
+    assert.throws(() => T.add('Mail', { Email: 'ana@X.ro' }), /already has a row with Email/);
+    assert.equal(idx().length, 1, 'one index, for the unique column');
+    const plan = T.db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM silo_rows WHERE tid = '${tb.id}' AND id <> ? AND lower(json_extract(data, '$.Email')) = lower(?) ORDER BY id LIMIT 2`).all(0, 'x').map(r => r.detail).join(' ');
+    assert.match(plan, /USING INDEX silo_u_/);
+    assert.equal(T.upsert('Mail', 'n', { n: 1, Email: 'ana@x.ro' }).added, false, 'a number column is matched too');
+    assert.equal(idx().length, 2);
+    assert.equal(T.upsert('Mail', 'Email', { Email: 'ANA@x.ro', n: 5 }).row.n, 5);
+    // Renamed: the old indexes go, the rules still hold with the new name.
+    T.change('Mail', { columns: [{ name: 'Mail', was: 'Email', type: 'text', unique: true }, { name: 'n', type: 'number' }] });
+    assert.equal(idx().length, 0);
+    assert.throws(() => T.add('Mail', { Mail: 'ana@x.ro' }), /already has a row with Mail/);
+    assert.equal(T.add('Mail', { Mail: 'ion@x.ro' }).Mail, 'ion@x.ro');
+    assert.equal(idx().length, 1);
+    // An index left by a table that is gone is cleared when the file is opened again.
+    T.db.exec(`CREATE INDEX "silo_u_${'0'.repeat(32)}_abc" ON silo_rows (id) WHERE tid = 'gone'`);
+    T.close(); const again = new Tables(other).open();
+    assert.deepEqual(again.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'silo!_u!_0000%' ESCAPE '!'").all(), []);
+    assert.throws(() => again.add('Mail', { Mail: 'ION@x.ro' }), /already has a row/);
+    again.drop('Mail');
+    assert.deepEqual(again.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'silo!_u!_%' ESCAPE '!'").all(), [], 'a dropped table takes its indexes');
+    again.close();
+  });
+
   await t.test('a damaged file is moved aside and a new one started', async () => {
     const other = path.join(dir, 'broken'); await fs.mkdir(other);
     await fs.writeFile(path.join(other, 'tables.db'), 'this is not a database, it only looks like one '.repeat(200));

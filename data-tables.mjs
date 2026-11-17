@@ -3,7 +3,7 @@
 // that is never given again in that table. Text is compared without case, so "Ana@x.ro" finds "ana@x.ro".
 import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync, renameSync} from 'node:fs';
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import path from 'node:path';
 
 export const TABLE_MAX = 50, COLUMN_MAX = 30, ROW_MAX = 50000, CELL_MAX = 5000, ROW_SIZE_MAX = 20000, PAGE_MAX = 500, IMPORT_MAX = 10000, CSV_MAX = 5e6;
@@ -163,9 +163,12 @@ export class Tables {
     };
     for (const t of this.sql.tables.all()) this.meta.set(t.id, {id: t.id, name: t.name, columns: JSON.parse(t.columns), created: t.created, updated: t.updated});
     for (const c of this.sql.counts.all()) this.counts.set(c.tid, c.n);
+    // Lookup indexes of tables that are gone, left by a stop between deleting a table and its indexes.
+    const live = new Set([...this.meta.keys()].map(id => id.replace(/-/g, '')));
+    for (const {name} of this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND substr(name, 1, 7) = 'silo_u_'").all()) if (!live.has(name.slice(7, 39))) this.db.exec(`DROP INDEX IF EXISTS "${name}"`);
     return this;
   }
-  close() { try { this.db?.close(); } catch {} this.db = null; this.stmts = null; }
+  close() { try { this.db?.close(); } catch {} this.db = null; this.stmts = null; this.indexes = null; }
   // A statement made from SQL that is built per table and filter, kept so the same query is not compiled again for every
   // row of a loop. The SQL holds only column names and placeholders, so a few hundred cover every shape in use.
   prep(sql) {
@@ -176,9 +179,10 @@ export class Tables {
   }
 
   tx(fn) {
-    this.db.exec('BEGIN IMMEDIATE');
+    this.db.exec('BEGIN IMMEDIATE');this.inTx = true;
     try { const r = fn(); this.db.exec('COMMIT'); return r; }
     catch (e) { try { this.db.exec('ROLLBACK'); } catch {} throw e; }
+    finally { this.inTx = false; }
   }
   changed(t) { t.updated = Date.now(); this.sql.touch.run(t.updated, t.id); this.onChange?.(t); }
 
@@ -238,14 +242,14 @@ export class Tables {
       if (problems.length) fail(`The columns were not changed: ${problems.join('; ')}${more ? `, and ${more} more` : ''}.`);
       this.tx(() => { for (const [j, id] of updates) this.sql.setData.run(j, t.id, id); this.sql.setTable.run(n, JSON.stringify(next), Date.now(), t.id); });
     } else this.sql.setTable.run(n, JSON.stringify(next), Date.now(), t.id);
-    t.name = n;t.columns = next;this.changed(t);
+    t.name = n;t.columns = next;this.dropIndexes(t);this.changed(t);
     return this.view(t);
   }
 
   drop(ref) {
     const t = this.table(ref);
     this.tx(() => { this.sql.dropRows.run(t.id); this.sql.dropTable.run(t.id); });
-    this.meta.delete(t.id);this.counts.delete(t.id);this.onChange?.(t);
+    this.dropIndexes(t);this.meta.delete(t.id);this.counts.delete(t.id);this.onChange?.(t);
     return {id: t.id, name: t.name};
   }
 
@@ -274,8 +278,27 @@ export class Tables {
   bind(c, v) { return v === true ? 1 : v === false ? 0 : v; }
   // The rows with this value in a column, other than one row.
   matching(t, c, v, except = 0) {
-    const {sql} = this.expr(t, c.name), text = c.type === 'text';
-    return this.prep(`SELECT * FROM silo_rows WHERE tid = ? AND id <> ? AND ${text ? `lower(${sql}) = lower(?)` : `${sql} = ?`} ORDER BY id LIMIT 2`).all(t.id, except, text ? String(v) : this.bind(c, c.type === 'json' ? JSON.stringify(v) : v));
+    const {sql} = this.expr(t, c.name), text = c.type === 'text', lhs = text ? `lower(${sql})` : sql, value = text ? String(v) : this.bind(c, c.type === 'json' ? JSON.stringify(v) : v);
+    // SQLite uses a partial index only when the query names its table id as written in the index.
+    if (this.indexFor(t, lhs)) return this.prep(`SELECT * FROM silo_rows WHERE tid = '${t.id}' AND id <> ? AND ${lhs} = ${text ? 'lower(?)' : '?'} ORDER BY id LIMIT 2`).all(except, value);
+    return this.prep(`SELECT * FROM silo_rows WHERE tid = ? AND id <> ? AND ${lhs} = ${text ? 'lower(?)' : '?'} ORDER BY id LIMIT 2`).all(t.id, except, value);
+  }
+  // An index on one column of one table, made the first time rows are matched on it, so a unique check or an upsert on a
+  // large table looks the value up instead of reading every row. It is partial, holding only that table's rows. It is
+  // made outside a transaction, so a refused row that rolls back does not take it away; inside one, an index that is not
+  // there yet is not made, and the query reads the rows as before. Table ids are UUIDs, so the id can stand in the SQL.
+  indexFor(t, lhs) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t.id)) return false;
+    const name = `silo_u_${t.id.replace(/-/g, '')}_${createHash('sha1').update(lhs).digest('hex').slice(0, 12)}`, made = this.indexes ||= new Set();
+    if (made.has(name)) return true;
+    if (this.inTx) return false;
+    try { this.db.exec(`CREATE INDEX IF NOT EXISTS "${name}" ON silo_rows (${lhs}) WHERE tid = '${t.id}'`); made.add(name); return true; } catch { return false; }
+  }
+  // Before a transaction that checks unique columns: their indexes, so the checks inside it can use them.
+  readyUnique(t) { for (const c of t.columns) if (c.unique) { const {sql} = this.expr(t, c.name); this.indexFor(t, c.type === 'text' ? `lower(${sql})` : sql); } }
+  dropIndexes(t) {
+    const head = `silo_u_${t.id.replace(/-/g, '')}_`;
+    for (const {name} of this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND substr(name, 1, ?) = ?").all(head.length, head)) { try { this.db.exec(`DROP INDEX IF EXISTS "${name}"`); } catch {} this.indexes?.delete(name); }
   }
   unique(t, data, except = 0) {
     for (const c of t.columns) if (c.unique && own(data, c.name) !== undefined && this.matching(t, c, data[c.name], except).length) fail(`${t.name} already has a row with ${c.name} ${short(data[c.name])}.`, 409);
@@ -338,7 +361,7 @@ export class Tables {
   add(ref, values) {
     const t = this.table(ref);
     if ((this.counts.get(t.id) || 0) >= ROW_MAX) fail(`${t.name} is full: a table keeps at most ${ROW_MAX} rows.`, 409);
-    const data = this.clean(t, values), now = Date.now();
+    const data = this.clean(t, values), now = Date.now();this.readyUnique(t);
     const id = this.tx(() => { this.unique(t, data); return this.insert(t, data, now); });
     this.added(t, 1);this.changed(t);
     return {id, ...data, created: now, updated: now};
@@ -347,7 +370,7 @@ export class Tables {
     const t = this.table(ref), before = this.row(t.id, id), {id: rid, created, updated, ...base} = before;
     const data = this.clean(t, values, base), now = Date.now();
     if (JSON.stringify(data) === JSON.stringify(base)) return before;
-    this.tx(() => { this.unique(t, data, rid); this.sql.set.run(JSON.stringify(data), now, t.id, rid); });
+    this.readyUnique(t);this.tx(() => { this.unique(t, data, rid); this.sql.set.run(JSON.stringify(data), now, t.id, rid); });
     this.changed(t);
     return {id: rid, ...data, created, updated: now};
   }

@@ -44,6 +44,10 @@ test('the inbox keeps conversations, trims them and gives forgotten ones back', 
     assert.match(box.messages(box.byKey('b').id).at(-1).text, /Given back to the resident by SILO after a day/);
     assert.equal(box.list({ search: 'Z' }).total, 1, 'search finds message text without case');
     assert.equal(box.list({ search: '100%' }).total, 0, 'a % is a letter, not a wildcard');
+    const all = box.list().total;
+    assert.equal(box.list({ limit: 1 }).total, all, 'a full page counts every match');
+    assert.equal(box.list({ limit: 1, offset: 1 }).total, all);
+    assert.equal(box.list({ limit: 200 }).total, all, 'a page that is not full counts what it holds');
     r = box.prune({ keepDays: 1, now: Date.now() + 2 * 86400000 });
     assert.equal(r.removed, 3); assert.equal(box.counts().conversations, 0);
     assert.throws(() => box.get('nope'), /That conversation is gone/);

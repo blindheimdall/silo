@@ -142,8 +142,10 @@ export class Inbox {
       where.push("(lower(who) LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM talk_msg m WHERE m.conv = talk_conv.id AND lower(m.text) LIKE ? ESCAPE '\\'))");args.push(like, like);
     }
     const w = where.length ? ' WHERE ' + where.join(' AND ') : '';
-    const total = Number(this.db.prepare('SELECT COUNT(*) AS n FROM talk_conv' + w).get(...args).n);
-    const rows = this.db.prepare(`SELECT * FROM talk_conv${w} ORDER BY updated DESC LIMIT ? OFFSET ?`).all(...args, Math.max(1, Math.min(200, Number(limit) || 50)), Math.max(0, Number(offset) || 0));
+    const n = Math.max(1, Math.min(200, Number(limit) || 50)), skip = Math.max(0, Number(offset) || 0);
+    const rows = this.db.prepare(`SELECT * FROM talk_conv${w} ORDER BY updated DESC LIMIT ? OFFSET ?`).all(...args, n, skip);
+    // A first page that is not full holds every match, so the search is not run a second time just to count them.
+    const total = !skip && rows.length < n ? rows.length : Number(this.db.prepare('SELECT COUNT(*) AS n FROM talk_conv' + w).get(...args).n);
     return {conversations: rows.map(r => this.view(r)), total};
   }
 
