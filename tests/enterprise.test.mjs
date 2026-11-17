@@ -10,9 +10,23 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {AuditLog,auditCsv,chainHash} from '../audit.mjs';
-import {traceSpans,otlpUrl,checkEndpoint,parseHeaders,auditLogRecord} from '../otel.mjs';
+import {traceSpans,otlpUrl,checkEndpoint,parseHeaders,auditLogRecord,OtelExporter} from '../otel.mjs';
 import {roleFromClaims,domainAllowed,identity,checkIssuer} from '../sso.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+
+test('stopping SILO sends the spans again when a flush already on its way failed',async()=>{
+  const ex=new OtelExporter({config:()=>({enabled:true,endpoint:'http://127.0.0.1:9',traces:true,logs:true})});clearInterval(ex.timer);
+  let calls=0;ex.post=async()=>{if(++calls===1){await new Promise(r=>setTimeout(r,20));throw Object.assign(Error('fetch failed'),{retry:true});}};
+  ex.spans.push({name:'last'});
+  const first=ex.flush(),stop=ex.flush(true);
+  await first;await stop;
+  assert.equal(calls,2);assert.equal(ex.spans.length,0);assert.equal(ex.sent.spans,1);assert.equal(ex.lastError,'');
+  // A flush with nothing to send, like the first tick after a start, does not stop the ones after it.
+  await ex.flush();assert.equal(ex.flushing,null);
+  ex.spans.push({name:'later'});await ex.flush();
+  assert.equal(calls,3);assert.equal(ex.sent.spans,2);
+  await ex.flush(true);assert.equal(ex.flushing,null,'a forced flush with nothing waiting ends too');
+});
 
 test('the audit chain shows a changed, removed or added record',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'silo-audit-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));

@@ -88,6 +88,17 @@ test('a release is signed, checked file by file, installed with a backup and rol
     await assert.rejects(rollback({root:app,dataDir:data}),/no earlier version/);
     assert.equal(await read(data,'state.json'),'MINE');
   });
+
+  await t.test('a file that cannot be put in place leaves no half-written copy, and the old version stays',async()=>{
+    const feed3=path.join(dir,'feed3');await publish(feed3,await buildRelease({root:src,version:'1.2.0',privateKeyPem:priv}));
+    const m=await fetchManifest(feed3,pub);await stageUpdate(data,m,await downloadRelease(feed3,m));
+    const rename=fs.rename;fs.rename=async(a,b)=>{if(String(b).endsWith('server.mjs'))throw Object.assign(Error('EBUSY: the file is in use'),{code:'EBUSY'});return rename(a,b);};
+    try{await assert.rejects(applyUpdate({root:app,dataDir:data,publicKeyPem:pub}),/old version was put back: EBUSY/);}finally{fs.rename=rename;}
+    assert.ok(!existsSync(path.join(app,'server.mjs.silo-new')),'the copy that could not be moved is removed');
+    assert.equal(await read(app,'server.mjs'),'v2');
+    await fs.writeFile(path.join(app,'left.js.silo-new'),'x');
+    assert.ok(!(await listReleaseFiles(app)).includes('left.js.silo-new'),'and one left by a crash never goes into a release');
+  });
 });
 
 // A stand-in server: it reads version.txt, and counts its starts in a file.

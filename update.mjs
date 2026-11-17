@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { unzip, zip } from './documents.mjs';
 
 // What a release never holds: your data, the workspace, tests, build output and settings of one install.
-export const RELEASE_SKIP = /^(data|workspace|node_modules|tests|dist|\.git|\.claude|\.vscode)(\/|$)|^launch\.json$|\.log$|(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|\/)~/i;
+export const RELEASE_SKIP = /^(data|workspace|node_modules|tests|dist|\.git|\.claude|\.vscode)(\/|$)|^launch\.json$|\.log$|\.silo-new$|(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|\/)~/i;
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
 const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -148,10 +148,12 @@ export async function applyUpdate({ root, dataDir, publicKeyPem }) {
     else if (manifest.files[p]) added.push(p);
   }
   await writeJson(path.join(backup, 'backup.json'), { version: cur.version, files: cur.files, kept: keep, added, at: Date.now() });
+  // A file is written next to its place first and then moved over it; one that could not be moved is not left behind.
+  let tmp = null;
   try {
-    for (const p of Object.keys(manifest.files)) { const f = path.join(root, ...p.split('/')), tmp = f + '.silo-new'; await fs.mkdir(path.dirname(f), { recursive: true }); await fs.copyFile(path.join(dir, 'files', ...p.split('/')), tmp); await fs.rename(tmp, f); }
+    for (const p of Object.keys(manifest.files)) { const f = path.join(root, ...p.split('/')); tmp = f + '.silo-new'; await fs.mkdir(path.dirname(f), { recursive: true }); await fs.copyFile(path.join(dir, 'files', ...p.split('/')), tmp); await fs.rename(tmp, f); tmp = null; }
     for (const p of gone) await fs.rm(path.join(root, ...p.split('/')), { force: true });
-  } catch (e) { await restore(root, dataDir); throw err('The update could not be written, so the old version was put back: ' + e.message, 500); }
+  } catch (e) { if (tmp) await fs.rm(tmp, { force: true }).catch(() => {}); await restore(root, dataDir); throw err('The update could not be written, so the old version was put back: ' + e.message, 500); }
   await writeJson(path.join(U(dataDir), 'installed.json'), { version: manifest.version, files: manifest.files });
   await writeJson(path.join(U(dataDir), 'pending.json'), { from: cur.version, to: manifest.version, at: Date.now(), crashes: 0 });
   await writeJson(path.join(U(dataDir), 'last.json'), { kind: 'updated', from: cur.version, to: manifest.version, at: Date.now() });

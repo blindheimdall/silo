@@ -355,13 +355,28 @@ export function makeXlsx(sheets) {
     ...sheets.map((s, i) => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s)]),
   ]);
 }
+// Rows of a CSV file, also as Excel saves it: a BOM at the start is dropped, the separator is the one of , ; and tab
+// found most in the first line outside quotes, a quoted cell may hold separators, quotes ("") and line breaks, and empty
+// lines are left out. Tables import CSV with this one too.
 export function parseCsv(text) {
-  const rows = []; let row = [], cur = '', q = false; const s = String(text || '');
-  const sep = (s.split('\n')[0].match(/;/g) || []).length > (s.split('\n')[0].match(/,/g) || []).length ? ';' : ',';
-  for (let i = 0; i < s.length; i++) { const ch = s[i];
-    if (q) { if (ch === '"') { if (s[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; continue; }
-    if (ch === '"') q = true; else if (ch === sep) { row.push(cur); cur = ''; } else if (ch === '\n') { row.push(cur.replace(/\r$/, '')); rows.push(row); row = []; cur = ''; } else cur += ch; }
-  if (cur || row.length) { row.push(cur.replace(/\r$/, '')); rows.push(row); }
+  let s = String(text ?? '');
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  const head = s.slice(0, s.search(/\r?\n|$/)), count = ch => head.split('"').filter((_, i) => i % 2 === 0).join('').split(ch).length - 1;
+  const sep = [',', ';', '\t'].sort((a, b) => count(b) - count(a))[0];
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quoted) {
+      if (ch === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
+      else cell += ch;
+    } else if (ch === '"' && cell === '') quoted = true;
+    else if (ch === sep) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && s[i + 1] === '\n') i++; row.push(cell); cell = ''; if (row.some(x => x !== '')) rows.push(row); row = []; }
+    else cell += ch;
+  }
+  row.push(cell);
+  if (row.some(x => x !== '')) rows.push(row);
   return rows;
 }
 

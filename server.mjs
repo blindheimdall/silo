@@ -3741,7 +3741,10 @@ function knowledgeDeps(){
 function syncKnowledge(src){
   if(knowledgeBusy.has(src.id))return knowledgeBusy.get(src.id);
   const ref=src.ref;
+  // The body starts after the run is noted below: a sync that fails at once (its account disconnected) would otherwise
+  // clear its note before it was made, and the source would show as syncing for good, with every later sync refused.
   const run=(async()=>{
+    await null;
     const started=Date.now(),svc=SOURCE_KINDS[src.kind].service;stateRev++;
     try{
       if(svc&&!state.services?.[svc])fail(`Connect ${SERVICES[svc].name} in IT / Uplink first.`,409);

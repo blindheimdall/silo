@@ -5,6 +5,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync, renameSync} from 'node:fs';
 import {createHash, randomUUID} from 'node:crypto';
 import path from 'node:path';
+import {parseCsv} from './documents.mjs';
+export {parseCsv};
 
 export const TABLE_MAX = 50, COLUMN_MAX = 30, ROW_MAX = 50000, CELL_MAX = 5000, ROW_SIZE_MAX = 20000, PAGE_MAX = 500, IMPORT_MAX = 10000, CSV_MAX = 5e6;
 export const COLUMN_TYPES = {text: 'text', number: 'number', boolean: 'yes or no', date: 'date', json: 'JSON'};
@@ -81,28 +83,6 @@ export function checkColumns(list) {
 }
 const tableName = v => { const s = String(v ?? '').replace(/[\x00-\x1f\x7f]/g, '').trim(); if (!s) fail('Name the table.'); if (s.length > 60) fail('A table name has at most 60 characters.'); return s; };
 
-// CSV as spreadsheets write it: quotes, quotes doubled inside, line breaks inside quotes, a comma, semicolon or tab.
-export function parseCsv(text) {
-  let s = String(text ?? '');
-  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
-  const head = s.slice(0, s.search(/\r?\n|$/)), count = ch => head.split('"').filter((_, i) => i % 2 === 0).join('').split(ch).length - 1;
-  const sep = [',', ';', '\t'].sort((a, b) => count(b) - count(a))[0];
-  const rows = [];
-  let row = [], cell = '', quoted = false;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (quoted) {
-      if (ch === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
-      else cell += ch;
-    } else if (ch === '"' && cell === '') quoted = true;
-    else if (ch === sep) { row.push(cell); cell = ''; }
-    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && s[i + 1] === '\n') i++; row.push(cell); cell = ''; if (row.some(x => x !== '')) rows.push(row); row = []; }
-    else cell += ch;
-  }
-  row.push(cell);
-  if (row.some(x => x !== '')) rows.push(row);
-  return rows;
-}
 // Cells that start like a formula get a quote mark first, so a spreadsheet does not run them.
 const csvCell = v => { const s = v === undefined || v === null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); return /[",\n\r;]|^[=+\-@\t\r]/.test(s) ? '"' + (/^[=+\-@\t\r]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; };
 // A header from a file as a column name: letters without their marks, other signs as _.

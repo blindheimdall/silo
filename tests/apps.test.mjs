@@ -28,6 +28,9 @@ test('Word, Excel and PDF files are made and read back, with Romanian letters', 
   assert.match(p, /Pump 3 leaks on level 12\. Ștefan și Țuțu checked it\./); assert.match(p, /Ana 1200 2026-11-01/);
   assert.throws(() => extractText(Buffer.from([0, 1, 2, 3, 0, 0, 255]), 'x.bin'), /not text/);
   assert.deepEqual(parseCsv('a;b\n1;"x;y"\n'), [['a', 'b'], ['1', 'x;y']]);
+  // As Excel saves it: a BOM first, and a comma inside quotes in the first line does not make it the separator.
+  assert.deepEqual(parseCsv('\ufeff"Pop, Ion";Varsta\r\n"Ana";30\r\n'), [['Pop, Ion', 'Varsta'], ['Ana', '30']]);
+  assert.deepEqual(parseCsv('a\tb\n1\t2'), [['a', 'b'], ['1', '2']]);
 });
 
 test('a small file that unpacks to too much is refused, and a PDF stops reading with a note', async () => {

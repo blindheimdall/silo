@@ -64,7 +64,8 @@ export function startGuardProxy({allowLocal=false}={}){
     const refuse=()=>sock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
     if(!m||literalPrivate(m[1],allowLocal)){refuse();return;}
     const up=net.connect({host:m[1],port:Number(m[2]),lookup},()=>{sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head?.length)up.write(head);up.pipe(sock);sock.pipe(up);});track(up);
-    up.on('error',refuse);sock.on('error',()=>up.destroy());
+    // The browser hanging up, also while the far side is still being reached, ends the tunnel there too.
+    up.on('error',refuse);sock.on('error',()=>up.destroy());sock.on('close',()=>up.destroy());
   });
   // Closing drops every open connection and tunnel too, so nothing is left running.
   server.on('connection',track);

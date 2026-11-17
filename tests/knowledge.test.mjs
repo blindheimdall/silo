@@ -218,6 +218,16 @@ test('knowledge in a running SILO',async t=>{
     const doc=(await request('/archive/search',{query:'second class trains'})).data.hits;assert.equal(doc[0]?.name,'Travel.docx');
     const k=(await request('/knowledge')).data;assert.ok(k.index.files>=5,JSON.stringify(k.index));assert.equal(k.kinds.gdrive.connected,true);assert.equal(k.kinds.onedrive.connected,false);assert.equal(k.kinds.web.connected,true);
   });
+  await t.test('a sync with its account disconnected fails, and the next one after connecting works',async()=>{
+    assert.equal((await request('/services/notion',{disconnect:true})).status,200);
+    assert.equal((await request('/knowledge/'+notion.id+'/sync',{})).status,202);
+    const failed=await until(async()=>{const x=(await request('/knowledge')).data.sources.find(s=>s.id===notion.id);return !x.syncing&&x.last.at>notion.last.at&&x;},10000,'the failed sync');
+    assert.equal(failed.last.ok,false);assert.match(failed.last.error,/Connect Notion/);
+    assert.equal((await request('/services/notion',{token:'secret_fixture'})).status,200);
+    assert.equal((await request('/knowledge/'+notion.id+'/sync',{})).status,202);
+    notion=await until(async()=>{const x=(await request('/knowledge')).data.sources.find(s=>s.id===notion.id);return !x.syncing&&x.last.at>failed.last.at&&x;},20000,'the sync after connecting');
+    assert.equal(notion.last.ok,true,JSON.stringify(notion.last));
+  });
   await t.test('change, sync again, remove: the copies go, the source is untouched',async()=>{
     assert.equal((await request('/knowledge/'+notion.id,{every:60,name:'Team handbook'})).data.every,60);
     assert.equal((await request('/knowledge/'+notion.id,{kind:'web'})).data.kind,'notion','the kind stays');

@@ -105,8 +105,11 @@ export class OtelExporter {
   }
   // Sends what waits, in batches. A collector that is down or busy is tried again later, waiting up to five minutes.
   flush(force = false) {
-    if (this.flushing) return this.flushing;
+    // A forced flush (SILO stopping) that meets one already on its way waits for it, then tries what is left once more.
+    if (this.flushing) return force ? this.flushing.then(() => this.flush(true)) : this.flushing;
     if (!force && Date.now() < this.retryAt) return Promise.resolve();
+    // flushing is cleared in .finally, which always runs after this assignment: with nothing to send the body ends at
+    // once, and clearing it inside the body would happen before the assignment and leave it set, so no flush ran again.
     this.flushing = (async () => {
       try {
         while (this.spans.length || this.logs.length) {
@@ -116,8 +119,7 @@ export class OtelExporter {
           this.lastOk = Date.now(); this.lastError = ''; this.wait = 0; this.retryAt = 0;
         }
       } catch (e) { if (!e.handled) this.lastError = e.message; }
-      finally { this.flushing = null; }
-    })();
+    })().finally(() => { this.flushing = null; });
     return this.flushing;
   }
   failed(e, list, n) {
