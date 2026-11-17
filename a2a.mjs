@@ -127,6 +127,7 @@ async function rpc(endpoint, token, method, params, { fetch: f = fetch, timeout 
   const r = await f(endpoint, { method: 'POST', redirect: 'error', signal: sig, headers: { 'content-type': 'application/json', accept: 'application/json', ...(token && { authorization: 'Bearer ' + token }) }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
   const text = await readLimited(r);
   let body; try { body = JSON.parse(text); } catch { throw new Error(`The agent answered HTTP ${r.status} without JSON.`); }
+  if (!body || typeof body !== 'object') throw new Error(`The agent answered HTTP ${r.status} with something that is not a JSON-RPC answer.`);
   if (body.error) throw new Error(`The agent refused: ${String(body.error.message || body.error.code).slice(0, 300)}`);
   if (!r.ok) throw new Error(`The agent answered HTTP ${r.status}.`);
   return body.result;

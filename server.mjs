@@ -5816,14 +5816,37 @@ function formPage(w,values={},errors=[],done=false){
     :`<h1>${e(title)}</h1>${f.intro?`<p>${e(f.intro)}</p>`:''}${errors.length?`<ul class="err">${errors.map(x=>`<li>${e(x)}</li>`).join('')}</ul>`:''}<form method="post">${f.fields.map(x=>`<label>${e(x.label)}${x.required?' <b>*</b>':''}${x.type==='textarea'?`<textarea name="${x.name}" maxlength="5000" rows="5"${x.required?' required':''}>${e(values[x.name])}</textarea>`:`<input name="${x.name}" type="${x.type}" maxlength="500"${x.type==='number'?' step="any"':''} value="${e(values[x.name])}"${x.required?' required':''}>`}</label>`).join('')}<label class="hp" aria-hidden="true">Website <input name="website" tabindex="-1" autocomplete="off"></label><button type="submit">Send</button></form>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${e(title)}</title><style>:root{color-scheme:light dark;--bg:#f6f5f1;--fg:#1d1d1b;--line:#c9c6bc;--accent:#2f5d50;--err:#a3302a}@media (prefers-color-scheme:dark){:root{--bg:#121412;--fg:#e8e6df;--line:#3c403b;--accent:#8cc7b2;--err:#f08a80}}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}main{max-width:560px;margin:0 auto;padding:40px 16px}h1{font-size:1.5rem;margin:0 0 12px}label{display:block;margin:16px 0 0;font-weight:600}input,textarea{display:block;box-sizing:border-box;width:100%;margin-top:6px;padding:10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;font:inherit}b{color:var(--err)}button{margin-top:24px;padding:10px 22px;border:0;border-radius:6px;background:var(--accent);color:var(--bg);font:inherit;font-weight:600;cursor:pointer}.err{color:var(--err);padding-left:20px}.hp{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}</style></head><body><main>${body}</main></body></html>`;
 }
-async function readText(req,max,tooLarge='Request too large.'){const parts=[];let n=0;for await(const chunk of req){n+=chunk.length;if(n>max)fail(tooLarge,413);parts.push(chunk);}return Buffer.concat(parts).toString('utf8');}
+// The body of a request, up to max bytes. A larger one is refused without reading the rest, and its connection is
+// closed after the answer: left open, the unread rest would be taken as the start of the next request on it, which
+// then failed for no reason a browser or script could see.
+const responseOf=new WeakMap();
+function readBytes(req,max,tooLarge='Request too large.'){
+  return new Promise((resolve,reject)=>{
+    const parts=[];let n=0,done=false;
+    const finish=(fn,v)=>{if(done)return;done=true;req.off('data',data);req.off('end',end);req.off('error',error);fn(v);};
+    const refuse=()=>{const res=responseOf.get(req);if(res&&!res.headersSent)res.shouldKeepAlive=false;req.pause();finish(reject,Object.assign(new Error(tooLarge),{status:413}));};
+    const data=chunk=>{n+=chunk.length;if(n>max)return refuse();parts.push(chunk);};
+    const end=()=>finish(resolve,Buffer.concat(parts));
+    const error=e=>finish(reject,e);
+    if(Number(req.headers['content-length'])>max)return refuse();
+    req.on('data',data);req.once('end',end);req.once('error',error);
+  });
+}
+async function readText(req,max,tooLarge){return (await readBytes(req,max,tooLarge)).toString('utf8');}
 // POST /api/tables/import makes a table from CSV, POST /api/tables/<table>/import adds its rows to one.
 const TABLE_IMPORT=/^\/api\/tables\/(?:([^/]{1,200})\/)?import$/;
 const pathPart=p=>{try{return decodeURIComponent(p);}catch{fail('Not found.',404);}};
 // Bodies that are not JSON: a file added to the workspace, a voice note, and CSV for a table.
 const rawBodyOk=(p,type='')=>((p==='/api/upload'||p==='/api/voice/transcribe')&&type==='application/octet-stream')||(TABLE_IMPORT.test(p)&&/^text\/csv\b/.test(type));
-async function readBody(req){const body=await readText(req,300000);try{return JSON.parse(body||'{}');}catch{fail('Invalid JSON.');}}
+// The values of a request: always an object, so a body of null, a list or a bare value is refused here and not read
+// field by field later.
+async function readBody(req){
+  const body=await readText(req,300000);let v;try{v=JSON.parse(body||'{}');}catch{fail('Invalid JSON.');}
+  if(!v||typeof v!=='object'||Array.isArray(v))fail('Send the values as a JSON object.');
+  return v;
+}
 const server=http.createServer(async(req,res)=>{
+  responseOf.set(req,res);
   try{
     if(HOSTED&&!sameSecret(String(req.headers['x-silo-hosted']||''),HOSTED)){res.writeHead(403,{'Content-Type':'text/plain; charset=utf-8'});return res.end('Open this workspace at its own address.');}
     if(HOSTED&&req.url.startsWith('/api/hosted/'))return await hostedControl(req,res);
@@ -7283,9 +7306,9 @@ const server=http.createServer(async(req,res)=>{
       if(route==='/api/system/startup'&&req.method==='POST'){const st=await setStartup(b.enabled===true,ROOT);event(st.enabled?'SILO starts when you sign in':'SILO no longer starts when you sign in',st.enabled?'A shortcut is in your Startup folder.':'The shortcut was removed.','system');return send(res,200,st);}
       if(route==='/api/voice/transcribe'&&req.method==='POST'){
         const mime=string(url.searchParams.get('mime')||'',100);if(!audioExt(mime))fail('That sound format is not supported. Use webm, ogg, mp3, m4a, wav or flac.',415);
-        const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>25e6)fail('Recordings up to 25 MB can be understood.',413);chunks.push(c);}
+        const sound=await readBytes(req,25e6,'Recordings up to 25 MB can be understood.');
         const ctrl=new AbortController();res.on('close',()=>{if(!res.writableEnded)ctrl.abort();});
-        return send(res,200,{text:await voiceTranscribe(Buffer.concat(chunks),mime,ctrl.signal)});
+        return send(res,200,{text:await voiceTranscribe(sound,mime,ctrl.signal)});
       }
       if(route==='/api/voice/speak'&&req.method==='POST'){
         const v=state.settings.voice,p=ttsProvider(v,voiceHas);
@@ -7301,8 +7324,8 @@ const server=http.createServer(async(req,res)=>{
       }
       if(route==='/api/upload'&&req.method==='POST'){
         const name=string(url.searchParams.get('name')||'',180);const file=await safeFile(name,true);
-        const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>25e6)fail('Files up to 25 MB can be added.',413);chunks.push(c);}
-        await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,Buffer.concat(chunks));
+        const data=await readBytes(req,25e6,'Files up to 25 MB can be added.'),size=data.length;
+        await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,data);
         event('File added to the workspace',`${name} (${kb(size)})`,'file');await persist();return send(res,200,{ok:true,name,size});
       }
       if(route==='/api/download'&&req.method==='GET'){
@@ -7346,7 +7369,8 @@ const server=http.createServer(async(req,res)=>{
 const scheduler=setInterval(async()=>{
   if(state.paused)return;
   for(const w of state.workflows){
-    if(w.enabled&&w.nextRun<=Date.now()){
+    // nextRun null is never due: null<=now would be true and start it on every tick.
+    if(w.enabled&&w.nextRun!=null&&w.nextRun<=Date.now()){
       // Late by more than two minutes: SILO was off, asleep or paused at that time. However many times passed, the
       // workflow runs once or not at all, as it says.
       const now=Date.now(),late=now-w.nextRun;

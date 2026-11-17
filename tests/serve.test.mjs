@@ -9,7 +9,7 @@ import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {McpClient} from '../mcp-client.mjs';
 import {handleMcp,checkArgs,uniqueNames,toolSlug} from '../mcp-server.mjs';
-import {TaskStore,messageText,view,agentCard,checkAgentUrl,fetchCard,TERMINAL} from '../a2a.mjs';
+import {TaskStore,messageText,view,agentCard,checkAgentUrl,fetchCard,sendTask,TERMINAL} from '../a2a.mjs';
 import {localCommand} from '../sandbox.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const until=async(fn,ms,what)=>{const end=Date.now()+ms;for(;;){const v=await fn();if(v)return v;if(Date.now()>end)throw Error('Timed out waiting for '+what);await new Promise(r=>setTimeout(r,60));}};
@@ -65,6 +65,8 @@ test('A2A pieces: messages, tasks, owners and the card',async()=>{
   const fake=card=>async()=>new Response(JSON.stringify(card),{status:200});
   await assert.rejects(fetchCard('https://good.example',{fetch:fake({name:'Evil',url:'https://evil.example/rpc'})}),/only sends the token/);
   assert.equal((await fetchCard('https://good.example',{fetch:fake({name:'Good',url:'/rpc',skills:[{id:'s1'}]})})).endpoint,'https://good.example/rpc');
+  // An agent that answers null or a bare value is told apart from a refusal, not a TypeError.
+  for(const answer of [null,7])await assert.rejects(sendTask({endpoint:'https://good.example/rpc',text:'hi',fetch:fake(answer)}),/not a JSON-RPC answer/);
 });
 
 test('outside programs: MCP server, A2A agent and client, notebooks and Python tools',async t=>{

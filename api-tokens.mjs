@@ -69,7 +69,9 @@ export class TokenStore {
     if (!secret) return null;
     const h = Buffer.from(sha256(secret), 'hex');
     let hit = null;
-    for (const t of this.list()) if (timingSafeEqual(Buffer.from(t.hash, 'hex'), h)) hit = t;
+    // A stored hash of another length (a hand-edited state file) is skipped: timingSafeEqual would throw for it, and
+    // then for every token.
+    for (const t of this.list()) { const s = Buffer.from(String(t.hash || ''), 'hex'); if (s.length === h.length && timingSafeEqual(s, h)) hit = t; }
     if (!hit || (hit.expiresAt && hit.expiresAt <= Date.now())) return null;
     return hit;
   }

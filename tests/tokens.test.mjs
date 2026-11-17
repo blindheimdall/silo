@@ -32,6 +32,8 @@ test('token scopes, shapes and limits',()=>{
   assert.ok(!JSON.stringify(list).includes(secret.slice(9)),'only a hash is kept');
   assert.ok(!('hash' in publicToken(token)));
   assert.equal(store.find(secret),token);assert.equal(store.find(secret+'x'),null);
+  // A stored hash of another length (a hand-edited file) is passed over, not a crash for every token.
+  list.unshift({id:'odd',hash:'abc'},{id:'none'});assert.equal(store.find(secret),token);list.splice(0,2);
   token.expiresAt=Date.now()-1;assert.equal(store.find(secret),null,'expired');
   for(let i=0;i<300;i++)assert.equal(store.limited(token,1000),false);
   assert.equal(store.limited(token,1000),true);assert.equal(store.limited(token,70_000),false,'a new minute');

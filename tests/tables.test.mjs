@@ -241,4 +241,15 @@ test('tables in SILO: the API, table steps and residents', async t => {
     req = await pending(); await request('/requests/' + req.id, { allow: false }); await reply;
     assert.equal((await request('/tables/Prices/rows/1')).status, 200, 'a denied change is not made');
   });
+
+  await t.test('a body that is not an object, or too large, gets a clear answer, and the next requests still work', async () => {
+    for (const body of [null, [], 'x', 3]) { const r = await request('/tables', body); assert.equal(r.status, 400, JSON.stringify(body)); assert.match(r.data.error, /JSON object/); }
+    // Sent in pieces, so the size is not known until it is read: the rest is not read, and the connection is closed.
+    const piece = Buffer.alloc(64000, 'x'), stream = new ReadableStream({ start(c) { for (let i = 0; i < 8; i++) c.enqueue(piece); c.close(); } });
+    const big = await fetch(api + '/api/tables', { method: 'POST', headers, body: stream, duplex: 'half' }).catch(e => e);
+    if (!(big instanceof Error)) { assert.equal(big.status, 413); await big.arrayBuffer(); }
+    const known = await fetch(api + '/api/tables', { method: 'POST', headers, body: JSON.stringify({ name: 'x'.repeat(400000) }) });
+    assert.equal(known.status, 413); assert.match((await known.json()).error, /too large/);
+    for (let i = 0; i < 4; i++) assert.equal((await request('/tables')).status, 200, 'request ' + (i + 1) + ' after it');
+  });
 });
